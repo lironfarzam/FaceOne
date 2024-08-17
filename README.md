@@ -1,7 +1,3 @@
-Certainly! Here's a detailed README file based on the content of your report and the code you’ve provided. This README is intended to explain the project, its objectives, and the technical details of the implementation, including examples and usage instructions.
-
----
-
 # FaceOne: Advanced Face Recognition System
 
 ## Project Overview
