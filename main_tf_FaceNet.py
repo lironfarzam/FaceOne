@@ -33,7 +33,6 @@ ANC_PATH = "/Users/lfarz/Desktop/לימודים/תואר שני/מעבדות מ�
 POS_PATH = "/Users/lfarz/Desktop/לימודים/תואר שני/מעבדות מתקדמות בAI/face-blocker/face-blocker/imgs/positives"
 NEG_PATH = "/Users/lfarz/Desktop/לימודים/תואר שני/מעבדות מתקדמות בAI/face-blocker/face-blocker/imgs/negatives"
 
-
 NUM_OF_IMAGES_TO_PROCESS = 1_000_000
 NUM_OF_PAIRS = 1_000_000
 
