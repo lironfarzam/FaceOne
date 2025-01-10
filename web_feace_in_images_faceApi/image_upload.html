@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <title>Image Upload Face Detection</title>
+  <script defer src="face-api.min.js"></script>
+  <script defer src="image_upload.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #image-container {
+      position: relative;
+    }
+    .face-box {
+      position: absolute;
+      border: 2px solid red;
+    }
+    #faces {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .face {
+      border: 1px solid #ccc;
+      padding: 5px;
+    }
+  </style>
+</head>
+<body>
+
+    <p> https://upload.wikimedia.org/wikipedia/en/d/d6/Friends_season_one_cast.jpg</p>
+
+  <h1>Image Face Detection with TensorFlow.js</h1>
+  <label for="image-url">Enter Image URL:</label>
+  <input type="text" id="image-url" placeholder="Enter image URL here">
+  <button id="load-image">Load Image</button>
+  <div id="image-container">
+    <canvas id="canvas"></canvas>
+  </div>
+  <h2>Detected Faces</h2>
+  <div id="faces"></div>
+</body>
+</html>
