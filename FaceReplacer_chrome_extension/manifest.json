@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Face Replacer",
+  "version": "1.0",
+  "description": "Replace all images on a page with custom images.",
+  "permissions": ["activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["model/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
