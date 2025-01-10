@@ -3,9 +3,10 @@
 *.jpg
 *.jpeg
 *.DS_Store
+*.mp4
 
-# Ignore everything in the Live_portrait directory
-Live_portrait/
+# # Ignore everything in the Live_portrait directory
+# Live_portrait/
 
 # Ignore everything in the imgs directory
 imgs/
