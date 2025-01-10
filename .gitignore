@@ -1,0 +1,17 @@
+# Ignore all PNG and JPG images
+*.png
+*.jpg
+*.jpeg
+*.DS_Store
+
+# Ignore everything in the Live_portrait directory
+Live_portrait/
+
+# Ignore everything in the imgs directory
+imgs/
+
+# Ignore everything in the positive_from_camera directory
+Network_based_on_images/positive_from_camera/
+
+# Ignore everything in the xxx directory
+xxx/
