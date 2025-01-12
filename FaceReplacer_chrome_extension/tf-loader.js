@@ -18,22 +18,33 @@ function injectScript(src) {
 async function initTensorFlow() {
   try {
     // Load scripts sequentially
-    await injectScript('libs/tf.js');
+    console.log("📥 Loading TensorFlow.js...");
+    await injectScript('libs/tf.min.js');
+    console.log("✅ TensorFlow.js loaded");
+
+    console.log("📥 Loading TensorFlow WASM backend...");
     await injectScript('libs/tf-backend-wasm.js');
+    console.log("✅ TensorFlow WASM backend loaded");
     
     // Wait for TF to be available in global scope
+    console.log("⏳ Waiting for TensorFlow to be available in global scope...");
     await new Promise(resolve => {
       const checkTf = () => {
         if (window.tf) {
+          console.log("🔧 TensorFlow is now available in global scope");
           resolve();
         } else {
-          setTimeout(checkTf, 100);
+          console.log("⏳ TensorFlow not yet available, retrying...");
+          setTimeout(checkTf, 500); // Increased retry interval to 500ms
         }
       };
       checkTf();
     });
 
+    console.log("🔧 TensorFlow loaded in global scope");
+
     // Initialize WASM backend
+    console.log("🔧 Initializing WASM backend...");
     await tf.setBackend('wasm');
     await tf.ready();
     

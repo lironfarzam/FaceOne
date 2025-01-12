@@ -18,5 +18,14 @@ Network_based_on_images/positive_from_camera/
 xxx/
 
 # ignore all files in the model directory
-*/model/*
-*/models/*
+*model/
+*models/
+
+*model/*/*
+*models/*/*
+
+*/model/*/
+*/models/*/
+
+*model/*/*/*
+*models/*/*/*

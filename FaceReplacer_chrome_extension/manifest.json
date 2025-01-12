@@ -10,10 +10,14 @@
       "service_worker": "background.js"
     },
 
+    "action": {
+      "default_popup": "popup.html"
+    },
+
     "web_accessible_resources": [
       {
         "resources": [
-          "libs/tf.js",
+          "libs/tf.min.js",
           "libs/tf-backend-wasm.js",
           "libs/tf-backend-wasm.wasm",
           "libs/face-api.min.js",
@@ -37,4 +41,4 @@
     "content_security_policy": {
       "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
     }
-  }
+}

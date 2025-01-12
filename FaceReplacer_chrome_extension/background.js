@@ -37,3 +37,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Indicates the response will be sent asynchronously
   }
 });
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'startFaceReplacement') {
+    // Logic to start face replacement
+    console.log('Face replacement started');
+  } else if (message.action === 'stopFaceReplacement') {
+    // Logic to stop face replacement
+    console.log('Face replacement stopped');
+  }
+  sendResponse();
+});
