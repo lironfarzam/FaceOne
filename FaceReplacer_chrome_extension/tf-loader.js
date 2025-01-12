@@ -19,7 +19,7 @@ async function initTensorFlow() {
   try {
     // Load scripts sequentially
     console.log("📥 Loading TensorFlow.js...");
-    await injectScript('libs/tf.min.js');
+    await injectScript('libs/tf.js');
     console.log("✅ TensorFlow.js loaded");
 
     console.log("📥 Loading TensorFlow WASM backend...");
@@ -35,7 +35,7 @@ async function initTensorFlow() {
           resolve();
         } else {
           console.log("⏳ TensorFlow not yet available, retrying...");
-          setTimeout(checkTf, 500); // Increased retry interval to 500ms
+          setTimeout(checkTf, 100);
         }
       };
       checkTf();

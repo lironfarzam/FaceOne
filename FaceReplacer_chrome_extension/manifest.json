@@ -17,7 +17,7 @@
     "web_accessible_resources": [
       {
         "resources": [
-          "libs/tf.min.js",
+          "libs/tf.js",
           "libs/tf-backend-wasm.js",
           "libs/tf-backend-wasm.wasm",
           "libs/face-api.min.js",
