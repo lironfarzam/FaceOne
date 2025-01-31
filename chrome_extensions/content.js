@@ -14,6 +14,11 @@
  * @property {Set<string>} processedImages - Set of processed image URLs
  */
 
+const flagShowFrameonImage = {
+  frameProsessedImage: true, // Controls green frame around processed images
+  frameFaceDetected: true    // Controls red frame around face detected
+}
+
 /** @type {State} */
 const state = {
   modelsLoaded: false,
@@ -44,7 +49,6 @@ const FACE_API_DETECTION_OPTIONS = {
  * @returns {Promise<void>} Resolves when extension context is ready
  */
 async function initializeExtensionContext() {
-  console.log('initializeExtensionContext()');
 
   return new Promise((resolve) => {
     if (chrome.runtime && chrome.runtime.id) {
@@ -66,7 +70,6 @@ async function initializeExtensionContext() {
  * @throws {Error} If Face API models fail to load after maximum attempts
  */
 async function loadFaceApiModels() {
-  console.log('loadFaceApiModels()');
   if (state.modelsLoaded) return;
   
   try {
@@ -101,7 +104,6 @@ async function loadFaceApiModels() {
  * @returns {Promise<HTMLImageElement>} A CORS-enabled image
  */
 async function createCORSImage(originalImage) {
-  console.log('createCORSImage()');
   return new Promise((resolve, reject) => {
     const corsImage = new Image();
     corsImage.crossOrigin = 'anonymous';
@@ -126,13 +128,15 @@ async function createCORSImage(originalImage) {
  * @returns {Promise<void>}
  */
 async function detectFacesWithFaceApi(img) {
-  console.log('detectFacesWithFaceApi()');
   if (state.isProcessing) return;
   state.isProcessing = true;
   
   try {
     await loadFaceApiModels();
     
+    const imgSrc = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
+    console.log('Processing image:', imgSrc);
+
     // Remove existing canvas
     const existingCanvas = document.querySelector('.face-detection-canvas');
     if (existingCanvas) {
@@ -145,9 +149,31 @@ async function detectFacesWithFaceApi(img) {
     wrapper.style.display = 'inline-block';
     wrapper.style.width = img.width + 'px';
     wrapper.style.height = img.height + 'px';
+    
+    // Apply green frame only if flagShowFrameonImage.frameProsessedImage is true
+    if (flagShowFrameonImage.frameProsessedImage) {
+      wrapper.style.border = '3px solid #00ff00';
+      wrapper.style.boxSizing = 'border-box';
+      wrapper.style.padding = '2px';
+      
+      // Add processed indicator
+      const indicator = document.createElement('div');
+      indicator.style.position = 'absolute';
+      indicator.style.top = '5px';
+      indicator.style.right = '5px';
+      indicator.style.backgroundColor = 'rgba(0, 255, 0, 0.7)';
+      indicator.style.color = 'white';
+      indicator.style.padding = '2px 5px';
+      indicator.style.borderRadius = '3px';
+      indicator.style.fontSize = '12px';
+      indicator.textContent = 'Processed';
+      wrapper.appendChild(indicator);
+    }
+    
+    wrapper.className = 'face-detection-wrapper';
     img.parentElement.insertBefore(wrapper, img);
     wrapper.appendChild(img);
-    
+
     // Create canvas
     const canvas = document.createElement('canvas');
     canvas.className = 'face-detection-canvas';
@@ -174,80 +200,90 @@ async function detectFacesWithFaceApi(img) {
       new faceapi.SsdMobilenetv1Options(FACE_API_DETECTION_OPTIONS)
     );
     
-    // Update console messages
+    // Update console messages with image source
     if (detections.length === 0) {
-      console.log('Face API: No faces detected');
+      console.log('Face API: No faces detected in:', imgSrc);
       return;
     }
     
-    console.log(`Face API: Detected ${detections.length} faces`);
+    console.log(`Face API: Detected ${detections.length} faces in:`, imgSrc);
     
-    // Draw detections
-    const ctx = canvas.getContext('2d');
-    
-    detections.forEach((detection, index) => {
-      const box = detection.box;
+    // Draw detections only if frameFaceDetected is true
+    if (flagShowFrameonImage.frameFaceDetected) {
+      const ctx = canvas.getContext('2d');
       
-      // Scale coordinates from natural size to display size
-      const scaledBox = {
-        x: box.x / displayToNaturalRatioX,
-        y: box.y / displayToNaturalRatioY,
-        width: box.width / displayToNaturalRatioX,
-        height: box.height / displayToNaturalRatioY
-      };
-      
-      // Draw face box
-      ctx.strokeStyle = 'red';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(
-        scaledBox.x,
-        scaledBox.y,
-        scaledBox.width,
-        scaledBox.height
-      );
-      
-      // Draw corner indicators
-      const cornerSize = Math.min(scaledBox.width, scaledBox.height) * 0.2; // Relative corner size
-      ctx.lineWidth = 2;
-      
-      // Draw corners
-      const corners = [
-        // Top-left
-        [scaledBox.x, scaledBox.y, scaledBox.x + cornerSize, scaledBox.y],
-        [scaledBox.x, scaledBox.y, scaledBox.x, scaledBox.y + cornerSize],
-        // Top-right
-        [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y],
-        [scaledBox.x + scaledBox.width, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y + cornerSize],
-        // Bottom-left
-        [scaledBox.x, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x, scaledBox.y + scaledBox.height],
-        [scaledBox.x, scaledBox.y + scaledBox.height, scaledBox.x + cornerSize, scaledBox.y + scaledBox.height],
-        // Bottom-right
-        [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y + scaledBox.height, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height],
-        [scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height]
-      ];
-      
-      corners.forEach(([x1, y1, x2, y2]) => {
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
+      detections.forEach((detection, index) => {
+        const box = detection.box;
+        
+        // Scale coordinates from natural size to display size
+        const scaledBox = {
+          x: box.x / displayToNaturalRatioX,
+          y: box.y / displayToNaturalRatioY,
+          width: box.width / displayToNaturalRatioX,
+          height: box.height / displayToNaturalRatioY
+        };
+        
+        // Draw face box
+        ctx.strokeStyle = 'red';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(
+          scaledBox.x,
+          scaledBox.y,
+          scaledBox.width,
+          scaledBox.height
+        );
+        
+        // Draw corners and text only if frameFaceDetected is true
+        if (flagShowFrameonImage.frameFaceDetected) {
+          // Draw corner indicators
+          const cornerSize = Math.min(scaledBox.width, scaledBox.height) * 0.2;
+          ctx.lineWidth = 2;
+          
+          // Draw corners
+          const corners = [
+            // Top-left
+            [scaledBox.x, scaledBox.y, scaledBox.x + cornerSize, scaledBox.y],
+            [scaledBox.x, scaledBox.y, scaledBox.x, scaledBox.y + cornerSize],
+            // Top-right
+            [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y],
+            [scaledBox.x + scaledBox.width, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y + cornerSize],
+            // Bottom-left
+            [scaledBox.x, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x, scaledBox.y + scaledBox.height],
+            [scaledBox.x, scaledBox.y + scaledBox.height, scaledBox.x + cornerSize, scaledBox.y + scaledBox.height],
+            // Bottom-right
+            [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y + scaledBox.height, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height],
+            [scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height]
+          ];
+          
+          corners.forEach(([x1, y1, x2, y2]) => {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+          });
+          
+          // Add face number with scaled font size
+          const fontSize = Math.max(12, Math.min(scaledBox.width, scaledBox.height) * 0.2);
+          ctx.font = `${fontSize}px Arial`;
+          const text = `Face ${index + 1}`;
+          const textWidth = ctx.measureText(text).width;
+          
+          // Draw text background
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(scaledBox.x, scaledBox.y - fontSize - 8, textWidth + 6, fontSize + 4);
+          
+          // Draw text
+          ctx.fillStyle = 'white';
+          ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
+        }
       });
-      
-      // Add face number with scaled font size
-      const fontSize = Math.max(12, Math.min(scaledBox.width, scaledBox.height) * 0.2);
-      ctx.font = `${fontSize}px Arial`;
-      const text = `Face ${index + 1}`;
-      const textWidth = ctx.measureText(text).width;
-      
-      // Draw text background
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-      ctx.fillRect(scaledBox.x, scaledBox.y - fontSize - 8, textWidth + 6, fontSize + 4);
-      
-      // Draw text
-      ctx.fillStyle = 'white';
-      ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
-    });
+    }
     
+    // Update indicator if faces are detected
+    if (detections.length > 0 && wrapper.querySelector('div')) {
+      wrapper.querySelector('div').textContent = `${detections.length} Face(s) Detected`;
+    }
+
     wrapper.appendChild(canvas);
   } catch (error) {
     console.error('Face API detection error:', error);
@@ -266,7 +302,6 @@ async function detectFacesWithFaceApi(img) {
  * @returns {Array<Object>} Filtered array without duplicates
  */
 function removeDuplicateDetections(detections) {
-  console.log('removeDuplicateDetections()');
   return detections.reduce((unique, detection) => {
     const isDuplicate = unique.some(existing => {
       const boxOverlap = getIntersectionOverUnion(existing.box, detection.box);
@@ -287,7 +322,6 @@ function removeDuplicateDetections(detections) {
  * @returns {number} IoU value between 0 and 1
  */
 function getIntersectionOverUnion(box1, box2) {
-  console.log('getIntersectionOverUnion()');
   const intersection = {
     x: Math.max(box1.x, box2.x),
     y: Math.max(box1.y, box2.y),
@@ -309,7 +343,6 @@ function getIntersectionOverUnion(box1, box2) {
  * @param {Event} e - The event object
  */
 function preventTextSelection(e) {
-  console.log('preventTextSelection()');
   if (e.target.tagName === 'IMG') {
     e.preventDefault();
     window.getSelection().removeAllRanges();
@@ -339,46 +372,68 @@ document.addEventListener('click', (e) => {
 }, { passive: false });
 
 /**
- * Checks if an image is valid for processing
- * @param {HTMLImageElement} img - The image to validate
- * @returns {boolean} True if the image is valid for processing
+ * Checks if an element is valid for processing
+ * @param {Element} element - The element to validate
+ * @returns {boolean} True if the element is valid for processing
  */
-function isValidImage(img) {
-  console.log('isValidImage()');
+function isValidElement(element) {
+  const isImg = element.tagName === 'IMG';
+  const isSvgImage = element.tagName === 'image';
+  
+  if (!isImg && !isSvgImage) return false;
+  
+  const src = isImg ? element.src : element.getAttribute('xlink:href');
+  const width = element.width || element.clientWidth;
+  const height = element.height || element.clientHeight;
+  
   return (
-    img.width > 50 && // Ignore tiny images
-    img.height > 50 &&
-    !state.processedImages.has(img.src) &&
-    !img.closest('.face-detection-wrapper') // Avoid processing already processed images
+    width > 50 &&
+    height > 50 &&
+    !state.processedImages.has(src) &&
+    !element.closest('.face-detection-wrapper')
   );
 }
 
 /**
- * Processes a visible image for face detection
- * @param {HTMLImageElement} img - The image to process
+ * Processes a visible element for face detection
+ * @param {Element} element - The element to process
  */
-function handleVisibleImage(img) {
-  console.log('handleVisibleImage()');
-  if (!isValidImage(img)) return;
+function handleVisibleElement(element) {
+  if (!isValidElement(element)) return;
   
-  state.processedImages.add(img.src);
-  detectFacesWithFaceApi(img).catch(error => {
-    console.error('Face API auto detection error:', error);
-    state.processedImages.delete(img.src); // Allow retry on error
+  const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+  console.log('Handling new element:', {
+    type: element.tagName,
+    source: src,
+    dimensions: `${element.width || element.clientWidth}x${element.height || element.clientHeight}`
+  });
+  
+  state.processedImages.add(src);
+  
+  detectFacesWithFaceApi(element).catch(error => {
+    console.error('Face API auto detection error for image:', src, error);
+    state.processedImages.delete(src);
   });
 }
 
 /**
- * Starts observing images on the page for face detection
+ * Starts observing elements on the page for face detection
  */
-function observeImages() {
-  console.log('observeImages()');
+function observeElements() {
+  // Handle <img> elements
   const images = document.getElementsByTagName('IMG');
   Array.from(images).forEach(img => {
     if (img.complete) {
-      handleVisibleImage(img);
+      handleVisibleElement(img);
     }
     imageObserver.observe(img);
+  });
+  
+  // Handle SVG <image> elements
+  const svgImages = document.getElementsByTagName('image');
+  Array.from(svgImages).forEach(image => {
+    handleVisibleElement(image);
+    imageObserver.observe(image);
   });
 }
 
@@ -386,8 +441,8 @@ function observeImages() {
 /** @type {IntersectionObserver} */
 const imageObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
-    if (entry.isIntersecting && entry.target.tagName === 'IMG') {
-      handleVisibleImage(entry.target);
+    if (entry.isIntersecting && (entry.target.tagName === 'IMG' || entry.target.tagName === 'image')) {
+      handleVisibleElement(entry.target);
     }
   });
 }, {
@@ -401,31 +456,27 @@ const imageObserver = new IntersectionObserver((entries) => {
 const documentObserver = new MutationObserver((mutations) => {
   mutations.forEach(mutation => {
     mutation.addedNodes.forEach(node => {
-      if (node.nodeName === 'IMG') {
-        if (node.complete) {
-          handleVisibleImage(node);
+      if (node.tagName === 'IMG' || node.tagName === 'image') {
+        if (node.complete || node.tagName === 'image') {
+          handleVisibleElement(node);
         }
         imageObserver.observe(node);
       }
       
-      // Check for images within added nodes
-      const images = node.getElementsByTagName && node.getElementsByTagName('IMG');
-      if (images) {
-        Array.from(images).forEach(img => {
-          if (img.complete) {
-            handleVisibleImage(img);
-          }
-          imageObserver.observe(img);
+      // Check for elements within added nodes
+      if (node.getElementsByTagName) {
+        ['IMG', 'image'].forEach(tagName => {
+          const elements = node.getElementsByTagName(tagName);
+          Array.from(elements).forEach(element => {
+            if (element.complete || tagName === 'image') {
+              handleVisibleElement(element);
+            }
+            imageObserver.observe(element);
+          });
         });
       }
     });
   });
-});
-
-// Start observing the document for added images
-documentObserver.observe(document.body, {
-  childList: true,
-  subtree: true
 });
 
 // Initialize on page load
@@ -437,7 +488,7 @@ window.addEventListener('load', () => {
     .then(() => {
       loadFaceApiModels().then(() => {
         // Start processing existing images
-        observeImages();
+        observeElements();
       });
     })
     .catch(error => console.error('Initialization error:', error));
