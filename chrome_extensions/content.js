@@ -1,4 +1,20 @@
-// Global state management
+/**
+ * @fileoverview Content script for Face API detection Chrome extension.
+ * This script provides real-time face detection on web images using Face API.js.
+ * @author Liron Farzam
+ * @version 1.0.0
+ */
+
+/**
+ * @typedef {Object} State
+ * @property {boolean} modelsLoaded - Indicates if ML models are loaded
+ * @property {number} modelLoadAttempts - Number of attempts to load models
+ * @property {number} MAX_LOAD_ATTEMPTS - Maximum number of load attempts
+ * @property {boolean} isProcessing - Flag to prevent concurrent processing
+ * @property {Set<string>} processedImages - Set of processed image URLs
+ */
+
+/** @type {State} */
 const state = {
   modelsLoaded: false,
   modelLoadAttempts: 0,
@@ -7,9 +23,13 @@ const state = {
   processedImages: new Set()
 };
 
-// Enhanced model configuration for extreme face detection accuracy
-const FACE_DETECTION_OPTIONS = {
-  scoreThreshold: 0.05,    // Much lower threshold to catch partial and rotated faces
+/**
+ * Configuration options for Face API detection
+ * Optimized for high-accuracy face detection across various scenarios
+ * @type {Object}
+ */
+const FACE_API_DETECTION_OPTIONS = {
+  scoreThreshold: 0.1,    // Much lower threshold to catch partial and rotated faces
   inputSize: 1200,         // Even larger input size for better detection of all face sizes
   scaleFactor: 0.99,       // More gradual scaling for better detection at all sizes
   maxNumBoxes: 200,        // Double the max number of detection boxes
@@ -19,7 +39,13 @@ const FACE_DETECTION_OPTIONS = {
   minFaceSize: 10         // Detect even very small faces
 };
 
+/**
+ * Initializes the extension context and ensures Chrome runtime is available
+ * @returns {Promise<void>} Resolves when extension context is ready
+ */
 async function initializeExtensionContext() {
+  console.log('initializeExtensionContext()');
+
   return new Promise((resolve) => {
     if (chrome.runtime && chrome.runtime.id) {
       resolve();
@@ -34,7 +60,13 @@ async function initializeExtensionContext() {
   });
 }
 
+/**
+ * Loads the Face API detection models required for the extension
+ * @returns {Promise<void>} Resolves when Face API models are loaded
+ * @throws {Error} If Face API models fail to load after maximum attempts
+ */
 async function loadFaceApiModels() {
+  console.log('loadFaceApiModels()');
   if (state.modelsLoaded) return;
   
   try {
@@ -63,7 +95,13 @@ async function loadFaceApiModels() {
   }
 }
 
+/**
+ * Creates a CORS-compatible image object
+ * @param {HTMLImageElement} originalImage - The original image element
+ * @returns {Promise<HTMLImageElement>} A CORS-enabled image
+ */
 async function createCORSImage(originalImage) {
+  console.log('createCORSImage()');
   return new Promise((resolve, reject) => {
     const corsImage = new Image();
     corsImage.crossOrigin = 'anonymous';
@@ -82,7 +120,13 @@ async function createCORSImage(originalImage) {
   });
 }
 
-async function detectFaces(img) {
+/**
+ * Detects faces using Face API and draws detection overlays
+ * @param {HTMLImageElement} img - The image element to process
+ * @returns {Promise<void>}
+ */
+async function detectFacesWithFaceApi(img) {
+  console.log('detectFacesWithFaceApi()');
   if (state.isProcessing) return;
   state.isProcessing = true;
   
@@ -127,15 +171,16 @@ async function detectFaces(img) {
     // Detect faces
     const detections = await faceapi.detectAllFaces(
       processImage,
-      new faceapi.SsdMobilenetv1Options(FACE_DETECTION_OPTIONS)
+      new faceapi.SsdMobilenetv1Options(FACE_API_DETECTION_OPTIONS)
     );
     
+    // Update console messages
     if (detections.length === 0) {
-      console.log('No faces detected');
+      console.log('Face API: No faces detected');
       return;
     }
     
-    console.log(`Detected ${detections.length} faces`);
+    console.log(`Face API: Detected ${detections.length} faces`);
     
     // Draw detections
     const ctx = canvas.getContext('2d');
@@ -205,7 +250,7 @@ async function detectFaces(img) {
     
     wrapper.appendChild(canvas);
   } catch (error) {
-    console.error('Face detection error:', error);
+    console.error('Face API detection error:', error);
     if (error.message.includes('Extension context invalidated')) {
       state.modelsLoaded = false;
       state.modelLoadAttempts = 0;
@@ -215,8 +260,13 @@ async function detectFaces(img) {
   }
 }
 
-// Helper function to remove duplicate detections
+/**
+ * Removes duplicate face detections based on box overlap
+ * @param {Array<Object>} detections - Array of face detections
+ * @returns {Array<Object>} Filtered array without duplicates
+ */
 function removeDuplicateDetections(detections) {
+  console.log('removeDuplicateDetections()');
   return detections.reduce((unique, detection) => {
     const isDuplicate = unique.some(existing => {
       const boxOverlap = getIntersectionOverUnion(existing.box, detection.box);
@@ -230,8 +280,14 @@ function removeDuplicateDetections(detections) {
   }, []);
 }
 
-// Helper function to calculate Intersection over Union
+/**
+ * Calculates Intersection over Union for two bounding boxes
+ * @param {Object} box1 - First bounding box
+ * @param {Object} box2 - Second bounding box
+ * @returns {number} IoU value between 0 and 1
+ */
 function getIntersectionOverUnion(box1, box2) {
+  console.log('getIntersectionOverUnion()');
   const intersection = {
     x: Math.max(box1.x, box2.x),
     y: Math.max(box1.y, box2.y),
@@ -248,8 +304,12 @@ function getIntersectionOverUnion(box1, box2) {
   return intersectionArea / (box1Area + box2Area - intersectionArea);
 }
 
-// Prevent text selection when clicking images
+/**
+ * Prevents text selection when clicking on images
+ * @param {Event} e - The event object
+ */
 function preventTextSelection(e) {
+  console.log('preventTextSelection()');
   if (e.target.tagName === 'IMG') {
     e.preventDefault();
     window.getSelection().removeAllRanges();
@@ -271,15 +331,20 @@ document.addEventListener('click', (e) => {
     clickTimeout = setTimeout(() => {
       // Force reprocess on click even if already processed
       state.processedImages.delete(e.target.src);
-      detectFaces(e.target).catch(error => {
-        console.error('Click handler error:', error);
+      detectFacesWithFaceApi(e.target).catch(error => {
+        console.error('Face API click handler error:', error);
       });
     }, 100);
   }
 }, { passive: false });
 
-// Function to check if an image is valid for processing
+/**
+ * Checks if an image is valid for processing
+ * @param {HTMLImageElement} img - The image to validate
+ * @returns {boolean} True if the image is valid for processing
+ */
 function isValidImage(img) {
+  console.log('isValidImage()');
   return (
     img.width > 50 && // Ignore tiny images
     img.height > 50 &&
@@ -288,18 +353,37 @@ function isValidImage(img) {
   );
 }
 
-// Function to handle visible images
+/**
+ * Processes a visible image for face detection
+ * @param {HTMLImageElement} img - The image to process
+ */
 function handleVisibleImage(img) {
+  console.log('handleVisibleImage()');
   if (!isValidImage(img)) return;
   
   state.processedImages.add(img.src);
-  detectFaces(img).catch(error => {
-    console.error('Auto detection error:', error);
+  detectFacesWithFaceApi(img).catch(error => {
+    console.error('Face API auto detection error:', error);
     state.processedImages.delete(img.src); // Allow retry on error
   });
 }
 
+/**
+ * Starts observing images on the page for face detection
+ */
+function observeImages() {
+  console.log('observeImages()');
+  const images = document.getElementsByTagName('IMG');
+  Array.from(images).forEach(img => {
+    if (img.complete) {
+      handleVisibleImage(img);
+    }
+    imageObserver.observe(img);
+  });
+}
+
 // Create intersection observer
+/** @type {IntersectionObserver} */
 const imageObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     if (entry.isIntersecting && entry.target.tagName === 'IMG') {
@@ -312,18 +396,8 @@ const imageObserver = new IntersectionObserver((entries) => {
   threshold: 0.1 // Trigger when at least 10% of the image is visible
 });
 
-// Function to start observing images
-function observeImages() {
-  const images = document.getElementsByTagName('IMG');
-  Array.from(images).forEach(img => {
-    if (img.complete) {
-      handleVisibleImage(img);
-    }
-    imageObserver.observe(img);
-  });
-}
-
 // Observe new images added to the page
+/** @type {MutationObserver} */
 const documentObserver = new MutationObserver((mutations) => {
   mutations.forEach(mutation => {
     mutation.addedNodes.forEach(node => {
