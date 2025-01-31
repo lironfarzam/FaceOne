@@ -15,8 +15,9 @@
  */
 
 const flagShowFrameonImage = {
-  frameProsessedImage: true, // Controls green frame around processed images
-  frameFaceDetected: true    // Controls red frame around face detected
+  frameProsessedImage: true,    // Controls green frame around processed images
+  frameFaceDetected: true,      // Controls red frame around face detected
+  autoProcessImages: true       // Controls automatic processing of all images
 }
 
 /** @type {State} */
@@ -25,8 +26,29 @@ const state = {
   modelLoadAttempts: 0,
   MAX_LOAD_ATTEMPTS: 3,
   isProcessing: false,
-  processedImages: new Set()
+  processedImages: new Set(),
+  processingQueue: [], // Add queue for parallel processing
+  maxParallelProcessing: 3 // Maximum number of parallel processes
 };
+
+// Add queue processor function
+async function processQueue() {
+  if (state.processingQueue.length === 0) return;
+  
+  const batch = state.processingQueue.splice(0, state.maxParallelProcessing);
+  const promises = batch.map(element => {
+    return detectFacesWithFaceApi(element).catch(error => {
+      console.error('Face API processing error:', error);
+      const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+      state.processedImages.delete(src);
+    });
+  });
+  
+  await Promise.all(promises);
+  if (state.processingQueue.length > 0) {
+    processQueue(); // Process next batch
+  }
+}
 
 /**
  * Configuration options for Face API detection
@@ -128,14 +150,11 @@ async function createCORSImage(originalImage) {
  * @returns {Promise<void>}
  */
 async function detectFacesWithFaceApi(img) {
-  if (state.isProcessing) return;
-  state.isProcessing = true;
-  
   try {
     await loadFaceApiModels();
     
     const imgSrc = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
-    console.log('Processing image:', imgSrc);
+    // console.log('Processing image:', imgSrc);
 
     // Remove existing canvas
     const existingCanvas = document.querySelector('.face-detection-canvas');
@@ -287,12 +306,7 @@ async function detectFacesWithFaceApi(img) {
     wrapper.appendChild(canvas);
   } catch (error) {
     console.error('Face API detection error:', error);
-    if (error.message.includes('Extension context invalidated')) {
-      state.modelsLoaded = false;
-      state.modelLoadAttempts = 0;
-    }
-  } finally {
-    state.isProcessing = false;
+    throw error; // Propagate error for queue handling
   }
 }
 
@@ -399,41 +413,36 @@ function isValidElement(element) {
  * @param {Element} element - The element to process
  */
 function handleVisibleElement(element) {
-  if (!isValidElement(element)) return;
+  if (!isValidElement(element) || !flagShowFrameonImage.autoProcessImages) return;
   
   const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-  console.log('Handling new element:', {
-    type: element.tagName,
-    source: src,
-    dimensions: `${element.width || element.clientWidth}x${element.height || element.clientHeight}`
-  });
-  
-  state.processedImages.add(src);
-  
-  detectFacesWithFaceApi(element).catch(error => {
-    console.error('Face API auto detection error for image:', src, error);
-    state.processedImages.delete(src);
-  });
+  if (!state.processedImages.has(src)) {
+    state.processedImages.add(src);
+    state.processingQueue.push(element);
+    
+    // Start processing if not already running
+    if (state.processingQueue.length === 1) {
+      processQueue();
+    }
+  }
 }
 
 /**
  * Starts observing elements on the page for face detection
  */
 function observeElements() {
-  // Handle <img> elements
-  const images = document.getElementsByTagName('IMG');
-  Array.from(images).forEach(img => {
-    if (img.complete) {
-      handleVisibleElement(img);
-    }
-    imageObserver.observe(img);
-  });
+  const elements = [
+    ...Array.from(document.getElementsByTagName('img')),
+    ...Array.from(document.getElementsByTagName('image'))
+  ];
   
-  // Handle SVG <image> elements
-  const svgImages = document.getElementsByTagName('image');
-  Array.from(svgImages).forEach(image => {
-    handleVisibleElement(image);
-    imageObserver.observe(image);
+  console.log(`Found ${elements.length} images to process`);
+  
+  elements.forEach(element => {
+    if (element.complete || element.tagName === 'image') {
+      handleVisibleElement(element);
+    }
+    imageObserver.observe(element);
   });
 }
 
@@ -455,28 +464,52 @@ const imageObserver = new IntersectionObserver((entries) => {
 /** @type {MutationObserver} */
 const documentObserver = new MutationObserver((mutations) => {
   mutations.forEach(mutation => {
-    mutation.addedNodes.forEach(node => {
-      if (node.tagName === 'IMG' || node.tagName === 'image') {
-        if (node.complete || node.tagName === 'image') {
+    if (mutation.type === 'childList') {
+      mutation.addedNodes.forEach(node => {
+        // Immediately process any new image nodes
+        if (node.tagName === 'IMG' || node.tagName === 'image') {
+          // console.log('New image detected:', node);
+          // Process immediately without waiting for intersection
           handleVisibleElement(node);
+          // Also observe for future changes
+          imageObserver.observe(node);
         }
-        imageObserver.observe(node);
-      }
-      
-      // Check for elements within added nodes
-      if (node.getElementsByTagName) {
-        ['IMG', 'image'].forEach(tagName => {
-          const elements = node.getElementsByTagName(tagName);
-          Array.from(elements).forEach(element => {
-            if (element.complete || tagName === 'image') {
+        
+        // Check for images within added nodes
+        if (node.querySelectorAll) {
+          ['IMG', 'image'].forEach(tagName => {
+            const elements = node.querySelectorAll(tagName);
+            elements.forEach(element => {
+              // console.log('New nested image detected:', element);
+              // Process immediately
               handleVisibleElement(element);
-            }
-            imageObserver.observe(element);
+              // Also observe for future changes
+              imageObserver.observe(element);
+            });
           });
-        });
+        }
+      });
+    }
+    // Also check for attribute changes that might affect images
+    else if (mutation.type === 'attributes') {
+      const target = mutation.target;
+      if ((target.tagName === 'IMG' || target.tagName === 'image') && 
+          (mutation.attributeName === 'src' || mutation.attributeName === 'xlink:href')) {
+        // console.log('Image source changed:', target);
+        // Re-process when src changes
+        state.processedImages.delete(target.src || target.getAttribute('xlink:href'));
+        handleVisibleElement(target);
       }
-    });
+    }
   });
+});
+
+// Start observing with enhanced options
+documentObserver.observe(document.body, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['src', 'xlink:href'] // Only watch relevant attributes
 });
 
 // Initialize on page load
@@ -484,12 +517,18 @@ window.addEventListener('load', () => {
   // Clear any existing selection
   window.getSelection().removeAllRanges();
   
+  // console.log('Starting automatic image processing...');
   initializeExtensionContext()
     .then(() => {
       loadFaceApiModels().then(() => {
-        // Start processing existing images
-        observeElements();
+        if (flagShowFrameonImage.autoProcessImages) {
+          observeElements();
+          // console.log('Automatic image processing enabled');
+        }
       });
     })
     .catch(error => console.error('Initialization error:', error));
 });
+
+// Remove or comment out the click handler if you want only automatic processing
+// document.addEventListener('click', (e) => { ... });
