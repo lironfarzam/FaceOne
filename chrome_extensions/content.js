@@ -19,7 +19,7 @@ const flagShowFrameonImage = {
   frameFaceDetected: true,      // Controls red frame around face detected
   addLabel: true,               // Controls face number label
   autoProcessImages: true,       // Controls automatic processing of all images
-  minimumImageSize: 30           // Minimum image size for processing
+  minimumImageSize: 100           // Increased minimum size for better reliability
 }
 
 /** @type {State} */
@@ -58,14 +58,14 @@ async function processQueue() {
  * @type {Object}
  */
 const FACE_API_DETECTION_OPTIONS = {
-  scoreThreshold: 0.1,    // Much lower threshold to catch partial and rotated faces
-  inputSize: 30,         // Even larger input size for better detection of all face sizes
-  scaleFactor: 0.99,       // More gradual scaling for better detection at all sizes
-  maxNumBoxes: 200,        // Double the max number of detection boxes
-  minConfidence: 0.2,      // Very low confidence threshold to catch extreme angles
-  iouThreshold: 0.3,       // Lower IOU threshold to detect overlapping faces
+  scoreThreshold: 0.3,     // Increased threshold for more reliable detections
+  inputSize: 320,          // Standard size for face-api.js
+  scaleFactor: 0.8,        // Better balance of speed and accuracy
+  maxNumBoxes: 100,        // Reasonable limit for most use cases
+  minConfidence: 0.3,      // Higher confidence for more reliable detections
+  iouThreshold: 0.5,       // Standard IOU threshold
   useTinyModel: false,     // Use full model for better accuracy
-  minFaceSize: 10         // Detect even very small faces
+  minFaceSize: 20         // Minimum face size in pixels
 };
 
 /**
@@ -404,13 +404,14 @@ function isValidElement(element) {
   const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
   const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
   
-  // Accept images with percentage dimensions if they have actual rendered size
-  const hasValidSize = (width > 30 && height > 30) || 
-                      (element.getBoundingClientRect().width > 30 && 
-                       element.getBoundingClientRect().height > 30);
+  // Stricter size validation
+  const hasValidSize = (width >= flagShowFrameonImage.minimumImageSize && 
+                       height >= flagShowFrameonImage.minimumImageSize) || 
+                      (element.getBoundingClientRect().width >= flagShowFrameonImage.minimumImageSize && 
+                       element.getBoundingClientRect().height >= flagShowFrameonImage.minimumImageSize);
   
   return (
-    src && // Ensure source exists
+    src && 
     hasValidSize &&
     !state.processedImages.has(src) &&
     !element.closest('.face-detection-wrapper')
