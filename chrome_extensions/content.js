@@ -146,17 +146,74 @@ async function createCORSImage(originalImage) {
   });
 }
 
-/**
- * Detects faces using Face API and draws detection overlays
- * @param {HTMLImageElement} img - The image element to process
- * @returns {Promise<void>}
- */
+// Add new function to create a clean scaled image
+async function createScaledImage(img) {
+  return new Promise((resolve, reject) => {
+    const scaledImg = new Image();
+    scaledImg.crossOrigin = 'anonymous';
+    
+    scaledImg.onload = () => {
+      // Calculate scale factor (make image at least 400px in smallest dimension)
+      const targetSize = 400;
+      const scale = Math.max(
+        targetSize / scaledImg.naturalWidth,
+        targetSize / scaledImg.naturalHeight
+      );
+      
+      scaledImg.scaleFactor = scale;
+      resolve(scaledImg);
+    };
+    
+    scaledImg.onerror = () => {
+      // If CORS fails, try without it
+      const fallbackImg = new Image();
+      fallbackImg.onload = () => {
+        fallbackImg.scaleFactor = 1;
+        resolve(fallbackImg);
+      };
+      fallbackImg.onerror = reject;
+      fallbackImg.src = img.src;
+    };
+    
+    // Try to load with CORS first
+    scaledImg.src = img.src;
+  });
+}
+
+// Modify detectFacesWithFaceApi function
 async function detectFacesWithFaceApi(img) {
   try {
     await loadFaceApiModels();
     
+    // Create scaled image with CORS handling
+    const scaledImg = await createScaledImage(img);
+    // console.log('Processing image:', scaledImg.width, 'x', scaledImg.height);
+    
+    // Detect faces directly on the scaled image
+    const detections = await faceapi.detectAllFaces(
+      scaledImg,
+      new faceapi.SsdMobilenetv1Options(FACE_API_DETECTION_OPTIONS)
+    );
+    
+    // Scale back the detections if image was scaled
+    if (scaledImg.scaleFactor !== 1) {
+      detections.forEach(detection => {
+        detection.box.x /= scaledImg.scaleFactor;
+        detection.box.y /= scaledImg.scaleFactor;
+        detection.box.width /= scaledImg.scaleFactor;
+        detection.box.height /= scaledImg.scaleFactor;
+      });
+    }
+
+    // Rest of your existing detection code...
     const imgSrc = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
-    // console.log('Processing image:', imgSrc);
+    
+    if (detections.length === 0) {
+      console.log('Face API: No faces detected in:', imgSrc);
+      return;
+    }
+    
+    console.log(`Face API: Detected ${detections.length} faces in:`, imgSrc);
 
     // Remove existing canvas
     const existingCanvas = document.querySelector('.face-detection-canvas');
@@ -211,25 +268,9 @@ async function detectFacesWithFaceApi(img) {
     canvas.style.width = img.width + 'px';
     canvas.style.height = img.height + 'px';
     
-    const processImage = await createCORSImage(img);
-    
     // Calculate scale factors
     const displayToNaturalRatioX = img.naturalWidth / img.width;
     const displayToNaturalRatioY = img.naturalHeight / img.height;
-    
-    // Detect faces
-    const detections = await faceapi.detectAllFaces(
-      processImage,
-      new faceapi.SsdMobilenetv1Options(FACE_API_DETECTION_OPTIONS)
-    );
-    
-    // Update console messages with image source
-    if (detections.length === 0) {
-      console.log('Face API: No faces detected in:', imgSrc);
-      return;
-    }
-    
-    console.log(`Face API: Detected ${detections.length} faces in:`, imgSrc);
     
     // Draw detections only if frameFaceDetected is true
     if (flagShowFrameonImage.frameFaceDetected) {
@@ -404,11 +445,8 @@ function isValidElement(element) {
   const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
   const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
   
-  // Stricter size validation
-  const hasValidSize = (width >= flagShowFrameonImage.minimumImageSize && 
-                       height >= flagShowFrameonImage.minimumImageSize) || 
-                      (element.getBoundingClientRect().width >= flagShowFrameonImage.minimumImageSize && 
-                       element.getBoundingClientRect().height >= flagShowFrameonImage.minimumImageSize);
+  // Allow images >= 25px for potential scaling
+  const hasValidSize = (width >= 25 && height >= 25);
   
   return (
     src && 
@@ -424,7 +462,7 @@ function isValidElement(element) {
  */
 function handleVisibleElement(element) {
   if (!isValidElement(element) || !flagShowFrameonImage.autoProcessImages) return;
-  console.log('Processing visible element:', element);
+  // console.log('Processing visible element:', element);
   
   const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
   if (!state.processedImages.has(src)) {
