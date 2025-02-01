@@ -22,7 +22,7 @@ async function replaceImages() {
 
 
 
-  // Replace standard <img> elements
+  // // Replace standard <img> elements
   const imgTags = document.querySelectorAll('img');
   imgTags.forEach(async img => {
     if (img.src !== newImageURL) { // Avoid re-replacing the same image
@@ -35,7 +35,7 @@ async function replaceImages() {
     }
   });
 
-  // Replace <image> elements with xlink:href
+  // // Replace <image> elements with xlink:href
   const imageTags = document.querySelectorAll('image');
   imageTags.forEach(async image => {
     const href = image.getAttribute('xlink:href');
@@ -49,7 +49,7 @@ async function replaceImages() {
   });
 
   // Replace specific <image> element with the given xlink:href
-  const specificImage = document.querySelector('image[xlink\\:href="https://scontent.ftlv27-1.fna.fbcdn.net/v/t39.30808-6/240593123_101593123456789_1234567890123456789_n.jpg"]');
+  const specificImage = document.querySelector('image[xlink\\:href="https://"]');
   if (specificImage) {
     console.log('Replacing specific <image> tag:', specificImage);
     specificImage.setAttribute('xlink:href', newImageURL);

@@ -17,7 +17,9 @@
 const flagShowFrameonImage = {
   frameProsessedImage: true,    // Controls green frame around processed images
   frameFaceDetected: true,      // Controls red frame around face detected
-  autoProcessImages: true       // Controls automatic processing of all images
+  addLabel: true,               // Controls face number label
+  autoProcessImages: true,       // Controls automatic processing of all images
+  minimumImageSize: 30           // Minimum image size for processing
 }
 
 /** @type {State} */
@@ -57,7 +59,7 @@ async function processQueue() {
  */
 const FACE_API_DETECTION_OPTIONS = {
   scoreThreshold: 0.1,    // Much lower threshold to catch partial and rotated faces
-  inputSize: 1200,         // Even larger input size for better detection of all face sizes
+  inputSize: 30,         // Even larger input size for better detection of all face sizes
   scaleFactor: 0.99,       // More gradual scaling for better detection at all sizes
   maxNumBoxes: 200,        // Double the max number of detection boxes
   minConfidence: 0.2,      // Very low confidence threshold to catch extreme angles
@@ -175,18 +177,20 @@ async function detectFacesWithFaceApi(img) {
       wrapper.style.boxSizing = 'border-box';
       wrapper.style.padding = '2px';
       
-      // Add processed indicator
-      const indicator = document.createElement('div');
-      indicator.style.position = 'absolute';
-      indicator.style.top = '5px';
-      indicator.style.right = '5px';
-      indicator.style.backgroundColor = 'rgba(0, 255, 0, 0.7)';
-      indicator.style.color = 'white';
-      indicator.style.padding = '2px 5px';
-      indicator.style.borderRadius = '3px';
-      indicator.style.fontSize = '12px';
-      indicator.textContent = 'Processed';
-      wrapper.appendChild(indicator);
+      // Add processed indicator only if addLabel is true
+      if (flagShowFrameonImage.addLabel) {
+        const indicator = document.createElement('div');
+        indicator.style.position = 'absolute';
+        indicator.style.top = '5px';
+        indicator.style.right = '5px';
+        indicator.style.backgroundColor = 'rgba(0, 255, 0, 0.7)';
+        indicator.style.color = 'white';
+        indicator.style.padding = '2px 5px';
+        indicator.style.borderRadius = '3px';
+        indicator.style.fontSize = '12px';
+        indicator.textContent = 'Processed';
+        wrapper.appendChild(indicator);
+      }
     }
     
     wrapper.className = 'face-detection-wrapper';
@@ -298,8 +302,8 @@ async function detectFacesWithFaceApi(img) {
       });
     }
     
-    // Update indicator if faces are detected
-    if (detections.length > 0 && wrapper.querySelector('div')) {
+    // Update indicator if faces are detected and addLabel is true
+    if (detections.length > 0 && wrapper.querySelector('div') && flagShowFrameonImage.addLabel) {
       wrapper.querySelector('div').textContent = `${detections.length} Face(s) Detected`;
     }
 
@@ -397,12 +401,17 @@ function isValidElement(element) {
   if (!isImg && !isSvgImage) return false;
   
   const src = isImg ? element.src : element.getAttribute('xlink:href');
-  const width = element.width || element.clientWidth;
-  const height = element.height || element.clientHeight;
+  const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
+  const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
+  
+  // Accept images with percentage dimensions if they have actual rendered size
+  const hasValidSize = (width > 30 && height > 30) || 
+                      (element.getBoundingClientRect().width > 30 && 
+                       element.getBoundingClientRect().height > 30);
   
   return (
-    width > 50 &&
-    height > 50 &&
+    src && // Ensure source exists
+    hasValidSize &&
     !state.processedImages.has(src) &&
     !element.closest('.face-detection-wrapper')
   );
@@ -414,6 +423,7 @@ function isValidElement(element) {
  */
 function handleVisibleElement(element) {
   if (!isValidElement(element) || !flagShowFrameonImage.autoProcessImages) return;
+  console.log('Processing visible element:', element);
   
   const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
   if (!state.processedImages.has(src)) {
@@ -433,8 +443,13 @@ function handleVisibleElement(element) {
 function observeElements() {
   const elements = [
     ...Array.from(document.getElementsByTagName('img')),
-    ...Array.from(document.getElementsByTagName('image'))
+    ...Array.from(document.getElementsByTagName('image')),
+    ...Array.from(document.querySelectorAll('image[xlink\\:href^="https://"]'))
   ];
+  
+  // Additional selector for Facebook-style images
+  const fbImages = document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]');
+  elements.push(...Array.from(fbImages));
   
   console.log(`Found ${elements.length} images to process`);
   
