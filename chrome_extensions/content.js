@@ -84,24 +84,74 @@ function createSandboxFrame() {
   document.body.appendChild(sandboxFrame);
 }
 
-// Add queue processor function
-async function processQueue() {
-  if (state.processingQueue.length === 0) return;
+// Add cache for processed images
+const imageCache = {
+  embeddings: new Map(),
+  maxSize: 100,  // Maximum number of cached embeddings
   
-  const batch = state.processingQueue.splice(0, state.maxParallelProcessing);
-  const promises = batch.map(element => {
-    return detectFacesWithFaceApi(element).catch(error => {
-      console.error('Face API processing error:', error);
-      const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-      state.processedImages.delete(src);
-    });
-  });
+  add(src, embedding) {
+    if (this.embeddings.size >= this.maxSize) {
+      const firstKey = this.embeddings.keys().next().value;
+      this.embeddings.delete(firstKey);
+    }
+    this.embeddings.set(src, embedding);
+  },
   
-  await Promise.all(promises);
-  if (state.processingQueue.length > 0) {
-    processQueue(); // Process next batch
+  get(src) {
+    return this.embeddings.get(src);
+  },
+  
+  has(src) {
+    return this.embeddings.has(src);
   }
-}
+};
+
+// Optimize queue processing with batching and prioritization
+const processingQueue = {
+  items: [],
+  processing: false,
+  batchSize: 3,  // Process 3 images at a time
+  
+  add(element, priority = false) {
+    const item = { element, priority };
+    if (priority) {
+      this.items.unshift(item);
+    } else {
+      this.items.push(item);
+    }
+    this.process();
+  },
+  
+  async process() {
+    if (this.processing || this.items.length === 0) return;
+    
+    this.processing = true;
+    while (this.items.length > 0) {
+      const batch = this.items.splice(0, this.batchSize);
+      const promises = batch.map(async ({ element }) => {
+        try {
+          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+          
+          // Check cache first
+          if (imageCache.has(src)) {
+            const embedding = imageCache.get(src);
+            // Handle cached embedding (e.g., display visualization)
+            return;
+          }
+          
+          await detectFacesWithFaceApi(element);
+        } catch (error) {
+          console.error('Processing error:', error);
+          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+          state.processedImages.delete(src);
+        }
+      });
+      
+      await Promise.all(promises);
+    }
+    this.processing = false;
+  }
+};
 
 /**
  * Configuration options for Face API detection
@@ -365,192 +415,114 @@ async function extractFaceRegion(img, detection) {
   }
 }
 
+// Optimize face detection with progressive loading
 async function detectFacesWithFaceApi(img) {
   try {
     await loadFaceApiModels();
     
-    // Create scaled image with CORS handling
-    const scaledImg = await createScaledImage(img);
+    const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
     
-    // Detect faces directly on the scaled image
+    // Show loading indicator
+    const wrapper = createWrapper(img);
+    if (flagShowFrameonImage.addLabel) {
+      addLoadingIndicator(wrapper);
+    }
+    
+    // Scale and process image
+    const scaledImg = await createScaledImage(img);
     const detections = await faceapi.detectAllFaces(
       scaledImg,
-      new faceapi.SsdMobilenetv1Options(FACE_API_DETECTION_OPTIONS)
+      new faceapi.SsdMobilenetv1Options({
+        ...FACE_API_DETECTION_OPTIONS,
+        scoreThreshold: 0.4  // Slightly higher threshold for better accuracy
+      })
     );
     
-    // Scale back the detections if image was scaled
+    // Scale back detections
     if (scaledImg.scaleFactor !== 1) {
-      detections.forEach(detection => {
-        detection.box.x /= scaledImg.scaleFactor;
-        detection.box.y /= scaledImg.scaleFactor;
-        detection.box.width /= scaledImg.scaleFactor;
-        detection.box.height /= scaledImg.scaleFactor;
-      });
-    }
-
-    const imgSrc = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
-    
-    if (detections.length === 0) {
-      // console.log('Face API: No faces detected in:', imgSrc);
-      return;
+      scaleDetections(detections, scaledImg.scaleFactor);
     }
     
-    // console.log(`Face API: Detected ${detections.length} faces in:`, imgSrc);
-
-    // Process each detected face
-    for (let i = 0; i < detections.length; i++) {
-      const detection = detections[i];
-      
-      // Extract and resize face region
+    // Process faces and generate embeddings
+    for (const detection of detections) {
       const faceCanvas = await extractFaceRegion(img, detection);
-      
       try {
-        // Generate embedding
         const embedding = await generateEmbedding(faceCanvas);
-        // console.log(`Face ${i + 1} embedding (first 10 values):`, Array.from(embedding).slice(0, 10));
+        imageCache.add(src, embedding);
       } catch (error) {
-        // console.error(`Error generating embedding for face ${i + 1}:`, error);
-      }
-    }
-
-    // Remove existing canvas
-    const existingCanvas = document.querySelector('.face-detection-canvas');
-    if (existingCanvas) {
-      existingCanvas.remove();
-    }
-    
-    // Create wrapper
-    const wrapper = document.createElement('div');
-    wrapper.style.position = 'relative';
-    wrapper.style.display = 'inline-block';
-    wrapper.style.width = img.width + 'px';
-    wrapper.style.height = img.height + 'px';
-    
-    // Apply green frame only if flagShowFrameonImage.frameProsessedImage is true
-    if (flagShowFrameonImage.frameProsessedImage) {
-      wrapper.style.border = '3px solid #00ff00';
-      wrapper.style.boxSizing = 'border-box';
-      wrapper.style.padding = '2px';
-      
-      // Add processed indicator only if addLabel is true
-      if (flagShowFrameonImage.addLabel) {
-        const indicator = document.createElement('div');
-        indicator.style.position = 'absolute';
-        indicator.style.top = '5px';
-        indicator.style.right = '5px';
-        indicator.style.backgroundColor = 'rgba(0, 255, 0, 0.7)';
-        indicator.style.color = 'white';
-        indicator.style.padding = '2px 5px';
-        indicator.style.borderRadius = '3px';
-        indicator.style.fontSize = '12px';
-        indicator.textContent = 'Processed';
-        wrapper.appendChild(indicator);
+        console.error('Embedding generation error:', error);
       }
     }
     
-    wrapper.className = 'face-detection-wrapper';
-    img.parentElement.insertBefore(wrapper, img);
-    wrapper.appendChild(img);
-
-    // Create canvas
-    const canvas = document.createElement('canvas');
-    canvas.className = 'face-detection-canvas';
-    canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.pointerEvents = 'none';
+    // Update visualization
+    updateVisualization(wrapper, img, detections);
     
-    // Set canvas dimensions to match displayed image size
-    canvas.width = img.width;
-    canvas.height = img.height;
-    canvas.style.width = img.width + 'px';
-    canvas.style.height = img.height + 'px';
-    
-    // Calculate scale factors
-    const displayToNaturalRatioX = img.naturalWidth / img.width;
-    const displayToNaturalRatioY = img.naturalHeight / img.height;
-    
-    // Draw detections only if frameFaceDetected is true
-    if (flagShowFrameonImage.frameFaceDetected) {
-      const ctx = canvas.getContext('2d');
-      
-      detections.forEach((detection, index) => {
-        const box = detection.box;
-        
-        // Scale coordinates from natural size to display size
-        const scaledBox = {
-          x: box.x / displayToNaturalRatioX,
-          y: box.y / displayToNaturalRatioY,
-          width: box.width / displayToNaturalRatioX,
-          height: box.height / displayToNaturalRatioY
-        };
-        
-        // Draw face box
-        ctx.strokeStyle = 'red';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(
-          scaledBox.x,
-          scaledBox.y,
-          scaledBox.width,
-          scaledBox.height
-        );
-        
-        // Draw corners and text only if frameFaceDetected is true
-        if (flagShowFrameonImage.frameFaceDetected) {
-          // Draw corner indicators
-          const cornerSize = Math.min(scaledBox.width, scaledBox.height) * 0.2;
-          ctx.lineWidth = 2;
-          
-          // Draw corners
-          const corners = [
-            // Top-left
-            [scaledBox.x, scaledBox.y, scaledBox.x + cornerSize, scaledBox.y],
-            [scaledBox.x, scaledBox.y, scaledBox.x, scaledBox.y + cornerSize],
-            // Top-right
-            [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y],
-            [scaledBox.x + scaledBox.width, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y + cornerSize],
-            // Bottom-left
-            [scaledBox.x, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x, scaledBox.y + scaledBox.height],
-            [scaledBox.x, scaledBox.y + scaledBox.height, scaledBox.x + cornerSize, scaledBox.y + scaledBox.height],
-            // Bottom-right
-            [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y + scaledBox.height, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height],
-            [scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height]
-          ];
-          
-          corners.forEach(([x1, y1, x2, y2]) => {
-            ctx.beginPath();
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.stroke();
-          });
-          
-          // Add face number with scaled font size
-          const fontSize = Math.max(12, Math.min(scaledBox.width, scaledBox.height) * 0.2);
-          ctx.font = `${fontSize}px Arial`;
-          const text = `Face ${index + 1}`;
-          const textWidth = ctx.measureText(text).width;
-          
-          // Draw text background
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-          ctx.fillRect(scaledBox.x, scaledBox.y - fontSize - 8, textWidth + 6, fontSize + 4);
-          
-          // Draw text
-          ctx.fillStyle = 'white';
-          ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
-        }
-      });
-    }
-    
-    // Update indicator if faces are detected and addLabel is true
-    if (detections.length > 0 && wrapper.querySelector('div') && flagShowFrameonImage.addLabel) {
-      wrapper.querySelector('div').textContent = `${detections.length} Face(s) Detected`;
-    }
-
-    wrapper.appendChild(canvas);
   } catch (error) {
-    console.error('Face API detection error:', error);
-    throw error; // Propagate error for queue handling
+    console.error('Face detection error:', error);
+    throw error;
   }
+}
+
+// Helper functions for improved visualization
+function createWrapper(img) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'face-detection-wrapper';
+  wrapper.style.position = 'relative';
+  wrapper.style.display = 'inline-block';
+  wrapper.style.width = img.width + 'px';
+  wrapper.style.height = img.height + 'px';
+  
+  if (flagShowFrameonImage.frameProsessedImage) {
+    wrapper.style.border = '3px solid #00ff00';
+    wrapper.style.boxSizing = 'border-box';
+    wrapper.style.padding = '2px';
+  }
+  
+  img.parentElement.insertBefore(wrapper, img);
+  wrapper.appendChild(img);
+  return wrapper;
+}
+
+function addLoadingIndicator(wrapper) {
+  const indicator = document.createElement('div');
+  indicator.className = 'processing-indicator';
+  indicator.style.position = 'absolute';
+  indicator.style.top = '5px';
+  indicator.style.right = '5px';
+  indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+  indicator.style.color = 'white';
+  indicator.style.padding = '2px 5px';
+  indicator.style.borderRadius = '3px';
+  indicator.style.fontSize = '12px';
+  indicator.textContent = 'Processing...';
+  wrapper.appendChild(indicator);
+}
+
+function updateVisualization(wrapper, img, detections) {
+  // Remove existing canvas and indicators
+  const existingCanvas = wrapper.querySelector('.face-detection-canvas');
+  const processingIndicator = wrapper.querySelector('.processing-indicator');
+  if (existingCanvas) existingCanvas.remove();
+  if (processingIndicator) processingIndicator.remove();
+  
+  if (detections.length === 0) {
+    if (flagShowFrameonImage.addLabel) {
+      addResultIndicator(wrapper, 'No Faces Detected');
+    }
+    return;
+  }
+  
+  // Create and setup canvas
+  const canvas = createDetectionCanvas(img);
+  if (flagShowFrameonImage.frameFaceDetected) {
+    drawDetections(canvas, detections, img);
+  }
+  
+  if (flagShowFrameonImage.addLabel) {
+    addResultIndicator(wrapper, `${detections.length} Face(s) Detected`);
+  }
+  
+  wrapper.appendChild(canvas);
 }
 
 /**
@@ -660,17 +632,11 @@ function isValidElement(element) {
  */
 function handleVisibleElement(element) {
   if (!isValidElement(element) || !flagShowFrameonImage.autoProcessImages) return;
-  // console.log('Processing visible element:', element);
   
   const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
   if (!state.processedImages.has(src)) {
     state.processedImages.add(src);
-    state.processingQueue.push(element);
-    
-    // Start processing if not already running
-    if (state.processingQueue.length === 1) {
-      processQueue();
-    }
+    processingQueue.add(element);
   }
 }
 
@@ -834,4 +800,137 @@ function clearAllFrames() {
   
   // Clear the processed images set to allow reprocessing if needed
   state.processedImages.clear();
+}
+
+/**
+ * Scales back detection boxes based on the image scale factor
+ * @param {Array<Object>} detections - Array of face detections
+ * @param {number} scaleFactor - Scale factor to apply
+ */
+function scaleDetections(detections, scaleFactor) {
+  detections.forEach(detection => {
+    detection.box.x /= scaleFactor;
+    detection.box.y /= scaleFactor;
+    detection.box.width /= scaleFactor;
+    detection.box.height /= scaleFactor;
+  });
+}
+
+/**
+ * Creates a canvas for drawing face detections
+ * @param {HTMLImageElement} img - The source image
+ * @returns {HTMLCanvasElement} The detection canvas
+ */
+function createDetectionCanvas(img) {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'face-detection-canvas';
+  canvas.style.position = 'absolute';
+  canvas.style.top = '0';
+  canvas.style.left = '0';
+  canvas.style.pointerEvents = 'none';
+  
+  canvas.width = img.width;
+  canvas.height = img.height;
+  canvas.style.width = img.width + 'px';
+  canvas.style.height = img.height + 'px';
+  
+  return canvas;
+}
+
+/**
+ * Adds a result indicator to the wrapper
+ * @param {HTMLElement} wrapper - The wrapper element
+ * @param {string} text - The text to display
+ */
+function addResultIndicator(wrapper, text) {
+  const indicator = document.createElement('div');
+  indicator.className = 'result-indicator';
+  indicator.style.position = 'absolute';
+  indicator.style.top = '5px';
+  indicator.style.right = '5px';
+  indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+  indicator.style.color = 'white';
+  indicator.style.padding = '2px 5px';
+  indicator.style.borderRadius = '3px';
+  indicator.style.fontSize = '12px';
+  indicator.textContent = text;
+  wrapper.appendChild(indicator);
+}
+
+/**
+ * Draws face detections on the canvas
+ * @param {HTMLCanvasElement} canvas - The canvas to draw on
+ * @param {Array<Object>} detections - Array of face detections
+ * @param {HTMLImageElement} img - The source image
+ */
+function drawDetections(canvas, detections, img) {
+  const ctx = canvas.getContext('2d');
+  const displayToNaturalRatioX = img.naturalWidth / img.width;
+  const displayToNaturalRatioY = img.naturalHeight / img.height;
+  
+  detections.forEach((detection, index) => {
+    const box = detection.box;
+    
+    // Scale coordinates from natural size to display size
+    const scaledBox = {
+      x: box.x / displayToNaturalRatioX,
+      y: box.y / displayToNaturalRatioY,
+      width: box.width / displayToNaturalRatioX,
+      height: box.height / displayToNaturalRatioY
+    };
+    
+    // Draw face box
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      scaledBox.x,
+      scaledBox.y,
+      scaledBox.width,
+      scaledBox.height
+    );
+    
+    // Draw corners
+    const cornerSize = Math.min(scaledBox.width, scaledBox.height) * 0.2;
+    ctx.lineWidth = 2;
+    
+    // Define corners
+    const corners = [
+      // Top-left
+      [scaledBox.x, scaledBox.y, scaledBox.x + cornerSize, scaledBox.y],
+      [scaledBox.x, scaledBox.y, scaledBox.x, scaledBox.y + cornerSize],
+      // Top-right
+      [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y],
+      [scaledBox.x + scaledBox.width, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y + cornerSize],
+      // Bottom-left
+      [scaledBox.x, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x, scaledBox.y + scaledBox.height],
+      [scaledBox.x, scaledBox.y + scaledBox.height, scaledBox.x + cornerSize, scaledBox.y + scaledBox.height],
+      // Bottom-right
+      [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y + scaledBox.height, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height],
+      [scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height]
+    ];
+    
+    // Draw corners
+    corners.forEach(([x1, y1, x2, y2]) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    });
+    
+    // Add face number if enabled
+    if (flagShowFrameonImage.addLabel) {
+      const fontSize = Math.max(12, Math.min(scaledBox.width, scaledBox.height) * 0.2);
+      ctx.font = `${fontSize}px Arial`;
+      const text = `Face ${index + 1}`;
+      const textWidth = ctx.measureText(text).width;
+      
+      // Draw text background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(scaledBox.x, scaledBox.y - fontSize - 8, textWidth + 6, fontSize + 4);
+      
+      // Draw text
+      ctx.fillStyle = 'white';
+      ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
+    }
+  });
 }

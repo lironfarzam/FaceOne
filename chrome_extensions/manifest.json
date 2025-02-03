@@ -29,8 +29,6 @@
     {
       "matches": ["<all_urls>"],
       "js": [
-        "tf.min.js",
-        "tf-converter.min.js",
         "face-api.min.js",
         "content.js"
       ],
