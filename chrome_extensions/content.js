@@ -8,23 +8,60 @@
 /**
  * @typedef {Object} State
  * @property {boolean} modelsLoaded - Indicates if ML models are loaded
+ * @property {boolean} faceNetLoaded - Indicates if FaceNet model is loaded
  * @property {number} modelLoadAttempts - Number of attempts to load models
  * @property {number} MAX_LOAD_ATTEMPTS - Maximum number of load attempts
  * @property {boolean} isProcessing - Flag to prevent concurrent processing
  * @property {Set<string>} processedImages - Set of processed image URLs
  */
 
-const flagShowFrameonImage = {
+// Update flagShowFrameonImage to use Chrome storage
+let flagShowFrameonImage = {
   frameProsessedImage: true,    // Controls green frame around processed images
   frameFaceDetected: true,      // Controls red frame around face detected
   addLabel: true,               // Controls face number label
-  autoProcessImages: true,       // Controls automatic processing of all images
-  minimumImageSize: 100           // Increased minimum size for better reliability
-}
+  autoProcessImages: true,      // Controls automatic processing of all images
+  minimumImageSize: 100         // Increased minimum size for better reliability
+};
+
+// Load settings from Chrome storage
+chrome.storage.sync.get({
+  // Default values
+  frameProsessedImage: true,
+  frameFaceDetected: true,
+  addLabel: true,
+  autoProcessImages: true,
+  minimumImageSize: 100
+}, (items) => {
+  flagShowFrameonImage = items;
+});
+
+// Listen for settings updates
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'UPDATE_SETTINGS') {
+    const oldSettings = {...flagShowFrameonImage};
+    flagShowFrameonImage = message.settings;
+    
+    // Clear frames if any visual settings were turned off
+    if (
+      (!flagShowFrameonImage.frameProsessedImage && oldSettings.frameProsessedImage) ||
+      (!flagShowFrameonImage.frameFaceDetected && oldSettings.frameFaceDetected) ||
+      (!flagShowFrameonImage.addLabel && oldSettings.addLabel)
+    ) {
+      clearAllFrames();
+    }
+    
+    // If auto-processing is enabled, reprocess visible images
+    if (flagShowFrameonImage.autoProcessImages) {
+      observeElements();
+    }
+  }
+});
 
 /** @type {State} */
 const state = {
   modelsLoaded: false,
+  faceNetLoaded: false,
   modelLoadAttempts: 0,
   MAX_LOAD_ATTEMPTS: 3,
   isProcessing: false,
@@ -32,6 +69,20 @@ const state = {
   processingQueue: [], // Add queue for parallel processing
   maxParallelProcessing: 3 // Maximum number of parallel processes
 };
+
+let faceNetModel = null;
+
+// Add sandbox iframe management
+let sandboxFrame = null;
+
+function createSandboxFrame() {
+  if (sandboxFrame) return;
+  
+  sandboxFrame = document.createElement('iframe');
+  sandboxFrame.src = chrome.runtime.getURL('sandbox.html');
+  sandboxFrame.style.display = 'none';
+  document.body.appendChild(sandboxFrame);
+}
 
 // Add queue processor function
 async function processQueue() {
@@ -89,12 +140,54 @@ async function initializeExtensionContext() {
 }
 
 /**
- * Loads the Face API detection models required for the extension
- * @returns {Promise<void>} Resolves when Face API models are loaded
- * @throws {Error} If Face API models fail to load after maximum attempts
+ * Loads the FaceNet model for face embedding generation
+ * @returns {Promise<void>} Resolves when FaceNet model is loaded
+ */
+async function loadFaceNetModel() {
+  if (state.faceNetLoaded) return;
+  
+  try {
+    createSandboxFrame();
+    
+    // Wait for sandbox to be ready
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
+    // console.log('Requesting FaceNet model load from sandbox, path:', modelPath);
+    
+    return new Promise((resolve, reject) => {
+      const handleMessage = (event) => {
+        if (event.data.type === 'MODEL_LOADED') {
+          window.removeEventListener('message', handleMessage);
+          if (event.data.success) {
+            // console.log('FaceNet model loaded successfully with info:', event.data.modelInfo);
+            state.faceNetLoaded = true;
+            resolve();
+          } else {
+            console.error('FaceNet model loading failed:', event.data.error);
+            reject(new Error(event.data.error));
+          }
+        }
+      };
+      
+      window.addEventListener('message', handleMessage);
+      sandboxFrame.contentWindow.postMessage({ 
+        type: 'LOAD_MODEL',
+        modelPath: modelPath
+      }, '*');
+    });
+  } catch (error) {
+    console.error('Error loading FaceNet model:', error);
+    throw error;
+  }
+}
+
+/**
+ * Loads all required models for face detection and embedding
+ * @returns {Promise<void>} Resolves when all models are loaded
  */
 async function loadFaceApiModels() {
-  if (state.modelsLoaded) return;
+  if (state.modelsLoaded && state.faceNetLoaded) return;
   
   try {
     await initializeExtensionContext();
@@ -102,18 +195,25 @@ async function loadFaceApiModels() {
     state.modelLoadAttempts++;
     const modelPath = chrome.runtime.getURL('models');
     
-    // Load only the SSD MobileNet model for optimal face detection
+    // Load face detection model
+    // console.log('Loading Face API model...');
     await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
-    
     state.modelsLoaded = true;
-    console.log('Face detection model loaded successfully');
+    // console.log('Face detection model loaded successfully');
+    
+    // Load FaceNet model
+    // console.log('Loading FaceNet model...');
+    await loadFaceNetModel();
+    // console.log('All models loaded successfully');
+    
   } catch (error) {
-    console.error('Error loading face detection model:', error);
+    console.error('Error loading models:', error);
     
     if (error.message.includes('Extension context invalidated')) {
       state.modelsLoaded = false;
+      state.faceNetLoaded = false;
       if (state.modelLoadAttempts < state.MAX_LOAD_ATTEMPTS) {
-        console.log(`Retrying model load, attempt ${state.modelLoadAttempts} of ${state.MAX_LOAD_ATTEMPTS}`);
+        // console.log(`Retrying model load, attempt ${state.modelLoadAttempts} of ${state.MAX_LOAD_ATTEMPTS}`);
         await new Promise(resolve => setTimeout(resolve, 1000));
         return loadFaceApiModels();
       }
@@ -134,7 +234,7 @@ async function createCORSImage(originalImage) {
     
     corsImage.onload = () => resolve(corsImage);
     corsImage.onerror = () => {
-      console.warn('CORS image load failed, falling back to original image');
+      // console.warn('CORS image load failed, falling back to original image');
       resolve(originalImage);
     };
     
@@ -180,14 +280,97 @@ async function createScaledImage(img) {
   });
 }
 
-// Modify detectFacesWithFaceApi function
+async function extractFaceRegion(img, detection) {
+  try {
+    // Create a temporary canvas for the full image
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCanvas.width = img.width;
+    tempCanvas.height = img.height;
+
+    // Create a new image with crossOrigin attribute
+    const corsImage = new Image();
+    corsImage.crossOrigin = 'anonymous';
+    
+    await new Promise((resolve, reject) => {
+      corsImage.onload = resolve;
+      corsImage.onerror = () => {
+        // console.warn('CORS image load failed, attempting without CORS');
+        reject(new Error('CORS load failed'));
+      };
+      corsImage.src = img.src;
+    }).catch(() => {
+      // If CORS fails, try to use the original image
+      // Note: This might still fail for cross-origin images
+      return new Promise((resolve) => {
+        corsImage.onload = resolve;
+        corsImage.removeAttribute('crossOrigin');
+        // Try to force a reload without CORS
+        corsImage.src = img.src + (img.src.includes('?') ? '&' : '?') + 'nocors=' + Date.now();
+      });
+    });
+
+    // Draw the CORS-enabled image to the temporary canvas
+    tempCtx.drawImage(corsImage, 0, 0, img.width, img.height);
+    
+    // Create a canvas for the face region
+    const faceCanvas = document.createElement('canvas');
+    const ctx = faceCanvas.getContext('2d');
+    
+    // Calculate the square region (use the larger of width/height)
+    const size = Math.max(detection.box.width, detection.box.height);
+    const centerX = detection.box.x + detection.box.width / 2;
+    const centerY = detection.box.y + detection.box.height / 2;
+    
+    // Add padding to the face region (20% on each side)
+    const padding = size * 0.2;
+    const paddedSize = size + (padding * 2);
+    
+    // Set canvas size to the padded square dimensions
+    faceCanvas.width = paddedSize;
+    faceCanvas.height = paddedSize;
+    
+    // Draw the face region onto the canvas
+    ctx.drawImage(
+      tempCanvas,
+      centerX - paddedSize/2,  // source x
+      centerY - paddedSize/2,  // source y
+      paddedSize,             // source width
+      paddedSize,             // source height
+      0,                      // dest x
+      0,                      // dest y
+      paddedSize,             // dest width
+      paddedSize              // dest height
+    );
+    
+    // Resize to 160x160 (FaceNet input size)
+    const resizedCanvas = document.createElement('canvas');
+    resizedCanvas.width = 160;
+    resizedCanvas.height = 160;
+    const resizedCtx = resizedCanvas.getContext('2d');
+    
+    // Use better quality image scaling
+    resizedCtx.imageSmoothingEnabled = true;
+    resizedCtx.imageSmoothingQuality = 'high';
+    resizedCtx.drawImage(faceCanvas, 0, 0, 160, 160);
+    
+    // Clean up
+    tempCanvas.remove();
+    faceCanvas.remove();
+    
+    return resizedCanvas;
+  } catch (error) {
+    // console.error('Error in extractFaceRegion:', error);
+    throw error;
+  }
+}
+
 async function detectFacesWithFaceApi(img) {
   try {
     await loadFaceApiModels();
     
     // Create scaled image with CORS handling
     const scaledImg = await createScaledImage(img);
-    // console.log('Processing image:', scaledImg.width, 'x', scaledImg.height);
     
     // Detect faces directly on the scaled image
     const detections = await faceapi.detectAllFaces(
@@ -205,15 +388,30 @@ async function detectFacesWithFaceApi(img) {
       });
     }
 
-    // Rest of your existing detection code...
     const imgSrc = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
     
     if (detections.length === 0) {
-      console.log('Face API: No faces detected in:', imgSrc);
+      // console.log('Face API: No faces detected in:', imgSrc);
       return;
     }
     
-    console.log(`Face API: Detected ${detections.length} faces in:`, imgSrc);
+    // console.log(`Face API: Detected ${detections.length} faces in:`, imgSrc);
+
+    // Process each detected face
+    for (let i = 0; i < detections.length; i++) {
+      const detection = detections[i];
+      
+      // Extract and resize face region
+      const faceCanvas = await extractFaceRegion(img, detection);
+      
+      try {
+        // Generate embedding
+        const embedding = await generateEmbedding(faceCanvas);
+        // console.log(`Face ${i + 1} embedding (first 10 values):`, Array.from(embedding).slice(0, 10));
+      } catch (error) {
+        // console.error(`Error generating embedding for face ${i + 1}:`, error);
+      }
+    }
 
     // Remove existing canvas
     const existingCanvas = document.querySelector('.face-detection-canvas');
@@ -445,8 +643,8 @@ function isValidElement(element) {
   const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
   const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
   
-  // Allow images >= 25px for potential scaling
-  const hasValidSize = (width >= 25 && height >= 25);
+  const hasValidSize = (width >= flagShowFrameonImage.minimumImageSize && 
+                       height >= flagShowFrameonImage.minimumImageSize);
   
   return (
     src && 
@@ -490,7 +688,7 @@ function observeElements() {
   const fbImages = document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]');
   elements.push(...Array.from(fbImages));
   
-  console.log(`Found ${elements.length} images to process`);
+  // console.log(`Found ${elements.length} images to process`);
   
   elements.forEach(element => {
     if (element.complete || element.tagName === 'image') {
@@ -586,3 +784,54 @@ window.addEventListener('load', () => {
 
 // Remove or comment out the click handler if you want only automatic processing
 // document.addEventListener('click', (e) => { ... });
+
+/**
+ * Generates embedding for a face image using FaceNet
+ * @param {HTMLCanvasElement} faceCanvas - Canvas containing the face image
+ * @returns {Promise<Float32Array>} Face embedding vector
+ */
+async function generateEmbedding(faceCanvas) {
+  if (!state.faceNetLoaded) {
+    throw new Error('FaceNet model not loaded');
+  }
+
+  const imageData = faceCanvas.getContext("2d").getImageData(0, 0, faceCanvas.width, faceCanvas.height);
+  
+  return new Promise((resolve, reject) => {
+    const handleMessage = (event) => {
+      if (event.data.type === 'EMBEDDING_GENERATED') {
+        window.removeEventListener('message', handleMessage);
+        if (event.data.success) {
+          resolve(new Float32Array(event.data.embedding));
+        } else {
+          reject(new Error(event.data.error));
+        }
+      }
+    };
+    
+    window.addEventListener('message', handleMessage);
+    sandboxFrame.contentWindow.postMessage({
+      type: 'GENERATE_EMBEDDING',
+      imageData: Array.from(imageData.data)
+    }, '*');
+  });
+}
+
+// Add this function to clear all frames and restore original images
+function clearAllFrames() {
+  // Find all face detection wrappers
+  const wrappers = document.querySelectorAll('.face-detection-wrapper');
+  
+  wrappers.forEach(wrapper => {
+    // Get the original image
+    const img = wrapper.querySelector('img, image');
+    if (img) {
+      // Remove the wrapper and insert the original image back
+      wrapper.parentNode.insertBefore(img, wrapper);
+      wrapper.remove();
+    }
+  });
+  
+  // Clear the processed images set to allow reprocessing if needed
+  state.processedImages.clear();
+}

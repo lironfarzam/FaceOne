@@ -1,22 +1,26 @@
 {
   "manifest_version": 3,
-  "name": "Face Detection Extension",
+  "name": "FaceOne",
   "version": "1.0",
-  "description": "Detects faces in images and marks them with red squares",
+  "description": "Detects faces in images and generates face embeddings using FaceNet",
   "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "permissions": [
-    "activeTab",
-    "scripting"
+    "storage",
+    "activeTab"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "action": {
-    "default_title": "Detect Faces",
+    "default_popup": "popup.html",
     "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
@@ -25,16 +29,25 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "tf.min.js",
+        "tf-converter.min.js",
         "face-api.min.js",
         "content.js"
-      ]
+      ],
+      "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [{
     "resources": [
       "models/*",
-      "icons/*"
+      "icons/*",
+      "tf.min.js",
+      "tf-converter.min.js",
+      "sandbox.html"
     ],
     "matches": ["<all_urls>"]
-  }]
+  }],
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  }
 } 

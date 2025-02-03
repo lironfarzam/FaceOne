@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TensorFlow.js Sandbox</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: 'unsafe-eval' 'unsafe-inline'; worker-src blob:">
+    <script src="tf.min.js"></script>
+    <script src="tf-converter.min.js"></script>
+</head>
+<body>
+    <script>
+        let faceNetModel = null;
+        
+        async function initTensorFlow() {
+            await tf.setBackend('webgl');
+            // console.log('TensorFlow.js initialized:', {
+            //     version: tf.version.tfjs,
+            //     backend: tf.getBackend(),
+            //     webgl: tf.backend()
+            // });
+        }
+
+        async function loadModelWithRetry(modelPath, maxAttempts = 3) {
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    // console.log(`Loading model attempt ${attempt}/${maxAttempts} from ${modelPath}`);
+                    const model = await tf.loadGraphModel(modelPath);
+                    // console.log('Model loaded successfully');
+                    
+                    // Log model info
+                    const inputShape = model.inputs[0].shape;
+                    // console.log('Model info:', { inputShape });
+                    
+                    // Warm up the model
+                    const dummyInput = tf.zeros([1, 160, 160, 3]);
+                    const warmupResult = await model.predict(dummyInput);
+                    // console.log('Model warmed up successfully, output shape:', warmupResult.shape);
+                    warmupResult.dispose();
+                    dummyInput.dispose();
+                    
+                    return model;
+                } catch (error) {
+                    // console.error(`Attempt ${attempt} failed:`, error);
+                    if (attempt === maxAttempts) throw error;
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                }
+            }
+        }
+
+        async function processImageData(imageData) {
+            try {
+                // Create canvas to process image data
+                const canvas = document.createElement('canvas');
+                canvas.width = 160;
+                canvas.height = 160;
+                const ctx = canvas.getContext('2d');
+                
+                // Create ImageData object
+                const newImageData = new ImageData(
+                    new Uint8ClampedArray(imageData),
+                    160,
+                    160
+                );
+                
+                // Put image data on canvas
+                ctx.putImageData(newImageData, 0, 0);
+                
+                // Convert to tensor and preprocess
+                const tensor = tf.tidy(() => {
+                    const pixels = tf.browser.fromPixels(canvas);
+                    // Normalize to [-1, 1]
+                    return pixels.toFloat().expandDims(0).div(127.5).sub(1);
+                });
+                
+                // Clean up
+                canvas.remove();
+                
+                return tensor;
+            } catch (error) {
+                // console.error('Error processing image data:', error);
+                throw error;
+            }
+        }
+
+        async function generateEmbedding(imageData) {
+            if (!faceNetModel) {
+                throw new Error('FaceNet model not loaded');
+            }
+
+            let inputTensor = null;
+            let embedding = null;
+            
+            try {
+                // Process image data to tensor
+                inputTensor = await processImageData(imageData);
+                
+                // Generate embedding
+                embedding = await faceNetModel.predict(inputTensor);
+                
+                // Get data and normalize
+                const embeddingData = await embedding.data();
+                const normalizedEmbedding = tf.tidy(() => {
+                    const embeddingTensor = tf.tensor1d(embeddingData);
+                    // L2 normalize the embedding
+                    return tf.div(embeddingTensor, tf.norm(embeddingTensor));
+                });
+                
+                const finalEmbedding = await normalizedEmbedding.data();
+                
+                // Clean up
+                normalizedEmbedding.dispose();
+                
+                return finalEmbedding;
+            } catch (error) {
+                // console.error('Error generating embedding:', error);
+                throw error;
+            } finally {
+                // Ensure tensors are disposed
+                if (inputTensor) inputTensor.dispose();
+                if (embedding) embedding.dispose();
+            }
+        }
+
+        // Initialize
+        initTensorFlow().then(() => {
+            // console.log('Sandbox initialized');
+            // console.log('Ready to load models');
+        });
+
+        // Handle messages from content script
+        window.addEventListener('message', async (event) => {
+            if (event.data.type === 'LOAD_MODEL') {
+                try {
+                    faceNetModel = await loadModelWithRetry(event.data.modelPath);
+                    event.source.postMessage({
+                        type: 'MODEL_LOADED',
+                        success: true,
+                        modelInfo: {
+                            inputShape: faceNetModel.inputs[0].shape,
+                            outputShape: faceNetModel.outputs[0].shape
+                        }
+                    }, '*');
+                } catch (error) {
+                    event.source.postMessage({
+                        type: 'MODEL_LOADED',
+                        success: false,
+                        error: error.message
+                    }, '*');
+                }
+            } else if (event.data.type === 'GENERATE_EMBEDDING') {
+                try {
+                    const embedding = await generateEmbedding(event.data.imageData);
+                    event.source.postMessage({
+                        type: 'EMBEDDING_GENERATED',
+                        success: true,
+                        embedding: Array.from(embedding)
+                    }, '*');
+                } catch (error) {
+                    event.source.postMessage({
+                        type: 'EMBEDDING_GENERATED',
+                        success: false,
+                        error: error.message
+                    }, '*');
+                }
+            }
+        });
+    </script>
+</body>
+</html> 
