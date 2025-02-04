@@ -49,12 +49,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       (!flagShowFrameonImage.addLabel && oldSettings.addLabel)
     ) {
       clearAllFrames();
+      clearProcessedImagesCache();
     }
     
     // If auto-processing is enabled, reprocess visible images
     if (flagShowFrameonImage.autoProcessImages) {
       observeElements();
     }
+  } else if (message.type === 'CLEAR_CACHE') {
+    clearProcessedImagesCache();
   }
 });
 
@@ -591,8 +594,9 @@ document.addEventListener('click', (e) => {
     
     clearTimeout(clickTimeout);
     clickTimeout = setTimeout(() => {
+      const src = e.target.src;
       // Force reprocess on click even if already processed
-      state.processedImages.delete(e.target.src);
+      state.processedImages.delete(src);
       detectFacesWithFaceApi(e.target).catch(error => {
         console.error('Face API click handler error:', error);
       });
@@ -933,4 +937,12 @@ function drawDetections(canvas, detections, img) {
       ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
     }
   });
+}
+
+// Add function to clear processed images cache
+function clearProcessedImagesCache() {
+  state.processedImages.clear();
+  if (sandboxFrame && sandboxFrame.contentWindow) {
+    sandboxFrame.contentWindow.postMessage({ type: 'CLEAR_CACHE' }, '*');
+  }
 }
