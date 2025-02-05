@@ -73,6 +73,20 @@ const state = {
   maxParallelProcessing: 3 // Maximum number of parallel processes
 };
 
+// Add model loading status tracking
+const modelStatus = {
+    faceApi: {
+        loaded: false,
+        loading: false,
+        error: null
+    },
+    faceNet: {
+        loaded: false,
+        loading: false,
+        error: null
+    }
+};
+
 let faceNetModel = null;
 
 // Add sandbox iframe management
@@ -197,42 +211,49 @@ async function initializeExtensionContext() {
  * @returns {Promise<void>} Resolves when FaceNet model is loaded
  */
 async function loadFaceNetModel() {
-  if (state.faceNetLoaded) return;
-  
-  try {
-    createSandboxFrame();
+    if (modelStatus.faceNet.loaded) return;
+    if (modelStatus.faceNet.loading) {
+        throw new Error('FaceNet model load already in progress');
+    }
     
-    // Wait for sandbox to be ready
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
-    // console.log('Requesting FaceNet model load from sandbox, path:', modelPath);
-    
-    return new Promise((resolve, reject) => {
-      const handleMessage = (event) => {
-        if (event.data.type === 'MODEL_LOADED') {
-          window.removeEventListener('message', handleMessage);
-          if (event.data.success) {
-            // console.log('FaceNet model loaded successfully with info:', event.data.modelInfo);
-            state.faceNetLoaded = true;
-            resolve();
-          } else {
-            console.error('FaceNet model loading failed:', event.data.error);
-            reject(new Error(event.data.error));
-          }
-        }
-      };
-      
-      window.addEventListener('message', handleMessage);
-      sandboxFrame.contentWindow.postMessage({ 
-        type: 'LOAD_MODEL',
-        modelPath: modelPath
-      }, '*');
-    });
-  } catch (error) {
-    console.error('Error loading FaceNet model:', error);
-    throw error;
-  }
+    try {
+        modelStatus.faceNet.loading = true;
+        modelStatus.faceNet.error = null;
+        
+        createSandboxFrame();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
+        
+        return new Promise((resolve, reject) => {
+            const handleMessage = (event) => {
+                if (event.data.type === 'MODEL_LOADED') {
+                    window.removeEventListener('message', handleMessage);
+                    if (event.data.success) {
+                        modelStatus.faceNet.loaded = true;
+                        state.faceNetLoaded = true;
+                        resolve();
+                    } else {
+                        const error = new Error(event.data.error || 'FaceNet model loading failed');
+                        modelStatus.faceNet.error = error;
+                        reject(error);
+                    }
+                }
+            };
+            
+            window.addEventListener('message', handleMessage);
+            sandboxFrame.contentWindow.postMessage({ 
+                type: 'LOAD_MODEL',
+                modelPath: modelPath
+            }, '*');
+        });
+    } catch (error) {
+        modelStatus.faceNet.error = error;
+        console.error('Error loading FaceNet model:', error);
+        throw error;
+    } finally {
+        modelStatus.faceNet.loading = false;
+    }
 }
 
 /**
@@ -240,39 +261,84 @@ async function loadFaceNetModel() {
  * @returns {Promise<void>} Resolves when all models are loaded
  */
 async function loadFaceApiModels() {
-  if (state.modelsLoaded && state.faceNetLoaded) return;
-  
-  try {
-    await initializeExtensionContext();
+    if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded) return;
     
-    state.modelLoadAttempts++;
-    const modelPath = chrome.runtime.getURL('models');
-    
-    // Load face detection model
-    // console.log('Loading Face API model...');
-    await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
-    state.modelsLoaded = true;
-    // console.log('Face detection model loaded successfully');
-    
-    // Load FaceNet model
-    // console.log('Loading FaceNet model...');
-    await loadFaceNetModel();
-    // console.log('All models loaded successfully');
-    
-  } catch (error) {
-    console.error('Error loading models:', error);
-    
-    if (error.message.includes('Extension context invalidated')) {
-      state.modelsLoaded = false;
-      state.faceNetLoaded = false;
-      if (state.modelLoadAttempts < state.MAX_LOAD_ATTEMPTS) {
-        // console.log(`Retrying model load, attempt ${state.modelLoadAttempts} of ${state.MAX_LOAD_ATTEMPTS}`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return loadFaceApiModels();
-      }
+    try {
+        await initializeExtensionContext();
+        
+        state.modelLoadAttempts++;
+        const modelPath = chrome.runtime.getURL('models');
+        
+        // Load face detection model if not loaded
+        if (!modelStatus.faceApi.loaded) {
+            modelStatus.faceApi.loading = true;
+            modelStatus.faceApi.error = null;
+            try {
+                await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
+                modelStatus.faceApi.loaded = true;
+                state.modelsLoaded = true;
+            } catch (error) {
+                modelStatus.faceApi.error = error;
+                throw error;
+            } finally {
+                modelStatus.faceApi.loading = false;
+            }
+        }
+        
+        // Load FaceNet model if not loaded
+        if (!modelStatus.faceNet.loaded) {
+            await loadFaceNetModel();
+        }
+        
+    } catch (error) {
+        console.error('Error loading models:', error);
+        
+        if (error.message.includes('Extension context invalidated')) {
+            modelStatus.faceApi.loaded = false;
+            modelStatus.faceNet.loaded = false;
+            state.modelsLoaded = false;
+            state.faceNetLoaded = false;
+            
+            if (state.modelLoadAttempts < state.MAX_LOAD_ATTEMPTS) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return loadFaceApiModels();
+            }
+        }
+        throw error;
     }
-    throw error;
-  }
+}
+
+// Add function to check model status
+function getModelStatus() {
+    return {
+        faceApi: { ...modelStatus.faceApi },
+        faceNet: { ...modelStatus.faceNet }
+    };
+}
+
+// Add function to clear model status
+function clearModelStatus() {
+    modelStatus.faceApi = {
+        loaded: false,
+        loading: false,
+        error: null
+    };
+    modelStatus.faceNet = {
+        loaded: false,
+        loading: false,
+        error: null
+    };
+    state.modelsLoaded = false;
+    state.faceNetLoaded = false;
+}
+
+// Modify cleanup function to include model status
+function clearProcessedImagesCache() {
+    state.processedImages.clear();
+    clearModelStatus();
+    if (sandboxFrame && sandboxFrame.contentWindow) {
+        sandboxFrame.contentWindow.postMessage({ type: 'CLEAR_CACHE' }, '*');
+    }
 }
 
 /**
@@ -937,12 +1003,4 @@ function drawDetections(canvas, detections, img) {
       ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
     }
   });
-}
-
-// Add function to clear processed images cache
-function clearProcessedImagesCache() {
-  state.processedImages.clear();
-  if (sandboxFrame && sandboxFrame.contentWindow) {
-    sandboxFrame.contentWindow.postMessage({ type: 'CLEAR_CACHE' }, '*');
-  }
 }

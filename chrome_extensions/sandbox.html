@@ -434,6 +434,272 @@
 
         // Initialize TensorFlow
         initTensorFlow().catch(console.error);
+
+        class ModelManager {
+            constructor() {
+                this.models = {
+                    faceNet: null,
+                    faceDetector: null
+                };
+                
+                this.state = {
+                    isInitialized: false,
+                    tfBackendInitialized: false,
+                    modelLoadAttempts: 0,
+                    isLoading: false,
+                    warmedUp: {
+                        faceNet: false,
+                        faceDetector: false
+                    }
+                };
+                
+                this.constants = {
+                    MAX_RETRY_ATTEMPTS: 3,
+                    MODEL_LOAD_TIMEOUT: 30000,
+                    INITIALIZATION_TIMEOUT: 10000
+                };
+            }
+
+            async initialize() {
+                if (this.state.isInitialized && this.state.tfBackendInitialized) return;
+
+                try {
+                    this.state.isInitialized = false;
+                    this.state.tfBackendInitialized = false;
+                    
+                    await tf.ready();
+                    await this.waitForBackend();
+                    
+                    if (!tf.findBackend('webgl')) {
+                        console.warn('WebGL not available, using CPU backend');
+                        await tf.setBackend('cpu');
+                    } else {
+                        await tf.setBackend('webgl');
+                        const backend = tf.backend();
+                        
+                        if (backend && backend.setWebGLFlag) {
+                            backend.setWebGLFlag('WEBGL_FORCE_F16_TEXTURES', true);
+                            backend.setWebGLFlag('WEBGL_VERSION', 2);
+                            backend.setWebGLFlag('WEBGL_PACK', true);
+                        }
+                    }
+
+                    this.state.isInitialized = true;
+                    this.state.tfBackendInitialized = true;
+                    
+                    return {
+                        success: true,
+                        info: {
+                            version: tf.version.tfjs,
+                            backend: tf.getBackend(),
+                            isWebGL: tf.getBackend() === 'webgl'
+                        }
+                    };
+                } catch (error) {
+                    this.state.isInitialized = false;
+                    this.state.tfBackendInitialized = false;
+                    throw error;
+                }
+            }
+
+            async waitForBackend() {
+                const startTime = Date.now();
+                while (!tf.backend() && (Date.now() - startTime) < this.constants.INITIALIZATION_TIMEOUT) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+                if (!tf.backend()) {
+                    throw new Error('Backend initialization timeout');
+                }
+            }
+
+            async loadFaceNetModel(modelPath) {
+                if (this.state.isLoading) {
+                    throw new Error('Model load already in progress');
+                }
+
+                try {
+                    this.state.isLoading = true;
+                    this.state.warmedUp.faceNet = false;
+
+                    if (!this.state.isInitialized) {
+                        await this.initialize();
+                    }
+
+                    // Cleanup existing model
+                    await this.disposeFaceNetModel();
+
+                    // Load model with timeout
+                    const modelLoadPromise = tf.loadGraphModel(modelPath);
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Model load timeout')), this.constants.MODEL_LOAD_TIMEOUT)
+                    );
+
+                    this.models.faceNet = await Promise.race([modelLoadPromise, timeoutPromise]);
+                    
+                    // Warm up
+                    await this.warmupFaceNetModel();
+                    
+                    return {
+                        success: true,
+                        modelInfo: {
+                            inputShape: this.models.faceNet.inputs[0].shape,
+                            outputShape: this.models.faceNet.outputs[0].shape,
+                            warmedUp: true
+                        }
+                    };
+                } catch (error) {
+                    this.state.warmedUp.faceNet = false;
+                    this.models.faceNet = null;
+                    throw error;
+                } finally {
+                    this.state.isLoading = false;
+                }
+            }
+
+            async warmupFaceNetModel() {
+                if (!this.models.faceNet) throw new Error('FaceNet model not loaded');
+
+                const dummyInputs = tf.tidy(() => tf.zeros([1, 160, 160, 3]));
+                const warmupResult = await this.models.faceNet.predict(dummyInputs);
+                await warmupResult.data();
+                tf.dispose([dummyInputs, warmupResult]);
+                this.state.warmedUp.faceNet = true;
+            }
+
+            async disposeFaceNetModel() {
+                if (this.models.faceNet) {
+                    try {
+                        await this.models.faceNet.dispose();
+                        this.models.faceNet = null;
+                        this.state.warmedUp.faceNet = false;
+                    } catch (e) {
+                        console.warn('Error disposing FaceNet model:', e);
+                    }
+                }
+            }
+
+            async generateEmbedding(imageData) {
+                if (!this.isReady('faceNet')) {
+                    throw new Error('FaceNet model not ready');
+                }
+
+                return tf.tidy(() => {
+                    try {
+                        const img = tf.tensor(imageData, [160, 160, 4]);
+                        tensorsToDispose.add(img);
+                        
+                        const rgb = img.slice([0, 0, 0], [-1, -1, 3]);
+                        tensorsToDispose.add(rgb);
+                        
+                        const processed = rgb.expandDims(0).toFloat().div(127.5).sub(1);
+                        tensorsToDispose.add(processed);
+                        
+                        const embedding = this.models.faceNet.predict(processed);
+                        tensorsToDispose.add(embedding);
+                        
+                        const embeddingData = embedding.squeeze();
+                        tensorsToDispose.add(embeddingData);
+                        
+                        const normalizedEmbedding = tf.div(embeddingData, tf.norm(embeddingData));
+                        tensorsToDispose.add(normalizedEmbedding);
+                        
+                        const finalEmbedding = normalizedEmbedding.dataSync();
+                        
+                        safeDisposeTensors();
+                        
+                        return {
+                            type: 'EMBEDDING_GENERATED',
+                            success: true,
+                            embedding: Array.from(finalEmbedding),
+                            fromCache: false
+                        };
+                    } catch (error) {
+                        safeDisposeTensors();
+                        return {
+                            type: 'EMBEDDING_GENERATED',
+                            success: false,
+                            error: error.message
+                        };
+                    }
+                });
+            }
+
+            isReady(modelName) {
+                switch (modelName) {
+                    case 'faceNet':
+                        return this.state.isInitialized && 
+                               this.state.tfBackendInitialized && 
+                               this.models.faceNet && 
+                               this.state.warmedUp.faceNet;
+                    default:
+                        return false;
+                }
+            }
+
+            async cleanup() {
+                try {
+                    await this.disposeFaceNetModel();
+                    tf.engine().endScope();
+                    tf.disposeVariables();
+                    this.state.isInitialized = false;
+                    this.state.tfBackendInitialized = false;
+                    Object.keys(this.state.warmedUp).forEach(key => {
+                        this.state.warmedUp[key] = false;
+                    });
+                } catch (error) {
+                    console.warn('Model cleanup error:', error);
+                }
+            }
+        }
+
+        // Create model manager instance
+        const modelManager = new ModelManager();
+
+        // Modify message handler to use model manager
+        window.addEventListener('message', async (event) => {
+            try {
+                const response = { type: event.data.type, success: false };
+                
+                switch (event.data.type) {
+                    case 'INIT':
+                        const initResult = await modelManager.initialize();
+                        response.success = initResult.success;
+                        response.info = initResult.info;
+                        break;
+                        
+                    case 'LOAD_MODEL':
+                        const loadResult = await modelManager.loadFaceNetModel(event.data.modelPath);
+                        response.success = loadResult.success;
+                        response.modelInfo = loadResult.modelInfo;
+                        break;
+                        
+                    case 'GENERATE_EMBEDDING':
+                        const result = await modelManager.generateEmbedding(event.data.imageData);
+                        window.parent.postMessage(result, '*');
+                        return;
+                        
+                    case 'CLEAR_CACHE':
+                        imageCache.clear();
+                        if (modelManager.state.isInitialized) {
+                            await modelManager.cleanup();
+                        }
+                        response.success = true;
+                        break;
+                }
+                
+                window.parent.postMessage(response, '*');
+            } catch (error) {
+                console.error('Message handling error:', error);
+                window.parent.postMessage({
+                    type: event.data.type,
+                    success: false,
+                    error: error.message
+                }, '*');
+            }
+        });
+
+        // Initialize on load
+        modelManager.initialize().catch(console.error);
     </script>
 </body>
 </html> 
