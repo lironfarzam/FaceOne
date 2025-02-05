@@ -1,4 +1,11 @@
-// Get all the settings elements
+/**
+ * @fileoverview Manages the extension's popup UI and settings.
+ * Handles user interactions and synchronizes settings with Chrome storage.
+ * @author Liron Farzam
+ * @version 1.0.0
+ */
+
+// DOM Elements
 const settings = {
     frameProsessedImage: document.getElementById('frameProsessedImage'),
     frameFaceDetected: document.getElementById('frameFaceDetected'),
@@ -8,7 +15,10 @@ const settings = {
     minimumImageSizeNumber: document.getElementById('minimumImageSizeNumber')
 };
 
-// Function to save and apply settings
+/**
+ * Saves and applies settings to Chrome storage and active tabs
+ * @param {boolean} showStatus - Whether to show the save status message
+ */
 function saveAndApplySettings(showStatus = true) {
     const newSettings = {
         frameProsessedImage: settings.frameProsessedImage.checked,
@@ -18,31 +28,64 @@ function saveAndApplySettings(showStatus = true) {
         minimumImageSize: parseInt(settings.minimumImageSizeNumber.value)
     };
 
+    console.log('Saving new settings:', newSettings);
+
     // Save to Chrome storage
     chrome.storage.sync.set(newSettings, () => {
-        if (showStatus) {
-            // Show saved message
-            const status = document.querySelector('.status');
-            status.classList.add('show');
-            
-            // Hide message after 2 seconds
-            setTimeout(() => {
-                status.classList.remove('show');
-            }, 2000);
+        if (chrome.runtime.lastError) {
+            console.error('Error saving settings:', chrome.runtime.lastError);
+            return;
         }
         
-        // Send message to content script to update settings
-        chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-            chrome.tabs.sendMessage(tabs[0].id, {
-                type: 'UPDATE_SETTINGS',
-                settings: newSettings
-            });
+        if (showStatus) {
+            showSaveStatus();
+        }
+        
+        // Update content script settings
+        updateContentScriptSettings(newSettings);
+    });
+}
+
+/**
+ * Shows the save status message briefly
+ */
+function showSaveStatus() {
+    const status = document.querySelector('.status');
+    status.classList.add('show');
+    setTimeout(() => {
+        status.classList.remove('show');
+    }, 2000);
+}
+
+/**
+ * Updates settings in active content script
+ * @param {Object} settings - The new settings to apply
+ */
+function updateContentScriptSettings(settings) {
+    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+        if (!tabs[0]?.id) {
+            console.error('No active tab found');
+            return;
+        }
+        
+        console.log('Sending settings update:', settings);
+        chrome.tabs.sendMessage(tabs[0].id, {
+            type: 'UPDATE_SETTINGS',
+            settings: settings
+        }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('Error sending settings:', chrome.runtime.lastError);
+                return;
+            }
+            console.log('Settings update response:', response);
         });
     });
 }
 
-// Load saved settings when popup opens
-document.addEventListener('DOMContentLoaded', () => {
+/**
+ * Loads saved settings from Chrome storage
+ */
+function loadSavedSettings() {
     chrome.storage.sync.get({
         // Default values
         frameProsessedImage: true,
@@ -61,29 +104,59 @@ document.addEventListener('DOMContentLoaded', () => {
         settings.minimumImageSizeRange.value = items.minimumImageSize;
         settings.minimumImageSizeNumber.value = items.minimumImageSize;
     });
-});
+}
 
-// Add change listeners to checkboxes for immediate effect
-['frameProsessedImage', 'frameFaceDetected', 'addLabel', 'autoProcessImages'].forEach(setting => {
-    settings[setting].addEventListener('change', () => {
-        saveAndApplySettings(false); // Don't show the status message for immediate changes
+// Initialize event listeners
+function initializeEventListeners() {
+    // Add change listeners to checkboxes for immediate effect
+    ['frameProsessedImage', 'frameFaceDetected', 'addLabel', 'autoProcessImages'].forEach(setting => {
+        settings[setting].addEventListener('change', () => {
+            saveAndApplySettings(false);
+        });
     });
-});
 
-// Sync range and number inputs
-settings.minimumImageSizeRange.addEventListener('input', (e) => {
-    settings.minimumImageSizeNumber.value = e.target.value;
-});
+    // Sync range and number inputs
+    settings.minimumImageSizeRange.addEventListener('input', (e) => {
+        settings.minimumImageSizeNumber.value = e.target.value;
+    });
 
-settings.minimumImageSizeNumber.addEventListener('input', (e) => {
-    let value = parseInt(e.target.value);
-    if (value < 0) value = 0;
-    if (value > 10000) value = 10000;
-    settings.minimumImageSizeRange.value = value;
-    e.target.value = value;
-});
+    settings.minimumImageSizeNumber.addEventListener('input', (e) => {
+        let value = parseInt(e.target.value);
+        value = Math.max(0, Math.min(value, 10000));
+        settings.minimumImageSizeRange.value = value;
+        e.target.value = value;
+        saveAndApplySettings(false);
+    });
 
-// Save button now uses the same function but shows the status
-document.querySelector('.save-button').addEventListener('click', () => {
-    saveAndApplySettings(true); // Show the status message
+    // Save button handler
+    document.querySelector('.save-button').addEventListener('click', () => {
+        saveAndApplySettings(true);
+    });
+
+    // Add reprocess button handler
+    document.querySelector('.reprocess-button').addEventListener('click', () => {
+        chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+            if (!tabs[0]?.id) {
+                console.error('No active tab found');
+                return;
+            }
+            
+            console.log('Requesting reprocess of all images');
+            chrome.tabs.sendMessage(tabs[0].id, {
+                type: 'REPROCESS_ALL'
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error('Error requesting reprocess:', chrome.runtime.lastError);
+                    return;
+                }
+                console.log('Reprocess response:', response);
+            });
+        });
+    });
+}
+
+// Initialize popup
+document.addEventListener('DOMContentLoaded', () => {
+    loadSavedSettings();
+    initializeEventListeners();
 }); 

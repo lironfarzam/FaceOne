@@ -2,26 +2,31 @@
 <html>
 <head>
     <title>FaceOne Settings</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
+        /* Base styles */
         body {
             width: 300px;
             padding: 15px;
             font-family: Arial, sans-serif;
         }
 
+        /* Settings container */
         .settings-container {
             display: flex;
             flex-direction: column;
             gap: 15px;
         }
 
+        /* Individual setting item */
         .setting-item {
             display: flex;
             flex-direction: column;
             gap: 5px;
         }
 
-        /* Switch styling */
+        /* Toggle switch styles */
         .switch {
             position: relative;
             display: inline-block;
@@ -67,7 +72,7 @@
             transform: translateX(26px);
         }
 
-        /* Range input styling */
+        /* Range input container */
         .range-container {
             display: flex;
             align-items: center;
@@ -83,6 +88,7 @@
             padding: 3px;
         }
 
+        /* Setting labels and descriptions */
         .setting-label {
             display: flex;
             justify-content: space-between;
@@ -100,6 +106,7 @@
             margin-bottom: 20px;
         }
 
+        /* Save button styles */
         .save-button {
             background-color: #2196F3;
             color: white;
@@ -115,6 +122,7 @@
             background-color: #1976D2;
         }
 
+        /* Status message styles */
         .status {
             color: #4CAF50;
             text-align: center;
@@ -131,6 +139,7 @@
 <body>
     <h2>FaceOne Settings</h2>
     <div class="settings-container">
+        <!-- Processed Image Frame Setting -->
         <div class="setting-item">
             <div class="setting-label">
                 <span>Processed Image Frame</span>
@@ -142,6 +151,7 @@
             <div class="setting-description">Show green frame around processed images</div>
         </div>
 
+        <!-- Face Detection Frame Setting -->
         <div class="setting-item">
             <div class="setting-label">
                 <span>Face Detection Frame</span>
@@ -153,6 +163,7 @@
             <div class="setting-description">Show red frame around detected faces</div>
         </div>
 
+        <!-- Face Label Setting -->
         <div class="setting-item">
             <div class="setting-label">
                 <span>Show Labels</span>
@@ -164,6 +175,7 @@
             <div class="setting-description">Display face number labels</div>
         </div>
 
+        <!-- Auto Processing Setting -->
         <div class="setting-item">
             <div class="setting-label">
                 <span>Auto Process Images</span>
@@ -175,6 +187,7 @@
             <div class="setting-description">Automatically process images on page load</div>
         </div>
 
+        <!-- Minimum Image Size Setting -->
         <div class="setting-item">
             <div class="setting-label">
                 <span>Minimum Image Size</span>
@@ -187,6 +200,16 @@
         </div>
 
         <button class="save-button">Save Settings</button>
+        <button class="reprocess-button" style="
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background-color 0.3s;
+        ">Reprocess All Images</button>
         <div class="status">Settings saved!</div>
     </div>
 

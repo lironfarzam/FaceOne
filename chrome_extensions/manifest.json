@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FaceOne",
-  "version": "1.0",
-  "description": "Detects faces in images and generates face embeddings using FaceNet",
+  "version": "1.0.0",
+  "description": "Real-time face detection and embedding generation for web images using FaceAPI.js and FaceNet",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -37,15 +37,17 @@
   ],
   "web_accessible_resources": [{
     "resources": [
-      "models/*",
-      "icons/*",
+      "sandbox.html",
       "tf.min.js",
       "tf-converter.min.js",
-      "sandbox.html"
+      "models/*"
     ],
     "matches": ["<all_urls>"]
   }],
   "sandbox": {
     "pages": ["sandbox.html"]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
 } 

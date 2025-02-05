@@ -23,24 +23,54 @@
 
         // Add cache for processed images
         const imageCache = {
-            processedSources: new Set(),
-            maxSize: 1000,  // Can be larger since we're only storing strings now
+            images: new Map(), // Map to store image data
+            maxSize: 1000,
             
-            add(src) {
-                if (this.processedSources.size >= this.maxSize) {
+            add(src, isProcessed = true, canDelete = false) {
+                if (this.images.size >= this.maxSize) {
                     // Remove oldest entry by converting to array and removing first element
-                    const sources = Array.from(this.processedSources);
-                    this.processedSources.delete(sources[0]);
+                    const sources = Array.from(this.images.keys());
+                    this.images.delete(sources[0]);
                 }
-                this.processedSources.add(src);
+                this.images.set(src, {
+                    isProcessed,
+                    canDelete,
+                    timestamp: Date.now()
+                });
             },
             
             has(src) {
-                return this.processedSources.has(src);
+                return this.images.has(src);
+            },
+
+            isProcessed(src) {
+                const entry = this.images.get(src);
+                return entry ? entry.isProcessed : false;
+            },
+
+            canDelete(src) {
+                const entry = this.images.get(src);
+                return entry ? entry.canDelete : false;
+            },
+
+            setProcessed(src, value = true) {
+                const entry = this.images.get(src);
+                if (entry) {
+                    entry.isProcessed = value;
+                    entry.timestamp = Date.now();
+                }
+            },
+
+            setDeletable(src, value = true) {
+                const entry = this.images.get(src);
+                if (entry) {
+                    entry.canDelete = value;
+                    entry.timestamp = Date.now();
+                }
             },
 
             clear() {
-                this.processedSources.clear();
+                this.images.clear();
             }
         };
 
@@ -331,6 +361,11 @@
                     
                     safeDisposeTensors();
                     
+                    // Mark the image as processed in the cache if a source URL is provided
+                    if (imageData.sourceUrl) {
+                        imageCache.add(imageData.sourceUrl, true, false);
+                    }
+                    
                     return {
                         type: 'EMBEDDING_GENERATED',
                         success: true,
@@ -338,6 +373,11 @@
                         fromCache: false
                     };
                 } catch (error) {
+                    // Mark the image as failed in the cache if a source URL is provided
+                    if (imageData.sourceUrl) {
+                        imageCache.add(imageData.sourceUrl, false, false);
+                    }
+                    
                     safeDisposeTensors();
                     return {
                         type: 'EMBEDDING_GENERATED',
@@ -402,22 +442,46 @@
                         break;
                         
                     case 'LOAD_MODEL':
+                        // Check if model is already loading
+                        if (isModelLoading) {
+                            response.success = false;
+                            response.error = 'Model load already in progress';
+                            break;
+                        }
                         await loadModel(event.data.modelPath);
                         response.success = true;
                         break;
                         
                     case 'GENERATE_EMBEDDING':
+                        // Check if model is ready
+                        if (!faceNetModel || !modelWarmedUp) {
+                            throw new Error('FaceNet model not ready');
+                        }
                         const result = await generateEmbedding(event.data.imageData);
                         window.parent.postMessage(result, '*');
-                        return; // Skip default response
+                        return;
                         
                     case 'CLEAR_CACHE':
                         imageCache.clear();
                         if (isInitialized && tf.backend()) {
-                            tf.engine().startScope();
-                            tf.engine().endScope();
+                            try {
+                                await modelManager.cleanup();
+                            } catch (e) {
+                                console.warn('Error during cache cleanup:', e);
+                            }
                         }
                         response.success = true;
+                        break;
+
+                    case 'CLEANUP':
+                        try {
+                            await modelManager.cleanup();
+                            response.success = true;
+                        } catch (e) {
+                            console.warn('Error during cleanup:', e);
+                            response.success = false;
+                            response.error = e.message;
+                        }
                         break;
                 }
                 
@@ -513,8 +577,18 @@
             }
 
             async loadFaceNetModel(modelPath) {
+                // Add loading lock with timeout
+                const LOAD_TIMEOUT = 30000; // 30 seconds timeout
+                
                 if (this.state.isLoading) {
-                    throw new Error('Model load already in progress');
+                    // Wait for existing load to complete
+                    const startTime = Date.now();
+                    while (this.state.isLoading && (Date.now() - startTime) < LOAD_TIMEOUT) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                    if (this.state.isLoading) {
+                        throw new Error('Model load timeout');
+                    }
                 }
 
                 try {
@@ -607,6 +681,11 @@
                         
                         safeDisposeTensors();
                         
+                        // Mark the image as processed in the cache if a source URL is provided
+                        if (imageData.sourceUrl) {
+                            imageCache.add(imageData.sourceUrl, true, false);
+                        }
+                        
                         return {
                             type: 'EMBEDDING_GENERATED',
                             success: true,
@@ -614,6 +693,11 @@
                             fromCache: false
                         };
                     } catch (error) {
+                        // Mark the image as failed in the cache if a source URL is provided
+                        if (imageData.sourceUrl) {
+                            imageCache.add(imageData.sourceUrl, false, false);
+                        }
+                        
                         safeDisposeTensors();
                         return {
                             type: 'EMBEDDING_GENERATED',
@@ -638,16 +722,53 @@
 
             async cleanup() {
                 try {
-                    await this.disposeFaceNetModel();
-                    tf.engine().endScope();
-                    tf.disposeVariables();
+                    // First, clear all caches and reset flags
+                    imageCache.clear();
+                    modelCache.clear();
+                    tensorsToDispose.clear();
+
+                    // Reset all state flags
                     this.state.isInitialized = false;
                     this.state.tfBackendInitialized = false;
+                    this.state.isLoading = false;
                     Object.keys(this.state.warmedUp).forEach(key => {
                         this.state.warmedUp[key] = false;
                     });
+
+                    // Safely dispose models first
+                    if (this.models.faceNet) {
+                        try {
+                            await this.models.faceNet.dispose();
+                        } catch (e) {
+                            console.warn('Error disposing FaceNet model:', e);
+                        }
+                        this.models.faceNet = null;
+                    }
+
+                    // Safely dispose any remaining tensors
+                    try {
+                        const tensors = tf.memory().numTensors;
+                        if (tensors > 0) {
+                            tf.disposeVariables();
+                            tf.engine().endScope();
+                            tf.engine().startScope();
+                        }
+                    } catch (e) {
+                        console.warn('Error during tensor cleanup:', e);
+                    }
+
+                    // Reset global flags
+                    isInitialized = false;
+                    tfBackendInitialized = false;
+                    modelWarmedUp = false;
+                    isModelLoading = false;
+                    faceNetModel = null;
+
                 } catch (error) {
                     console.warn('Model cleanup error:', error);
+                    // Even if there's an error, try to reset the state
+                    this.state.isInitialized = false;
+                    this.state.tfBackendInitialized = false;
                 }
             }
         }
@@ -683,6 +804,11 @@
                         if (modelManager.state.isInitialized) {
                             await modelManager.cleanup();
                         }
+                        response.success = true;
+                        break;
+
+                    case 'CLEANUP':
+                        await modelManager.cleanup();
                         response.success = true;
                         break;
                 }

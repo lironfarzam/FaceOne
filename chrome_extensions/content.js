@@ -1,9 +1,14 @@
 /**
- * @fileoverview Content script for Face API detection Chrome extension.
- * This script provides real-time face detection on web images using Face API.js.
+ * @fileoverview Content script for FaceOne Chrome extension.
+ * Provides real-time face detection and embedding generation for web images.
+ * Uses FaceAPI.js for detection and FaceNet for embedding generation.
  * @author Liron Farzam
  * @version 1.0.0
  */
+
+//=============================================================================
+// Configuration and State Management
+//=============================================================================
 
 /**
  * @typedef {Object} State
@@ -15,65 +20,33 @@
  * @property {Set<string>} processedImages - Set of processed image URLs
  */
 
-// Update flagShowFrameonImage to use Chrome storage
-let flagShowFrameonImage = {
-  frameProsessedImage: true,    // Controls green frame around processed images
-  frameFaceDetected: true,      // Controls red frame around face detected
-  addLabel: true,               // Controls face number label
-  autoProcessImages: true,      // Controls automatic processing of all images
-  minimumImageSize: 100         // Increased minimum size for better reliability
-};
-
-// Load settings from Chrome storage
-chrome.storage.sync.get({
-  // Default values
-  frameProsessedImage: true,
-  frameFaceDetected: true,
-  addLabel: true,
-  autoProcessImages: true,
-  minimumImageSize: 100
-}, (items) => {
-  flagShowFrameonImage = items;
-});
-
-// Listen for settings updates
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'UPDATE_SETTINGS') {
-    const oldSettings = {...flagShowFrameonImage};
-    flagShowFrameonImage = message.settings;
-    
-    // Clear frames if any visual settings were turned off
-    if (
-      (!flagShowFrameonImage.frameProsessedImage && oldSettings.frameProsessedImage) ||
-      (!flagShowFrameonImage.frameFaceDetected && oldSettings.frameFaceDetected) ||
-      (!flagShowFrameonImage.addLabel && oldSettings.addLabel)
-    ) {
-      clearAllFrames();
-      clearProcessedImagesCache();
-    }
-    
-    // If auto-processing is enabled, reprocess visible images
-    if (flagShowFrameonImage.autoProcessImages) {
-      observeElements();
-    }
-  } else if (message.type === 'CLEAR_CACHE') {
-    clearProcessedImagesCache();
-  }
-});
-
 /** @type {State} */
 const state = {
-  modelsLoaded: false,
-  faceNetLoaded: false,
-  modelLoadAttempts: 0,
-  MAX_LOAD_ATTEMPTS: 3,
-  isProcessing: false,
-  processedImages: new Set(),
-  processingQueue: [], // Add queue for parallel processing
-  maxParallelProcessing: 3 // Maximum number of parallel processes
+    modelsLoaded: false,
+    faceNetLoaded: false,
+    modelLoadAttempts: 0,
+    MAX_LOAD_ATTEMPTS: 3,
+    isProcessing: false,
+    processingQueue: [],
+    maxParallelProcessing: 3
 };
 
-// Add model loading status tracking
+/**
+ * Extension settings with default values
+ * @type {Object}
+ */
+let flagShowFrameonImage = {
+    frameProsessedImage: true,
+    frameFaceDetected: true,
+    addLabel: true,
+    autoProcessImages: true,
+    minimumImageSize: 100
+};
+
+/**
+ * Model loading status tracking
+ * @type {Object}
+ */
 const modelStatus = {
     faceApi: {
         loaded: false,
@@ -87,133 +60,44 @@ const modelStatus = {
     }
 };
 
+//=============================================================================
+// Model Management
+//=============================================================================
+
+let sandboxFrame = null;
 let faceNetModel = null;
 
-// Add sandbox iframe management
-let sandboxFrame = null;
-
+/**
+ * Creates sandbox iframe for TensorFlow operations
+ */
 function createSandboxFrame() {
-  if (sandboxFrame) return;
-  
-  sandboxFrame = document.createElement('iframe');
-  sandboxFrame.src = chrome.runtime.getURL('sandbox.html');
-  sandboxFrame.style.display = 'none';
-  document.body.appendChild(sandboxFrame);
-}
-
-// Add cache for processed images
-const imageCache = {
-  embeddings: new Map(),
-  maxSize: 100,  // Maximum number of cached embeddings
-  
-  add(src, embedding) {
-    if (this.embeddings.size >= this.maxSize) {
-      const firstKey = this.embeddings.keys().next().value;
-      this.embeddings.delete(firstKey);
-    }
-    this.embeddings.set(src, embedding);
-  },
-  
-  get(src) {
-    return this.embeddings.get(src);
-  },
-  
-  has(src) {
-    return this.embeddings.has(src);
-  }
-};
-
-// Optimize queue processing with batching and prioritization
-const processingQueue = {
-  items: [],
-  processing: false,
-  batchSize: 3,  // Process 3 images at a time
-  
-  add(element, priority = false) {
-    const item = { element, priority };
-    if (priority) {
-      this.items.unshift(item);
-    } else {
-      this.items.push(item);
-    }
-    this.process();
-  },
-  
-  async process() {
-    if (this.processing || this.items.length === 0) return;
-    
-    this.processing = true;
-    while (this.items.length > 0) {
-      const batch = this.items.splice(0, this.batchSize);
-      const promises = batch.map(async ({ element }) => {
-        try {
-          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-          
-          // Check cache first
-          if (imageCache.has(src)) {
-            const embedding = imageCache.get(src);
-            // Handle cached embedding (e.g., display visualization)
-            return;
-          }
-          
-          await detectFacesWithFaceApi(element);
-        } catch (error) {
-          console.error('Processing error:', error);
-          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-          state.processedImages.delete(src);
-        }
-      });
-      
-      await Promise.all(promises);
-    }
-    this.processing = false;
-  }
-};
-
-/**
- * Configuration options for Face API detection
- * Optimized for high-accuracy face detection across various scenarios
- * @type {Object}
- */
-const FACE_API_DETECTION_OPTIONS = {
-  scoreThreshold: 0.3,     // Increased threshold for more reliable detections
-  inputSize: 320,          // Standard size for face-api.js
-  scaleFactor: 0.8,        // Better balance of speed and accuracy
-  maxNumBoxes: 100,        // Reasonable limit for most use cases
-  minConfidence: 0.3,      // Higher confidence for more reliable detections
-  iouThreshold: 0.5,       // Standard IOU threshold
-  useTinyModel: false,     // Use full model for better accuracy
-  minFaceSize: 20         // Minimum face size in pixels
-};
-
-/**
- * Initializes the extension context and ensures Chrome runtime is available
- * @returns {Promise<void>} Resolves when extension context is ready
- */
-async function initializeExtensionContext() {
-
-  return new Promise((resolve) => {
-    if (chrome.runtime && chrome.runtime.id) {
-      resolve();
-    } else {
-      const checkContext = setInterval(() => {
-        if (chrome.runtime && chrome.runtime.id) {
-          clearInterval(checkContext);
-          resolve();
-        }
-      }, 100);
-    }
-  });
+    if (sandboxFrame) return;
+    sandboxFrame = document.createElement('iframe');
+    sandboxFrame.src = chrome.runtime.getURL('sandbox.html');
+    sandboxFrame.style.display = 'none';
+    document.body.appendChild(sandboxFrame);
 }
 
 /**
- * Loads the FaceNet model for face embedding generation
- * @returns {Promise<void>} Resolves when FaceNet model is loaded
+ * Loads the FaceNet model in sandbox
  */
 async function loadFaceNetModel() {
+    // Add a loading lock with timeout
+    const LOAD_TIMEOUT = 30000; // 30 seconds timeout
+    
     if (modelStatus.faceNet.loaded) return;
+    
     if (modelStatus.faceNet.loading) {
-        throw new Error('FaceNet model load already in progress');
+        // Wait for existing load to complete
+        const startTime = Date.now();
+        while (modelStatus.faceNet.loading && (Date.now() - startTime) < LOAD_TIMEOUT) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (modelStatus.faceNet.loaded) return;
+        if (modelStatus.faceNet.loading) {
+            modelStatus.faceNet.loading = false;
+            throw new Error('FaceNet model load timeout');
+        }
     }
     
     try {
@@ -246,6 +130,12 @@ async function loadFaceNetModel() {
                 type: 'LOAD_MODEL',
                 modelPath: modelPath
             }, '*');
+            
+            // Add timeout for message response
+            setTimeout(() => {
+                window.removeEventListener('message', handleMessage);
+                reject(new Error('Model load response timeout'));
+            }, LOAD_TIMEOUT);
         });
     } catch (error) {
         modelStatus.faceNet.error = error;
@@ -257,8 +147,7 @@ async function loadFaceNetModel() {
 }
 
 /**
- * Loads all required models for face detection and embedding
- * @returns {Promise<void>} Resolves when all models are loaded
+ * Loads all required models with retry mechanism
  */
 async function loadFaceApiModels() {
     if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded) return;
@@ -269,14 +158,15 @@ async function loadFaceApiModels() {
         state.modelLoadAttempts++;
         const modelPath = chrome.runtime.getURL('models');
         
-        // Load face detection model if not loaded
         if (!modelStatus.faceApi.loaded) {
             modelStatus.faceApi.loading = true;
             modelStatus.faceApi.error = null;
             try {
-                await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
-                modelStatus.faceApi.loaded = true;
-                state.modelsLoaded = true;
+                await retryModelLoad(async () => {
+                    await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
+                    modelStatus.faceApi.loaded = true;
+                    state.modelsLoaded = true;
+                });
             } catch (error) {
                 modelStatus.faceApi.error = error;
                 throw error;
@@ -285,19 +175,15 @@ async function loadFaceApiModels() {
             }
         }
         
-        // Load FaceNet model if not loaded
         if (!modelStatus.faceNet.loaded) {
-            await loadFaceNetModel();
+            await retryModelLoad(() => loadFaceNetModel());
         }
         
     } catch (error) {
         console.error('Error loading models:', error);
         
         if (error.message.includes('Extension context invalidated')) {
-            modelStatus.faceApi.loaded = false;
-            modelStatus.faceNet.loaded = false;
-            state.modelsLoaded = false;
-            state.faceNetLoaded = false;
+            clearModelStatus();
             
             if (state.modelLoadAttempts < state.MAX_LOAD_ATTEMPTS) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -308,37 +194,772 @@ async function loadFaceApiModels() {
     }
 }
 
-// Add function to check model status
-function getModelStatus() {
-    return {
-        faceApi: { ...modelStatus.faceApi },
-        faceNet: { ...modelStatus.faceNet }
-    };
-}
+//=============================================================================
+// Image Processing
+//=============================================================================
 
-// Add function to clear model status
-function clearModelStatus() {
-    modelStatus.faceApi = {
-        loaded: false,
-        loading: false,
-        error: null
-    };
-    modelStatus.faceNet = {
-        loaded: false,
-        loading: false,
-        error: null
-    };
-    state.modelsLoaded = false;
-    state.faceNetLoaded = false;
-}
+/**
+ * Configuration options for Face API detection
+ */
+const FACE_API_DETECTION_OPTIONS = {
+    scoreThreshold: 0.3,
+    inputSize: 320,
+    scaleFactor: 0.8,
+    maxNumBoxes: 100,
+    minConfidence: 0.3,
+    iouThreshold: 0.5,
+    useTinyModel: false,
+    minFaceSize: 20
+};
 
-// Modify cleanup function to include model status
-function clearProcessedImagesCache() {
-    state.processedImages.clear();
-    clearModelStatus();
-    if (sandboxFrame && sandboxFrame.contentWindow) {
-        sandboxFrame.contentWindow.postMessage({ type: 'CLEAR_CACHE' }, '*');
+// Replace all image tracking with a single system
+const imageTracker = {
+    images: new Map(), // Map<string, ImageInfo>
+    maxSize: 1000,
+    
+    add(src, info = {}) {
+        if (this.images.size >= this.maxSize) {
+            // Remove oldest entry
+            const oldestKey = Array.from(this.images.keys())[0];
+            this.images.delete(oldestKey);
+        }
+        
+        this.images.set(src, {
+            isProcessed: false,
+            hasBeenTested: false,
+            canDelete: false,
+            embedding: null,
+            timestamp: Date.now(),
+            ...info
+        });
+    },
+    
+    markProcessed(src, success = true, embedding = null) {
+        const info = this.images.get(src) || {};
+        this.images.set(src, {
+            ...info,
+            isProcessed: success,
+            hasBeenTested: true,
+            embedding: embedding,
+            timestamp: Date.now()
+        });
+    },
+    
+    shouldProcess(src) {
+        const info = this.images.get(src);
+        return !info || (!info.hasBeenTested && !info.isProcessed);
+    },
+    
+    getEmbedding(src) {
+        const info = this.images.get(src);
+        return info ? info.embedding : null;
+    },
+    
+    has(src) {
+        return this.images.has(src);
+    },
+    
+    clear() {
+        this.images.clear();
     }
+};
+
+/**
+ * Processes an image for face detection
+ */
+async function detectFacesWithFaceApi(img) {
+    try {
+        // Ensure models are loaded before processing
+        await ensureModelsLoaded();
+        
+        const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
+        const wrapper = createWrapper(img);
+        
+        if (flagShowFrameonImage.addLabel) {
+            addLoadingIndicator(wrapper);
+        }
+        
+        const scaledImg = await createScaledImage(img);
+        const detections = await faceapi.detectAllFaces(
+            scaledImg,
+            new faceapi.SsdMobilenetv1Options({
+                ...FACE_API_DETECTION_OPTIONS,
+                scoreThreshold: 0.4
+            })
+        );
+        
+        if (scaledImg.scaleFactor !== 1) {
+            scaleDetections(detections, scaledImg.scaleFactor);
+        }
+        
+        for (const detection of detections) {
+            const faceCanvas = await extractFaceRegion(img, detection);
+            try {
+                const embedding = await generateEmbedding(faceCanvas);
+                imageTracker.markProcessed(src, true, embedding);
+            } catch (error) {
+                console.error('Embedding generation error:', error);
+                imageTracker.markProcessed(src, false);
+            }
+        }
+        
+        updateVisualization(wrapper, img, detections);
+        
+    } catch (error) {
+        console.error('Face detection error:', error);
+        throw error;
+    }
+}
+
+//=============================================================================
+// UI Management
+//=============================================================================
+
+// Optimize queue processing with batching and prioritization
+const processingQueue = {
+  items: [],
+  processing: false,
+  batchSize: 3,  // Process 3 images at a time
+  
+  add(element, priority = false) {
+    const item = { element, priority };
+    if (priority) {
+      this.items.unshift(item);
+    } else {
+      this.items.push(item);
+    }
+    this.process();
+  },
+  
+  async process() {
+    if (this.processing || this.items.length === 0) return;
+    
+    this.processing = true;
+    while (this.items.length > 0) {
+      const batch = this.items.splice(0, this.batchSize);
+      const promises = batch.map(async ({ element }) => {
+        try {
+          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+          
+          // Check cache first
+          if (imageTracker.has(src)) {
+            const embedding = imageTracker.getEmbedding(src);
+            // Handle cached embedding (e.g., display visualization)
+            return;
+          }
+          
+          await detectFacesWithFaceApi(element);
+        } catch (error) {
+          console.error('Processing error:', error);
+          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+          imageTracker.markProcessed(src, false);
+        }
+      });
+      
+      await Promise.all(promises);
+    }
+    this.processing = false;
+  }
+};
+
+// Helper functions for improved visualization
+function createWrapper(img) {
+  // Store original styles if not already stored
+  if (!img.getAttribute('data-original-style')) {
+    img.setAttribute('data-original-style', img.style.cssText);
+  }
+  
+  const wrapper = document.createElement('div');
+  wrapper.className = 'face-detection-wrapper';
+  wrapper.style.position = 'relative';
+  wrapper.style.display = 'inline-block';
+  wrapper.style.width = img.width + 'px';
+  wrapper.style.height = img.height + 'px';
+  
+  if (flagShowFrameonImage.frameProsessedImage) {
+    wrapper.style.border = '3px solid #00ff00';
+    wrapper.style.boxSizing = 'border-box';
+    wrapper.style.padding = '2px';
+  }
+  
+  img.parentElement.insertBefore(wrapper, img);
+  wrapper.appendChild(img);
+  return wrapper;
+}
+
+function addLoadingIndicator(wrapper) {
+  const indicator = document.createElement('div');
+  indicator.className = 'processing-indicator';
+  indicator.style.position = 'absolute';
+  indicator.style.top = '5px';
+  indicator.style.right = '5px';
+  indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+  indicator.style.color = 'white';
+  indicator.style.padding = '2px 5px';
+  indicator.style.borderRadius = '3px';
+  indicator.style.fontSize = '12px';
+  indicator.textContent = 'Processing...';
+  wrapper.appendChild(indicator);
+}
+
+function updateVisualization(wrapper, img, detections) {
+  // Remove existing canvas and indicators
+  const existingCanvas = wrapper.querySelector('.face-detection-canvas');
+  const processingIndicator = wrapper.querySelector('.processing-indicator');
+  if (existingCanvas) existingCanvas.remove();
+  if (processingIndicator) processingIndicator.remove();
+  
+  if (detections.length === 0) {
+    if (flagShowFrameonImage.addLabel) {
+      addResultIndicator(wrapper, 'No Faces Detected');
+    }
+    return;
+  }
+  
+  // Create and setup canvas
+  const canvas = createDetectionCanvas(img);
+  if (flagShowFrameonImage.frameFaceDetected) {
+    drawDetections(canvas, detections, img);
+  }
+  
+  if (flagShowFrameonImage.addLabel) {
+    addResultIndicator(wrapper, `${detections.length} Face(s) Detected`);
+  }
+  
+  wrapper.appendChild(canvas);
+}
+
+/**
+ * Removes duplicate face detections based on box overlap
+ * @param {Array<Object>} detections - Array of face detections
+ * @returns {Array<Object>} Filtered array without duplicates
+ */
+function removeDuplicateDetections(detections) {
+  return detections.reduce((unique, detection) => {
+    const isDuplicate = unique.some(existing => {
+      const boxOverlap = getIntersectionOverUnion(existing.box, detection.box);
+      return boxOverlap > 0.45; // Adjust this threshold as needed
+    });
+    
+    if (!isDuplicate) {
+      unique.push(detection);
+    }
+    return unique;
+  }, []);
+}
+
+/**
+ * Calculates Intersection over Union for two bounding boxes
+ * @param {Object} box1 - First bounding box
+ * @param {Object} box2 - Second bounding box
+ * @returns {number} IoU value between 0 and 1
+ */
+function getIntersectionOverUnion(box1, box2) {
+  const intersection = {
+    x: Math.max(box1.x, box2.x),
+    y: Math.max(box1.y, box2.y),
+    width: Math.min(box1.x + box1.width, box2.x + box2.width) - Math.max(box1.x, box2.x),
+    height: Math.min(box1.y + box1.height, box2.y + box2.height) - Math.max(box1.y, box2.y)
+  };
+  
+  if (intersection.width <= 0 || intersection.height <= 0) return 0;
+  
+  const intersectionArea = intersection.width * intersection.height;
+  const box1Area = box1.width * box1.height;
+  const box2Area = box2.width * box2.height;
+  
+  return intersectionArea / (box1Area + box2Area - intersectionArea);
+}
+
+/**
+ * Prevents text selection when clicking on images
+ * @param {Event} e - The event object
+ */
+function preventTextSelection(e) {
+  if (e.target.tagName === 'IMG') {
+    e.preventDefault();
+    window.getSelection().removeAllRanges();
+  }
+}
+
+// Event listeners
+// document.addEventListener('mousedown', preventTextSelection);
+// document.addEventListener('selectstart', preventTextSelection);
+
+// Modified click handler
+let clickTimeout;
+document.addEventListener('click', (e) => {
+    if (e.target.tagName === 'IMG') {
+        e.preventDefault();
+        window.getSelection().removeAllRanges();
+        
+        clearTimeout(clickTimeout);
+        clickTimeout = setTimeout(() => {
+            const src = e.target.src;
+            imageTracker.add(src, { hasBeenTested: false, isProcessed: false });
+            detectFacesWithFaceApi(e.target).catch(error => {
+                console.error('Face API click handler error:', error);
+            });
+        }, 100);
+    }
+}, { passive: false });
+
+/**
+ * Checks if an element is valid for processing
+ * @param {Element} element - The element to validate
+ * @returns {boolean} True if the element is valid for processing
+ */
+function isValidElement(element) {
+    const isImg = element.tagName === 'IMG';
+    const isSvgImage = element.tagName === 'image';
+    
+    if (!isImg && !isSvgImage) return false;
+    
+    const src = isImg ? element.src : element.getAttribute('xlink:href');
+    const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
+    const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
+    
+    const hasValidSize = (width >= flagShowFrameonImage.minimumImageSize && 
+                         height >= flagShowFrameonImage.minimumImageSize);
+    
+    return (
+        src && 
+        hasValidSize &&
+        !imageTracker.has(src) &&
+        !element.closest('.face-detection-wrapper')
+    );
+}
+
+// Add a function to ensure models are loaded
+async function ensureModelsLoaded() {
+    if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded) {
+        console.log('Models not loaded, loading now...');
+        await loadFaceApiModels();
+        
+        // Additional verification
+        if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded) {
+            throw new Error('Failed to load models after attempt');
+        }
+        console.log('Models loaded successfully');
+    }
+}
+
+// Modify handleVisibleElement to await model loading
+async function handleVisibleElement(element) {
+    if (!element || !flagShowFrameonImage.autoProcessImages) return;
+    
+    try {
+        // Ensure models are loaded before processing
+        await ensureModelsLoaded();
+        
+        if (!isValidElement(element)) return;
+        
+        const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+        if (!src) return;
+        
+        const info = imageTracker.images.get(src);
+        const needsProcessing = !info || !info.isProcessed;
+        
+        if (needsProcessing) {
+            console.log('Processing image:', src);
+            if (!info) {
+                imageTracker.add(src);
+            }
+            await detectFacesWithFaceApi(element);
+        } else if (info && !info.isProcessed) {
+            // Reapply visualization if needed
+            const wrapper = createWrapper(element);
+            if (info.detections) {
+                updateVisualization(wrapper, element, info.detections);
+            }
+        }
+    } catch (error) {
+        console.error('Error in handleVisibleElement:', error);
+    }
+}
+
+/**
+ * Starts observing elements on the page for face detection
+ */
+function observeElements() {
+  const elements = [
+    ...Array.from(document.getElementsByTagName('img')),
+    ...Array.from(document.getElementsByTagName('image')),
+    ...Array.from(document.querySelectorAll('image[xlink\\:href^="https://"]'))
+  ];
+  
+  // Additional selector for Facebook-style images
+  const fbImages = document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]');
+  elements.push(...Array.from(fbImages));
+  
+  // console.log(`Found ${elements.length} images to process`);
+  
+  elements.forEach(element => {
+    if (element.complete || element.tagName === 'image') {
+      handleVisibleElement(element);
+    }
+    imageObserver.observe(element);
+  });
+}
+
+// Create intersection observer
+/** @type {IntersectionObserver} */
+const imageObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting && (entry.target.tagName === 'IMG' || entry.target.tagName === 'image')) {
+      handleVisibleElement(entry.target);
+    }
+  });
+}, {
+  root: null,
+  rootMargin: '50px', // Start loading slightly before images become visible
+  threshold: 0.1 // Trigger when at least 10% of the image is visible
+});
+
+// Observe new images added to the page
+/** @type {MutationObserver} */
+const documentObserver = new MutationObserver((mutations) => {
+  mutations.forEach(mutation => {
+    if (mutation.type === 'childList') {
+      mutation.addedNodes.forEach(node => {
+        // Immediately process any new image nodes
+        if (node.tagName === 'IMG' || node.tagName === 'image') {
+          // console.log('New image detected:', node);
+          // Process immediately without waiting for intersection
+          handleVisibleElement(node);
+          // Also observe for future changes
+          imageObserver.observe(node);
+        }
+        
+        // Check for images within added nodes
+        if (node.querySelectorAll) {
+          ['IMG', 'image'].forEach(tagName => {
+            const elements = node.querySelectorAll(tagName);
+            elements.forEach(element => {
+              // console.log('New nested image detected:', element);
+              // Process immediately
+              handleVisibleElement(element);
+              // Also observe for future changes
+              imageObserver.observe(element);
+            });
+          });
+        }
+      });
+    }
+    // Also check for attribute changes that might affect images
+    else if (mutation.type === 'attributes') {
+      const target = mutation.target;
+      if ((target.tagName === 'IMG' || target.tagName === 'image') && 
+          (mutation.attributeName === 'src' || mutation.attributeName === 'xlink:href')) {
+        // console.log('Image source changed:', target);
+        // Re-process when src changes
+        imageTracker.markProcessed(target.src || target.getAttribute('xlink:href'), false);
+        handleVisibleElement(target);
+      }
+    }
+  });
+});
+
+// Start observing with enhanced options
+documentObserver.observe(document.body, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['src', 'xlink:href'] // Only watch relevant attributes
+});
+
+// Initialize on page load
+window.addEventListener('load', async () => {
+    console.log('Initializing FaceOne extension...');
+    
+    try {
+        await initializeExtensionContext();
+        console.log('Extension context initialized');
+        
+        await loadFaceApiModels();
+        console.log('Models loaded, starting observation');
+        
+        // Start observers first
+        startObservers();
+        
+        // Process existing images if auto-processing is enabled
+        if (flagShowFrameonImage.autoProcessImages) {
+            console.log('Auto-processing enabled, scanning existing images');
+            processExistingImages();
+        }
+    } catch (error) {
+        console.error('Initialization error:', error);
+    }
+});
+
+// Add new function to process existing images
+async function processExistingImages() {
+    const elements = [
+        ...Array.from(document.getElementsByTagName('img')),
+        ...Array.from(document.getElementsByTagName('image')),
+        ...Array.from(document.querySelectorAll('image[xlink\\:href^="https://"]')),
+        ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]'))
+    ];
+    
+    console.log(`Found ${elements.length} images to process`);
+    
+    // Process images in batches to avoid overwhelming the system
+    const batchSize = 3;
+    for (let i = 0; i < elements.length; i += batchSize) {
+        const batch = elements.slice(i, i + batchSize);
+        await Promise.all(batch.map(async element => {
+            if (element.complete || element.tagName === 'image') {
+                try {
+                    await handleVisibleElement(element);
+                } catch (error) {
+                    console.error('Error processing image:', error);
+                }
+            }
+        }));
+    }
+}
+
+// Modify handleVisibleElement to be async and more robust
+async function handleVisibleElement(element) {
+    if (!element || !flagShowFrameonImage.autoProcessImages) return;
+    
+    try {
+        if (!isValidElement(element)) return;
+        
+        const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
+        if (!src) return;
+        
+        const info = imageTracker.images.get(src);
+        const needsProcessing = !info || !info.isProcessed;
+        
+        if (needsProcessing) {
+            console.log('Processing image:', src);
+            if (!info) {
+                imageTracker.add(src);
+            }
+            await detectFacesWithFaceApi(element);
+        } else if (info && !info.isProcessed) {
+            // Reapply visualization if needed
+            const wrapper = createWrapper(element);
+            if (info.detections) {
+                updateVisualization(wrapper, element, info.detections);
+            }
+        }
+    } catch (error) {
+        console.error('Error in handleVisibleElement:', error);
+    }
+}
+
+// Modify startObservers to be more efficient
+function startObservers() {
+    stopObservers();
+    
+    // Configure intersection observer
+    imageObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'xlink:href']
+    });
+    
+    // Configure mutation observer
+    documentObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'xlink:href']
+    });
+    
+    console.log('Observers started');
+}
+
+function stopObservers() {
+    imageObserver.disconnect();
+    documentObserver.disconnect();
+}
+
+/**
+ * Generates embedding for a face image using FaceNet
+ * @param {HTMLCanvasElement} faceCanvas - Canvas containing the face image
+ * @returns {Promise<Float32Array>} Face embedding vector
+ */
+async function generateEmbedding(faceCanvas) {
+  if (!state.faceNetLoaded) {
+    throw new Error('FaceNet model not loaded');
+  }
+
+  const imageData = faceCanvas.getContext("2d").getImageData(0, 0, faceCanvas.width, faceCanvas.height);
+  
+  return new Promise((resolve, reject) => {
+    const handleMessage = (event) => {
+      if (event.data.type === 'EMBEDDING_GENERATED') {
+        window.removeEventListener('message', handleMessage);
+        if (event.data.success) {
+          resolve(new Float32Array(event.data.embedding));
+        } else {
+          reject(new Error(event.data.error));
+        }
+      }
+    };
+    
+    window.addEventListener('message', handleMessage);
+    sandboxFrame.contentWindow.postMessage({
+      type: 'GENERATE_EMBEDDING',
+      imageData: Array.from(imageData.data)
+    }, '*');
+  });
+}
+
+// Modify clearAllFrames to be more selective
+function clearAllFrames() {
+    console.log('Clearing frames and visualizations');
+    
+    const wrappers = document.querySelectorAll('.face-detection-wrapper');
+    wrappers.forEach(wrapper => {
+        const img = wrapper.querySelector('img, image');
+        if (img) {
+            img.style.cssText = img.getAttribute('data-original-style') || '';
+            wrapper.parentNode.insertBefore(img, wrapper);
+            wrapper.remove();
+        }
+    });
+    
+    // Only clear visual elements, not the processing status
+    document.querySelectorAll('.face-detection-canvas, .processing-indicator, .result-indicator')
+        .forEach(el => el.remove());
+}
+
+/**
+ * Scales back detection boxes based on the image scale factor
+ * @param {Array<Object>} detections - Array of face detections
+ * @param {number} scaleFactor - Scale factor to apply
+ */
+function scaleDetections(detections, scaleFactor) {
+  detections.forEach(detection => {
+    detection.box.x /= scaleFactor;
+    detection.box.y /= scaleFactor;
+    detection.box.width /= scaleFactor;
+    detection.box.height /= scaleFactor;
+  });
+}
+
+/**
+ * Creates a canvas for drawing face detections
+ * @param {HTMLImageElement} img - The source image
+ * @returns {HTMLCanvasElement} The detection canvas
+ */
+function createDetectionCanvas(img) {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'face-detection-canvas';
+  canvas.style.position = 'absolute';
+  canvas.style.top = '0';
+  canvas.style.left = '0';
+  canvas.style.pointerEvents = 'none';
+  
+  canvas.width = img.width;
+  canvas.height = img.height;
+  canvas.style.width = img.width + 'px';
+  canvas.style.height = img.height + 'px';
+  
+  return canvas;
+}
+
+/**
+ * Adds a result indicator to the wrapper
+ * @param {HTMLElement} wrapper - The wrapper element
+ * @param {string} text - The text to display
+ */
+function addResultIndicator(wrapper, text) {
+  const indicator = document.createElement('div');
+  indicator.className = 'result-indicator';
+  indicator.style.position = 'absolute';
+  indicator.style.top = '5px';
+  indicator.style.right = '5px';
+  indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+  indicator.style.color = 'white';
+  indicator.style.padding = '2px 5px';
+  indicator.style.borderRadius = '3px';
+  indicator.style.fontSize = '12px';
+  indicator.textContent = text;
+  wrapper.appendChild(indicator);
+}
+
+/**
+ * Draws face detections on the canvas
+ * @param {HTMLCanvasElement} canvas - The canvas to draw on
+ * @param {Array<Object>} detections - Array of face detections
+ * @param {HTMLImageElement} img - The source image
+ */
+function drawDetections(canvas, detections, img) {
+  const ctx = canvas.getContext('2d');
+  const displayToNaturalRatioX = img.naturalWidth / img.width;
+  const displayToNaturalRatioY = img.naturalHeight / img.height;
+  
+  detections.forEach((detection, index) => {
+    const box = detection.box;
+    
+    // Scale coordinates from natural size to display size
+    const scaledBox = {
+      x: box.x / displayToNaturalRatioX,
+      y: box.y / displayToNaturalRatioY,
+      width: box.width / displayToNaturalRatioX,
+      height: box.height / displayToNaturalRatioY
+    };
+    
+    // Draw face box
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      scaledBox.x,
+      scaledBox.y,
+      scaledBox.width,
+      scaledBox.height
+    );
+    
+    // Draw corners
+    const cornerSize = Math.min(scaledBox.width, scaledBox.height) * 0.2;
+    ctx.lineWidth = 2;
+    
+    // Define corners
+    const corners = [
+      // Top-left
+      [scaledBox.x, scaledBox.y, scaledBox.x + cornerSize, scaledBox.y],
+      [scaledBox.x, scaledBox.y, scaledBox.x, scaledBox.y + cornerSize],
+      // Top-right
+      [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y],
+      [scaledBox.x + scaledBox.width, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y + cornerSize],
+      // Bottom-left
+      [scaledBox.x, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x, scaledBox.y + scaledBox.height],
+      [scaledBox.x, scaledBox.y + scaledBox.height, scaledBox.x + cornerSize, scaledBox.y + scaledBox.height],
+      // Bottom-right
+      [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y + scaledBox.height, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height],
+      [scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height]
+    ];
+    
+    // Draw corners
+    corners.forEach(([x1, y1, x2, y2]) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    });
+    
+    // Add face number if enabled
+    if (flagShowFrameonImage.addLabel) {
+      const fontSize = Math.max(12, Math.min(scaledBox.width, scaledBox.height) * 0.2);
+      ctx.font = `${fontSize}px Arial`;
+      const text = `Face ${index + 1}`;
+      const textWidth = ctx.measureText(text).width;
+      
+      // Draw text background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(scaledBox.x, scaledBox.y - fontSize - 8, textWidth + 6, fontSize + 4);
+      
+      // Draw text
+      ctx.fillStyle = 'white';
+      ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
+    }
+  });
 }
 
 /**
@@ -484,523 +1105,158 @@ async function extractFaceRegion(img, detection) {
   }
 }
 
-// Optimize face detection with progressive loading
-async function detectFacesWithFaceApi(img) {
-  try {
-    await loadFaceApiModels();
-    
-    const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
-    
-    // Show loading indicator
-    const wrapper = createWrapper(img);
-    if (flagShowFrameonImage.addLabel) {
-      addLoadingIndicator(wrapper);
-    }
-    
-    // Scale and process image
-    const scaledImg = await createScaledImage(img);
-    const detections = await faceapi.detectAllFaces(
-      scaledImg,
-      new faceapi.SsdMobilenetv1Options({
-        ...FACE_API_DETECTION_OPTIONS,
-        scoreThreshold: 0.4  // Slightly higher threshold for better accuracy
-      })
-    );
-    
-    // Scale back detections
-    if (scaledImg.scaleFactor !== 1) {
-      scaleDetections(detections, scaledImg.scaleFactor);
-    }
-    
-    // Process faces and generate embeddings
-    for (const detection of detections) {
-      const faceCanvas = await extractFaceRegion(img, detection);
-      try {
-        const embedding = await generateEmbedding(faceCanvas);
-        imageCache.add(src, embedding);
-      } catch (error) {
-        console.error('Embedding generation error:', error);
-      }
-    }
-    
-    // Update visualization
-    updateVisualization(wrapper, img, detections);
-    
-  } catch (error) {
-    console.error('Face detection error:', error);
-    throw error;
-  }
-}
-
-// Helper functions for improved visualization
-function createWrapper(img) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'face-detection-wrapper';
-  wrapper.style.position = 'relative';
-  wrapper.style.display = 'inline-block';
-  wrapper.style.width = img.width + 'px';
-  wrapper.style.height = img.height + 'px';
-  
-  if (flagShowFrameonImage.frameProsessedImage) {
-    wrapper.style.border = '3px solid #00ff00';
-    wrapper.style.boxSizing = 'border-box';
-    wrapper.style.padding = '2px';
-  }
-  
-  img.parentElement.insertBefore(wrapper, img);
-  wrapper.appendChild(img);
-  return wrapper;
-}
-
-function addLoadingIndicator(wrapper) {
-  const indicator = document.createElement('div');
-  indicator.className = 'processing-indicator';
-  indicator.style.position = 'absolute';
-  indicator.style.top = '5px';
-  indicator.style.right = '5px';
-  indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-  indicator.style.color = 'white';
-  indicator.style.padding = '2px 5px';
-  indicator.style.borderRadius = '3px';
-  indicator.style.fontSize = '12px';
-  indicator.textContent = 'Processing...';
-  wrapper.appendChild(indicator);
-}
-
-function updateVisualization(wrapper, img, detections) {
-  // Remove existing canvas and indicators
-  const existingCanvas = wrapper.querySelector('.face-detection-canvas');
-  const processingIndicator = wrapper.querySelector('.processing-indicator');
-  if (existingCanvas) existingCanvas.remove();
-  if (processingIndicator) processingIndicator.remove();
-  
-  if (detections.length === 0) {
-    if (flagShowFrameonImage.addLabel) {
-      addResultIndicator(wrapper, 'No Faces Detected');
-    }
-    return;
-  }
-  
-  // Create and setup canvas
-  const canvas = createDetectionCanvas(img);
-  if (flagShowFrameonImage.frameFaceDetected) {
-    drawDetections(canvas, detections, img);
-  }
-  
-  if (flagShowFrameonImage.addLabel) {
-    addResultIndicator(wrapper, `${detections.length} Face(s) Detected`);
-  }
-  
-  wrapper.appendChild(canvas);
-}
-
 /**
- * Removes duplicate face detections based on box overlap
- * @param {Array<Object>} detections - Array of face detections
- * @returns {Array<Object>} Filtered array without duplicates
+ * Initializes the extension context and ensures Chrome runtime is available
+ * @returns {Promise<void>} Resolves when extension context is ready
  */
-function removeDuplicateDetections(detections) {
-  return detections.reduce((unique, detection) => {
-    const isDuplicate = unique.some(existing => {
-      const boxOverlap = getIntersectionOverUnion(existing.box, detection.box);
-      return boxOverlap > 0.45; // Adjust this threshold as needed
-    });
-    
-    if (!isDuplicate) {
-      unique.push(detection);
+async function initializeExtensionContext() {
+  return new Promise((resolve) => {
+    if (chrome.runtime && chrome.runtime.id) {
+      resolve();
+    } else {
+      const checkContext = setInterval(() => {
+        if (chrome.runtime && chrome.runtime.id) {
+          clearInterval(checkContext);
+          resolve();
+        }
+      }, 100);
     }
-    return unique;
-  }, []);
-}
-
-/**
- * Calculates Intersection over Union for two bounding boxes
- * @param {Object} box1 - First bounding box
- * @param {Object} box2 - Second bounding box
- * @returns {number} IoU value between 0 and 1
- */
-function getIntersectionOverUnion(box1, box2) {
-  const intersection = {
-    x: Math.max(box1.x, box2.x),
-    y: Math.max(box1.y, box2.y),
-    width: Math.min(box1.x + box1.width, box2.x + box2.width) - Math.max(box1.x, box2.x),
-    height: Math.min(box1.y + box1.height, box2.y + box2.height) - Math.max(box1.y, box2.y)
-  };
-  
-  if (intersection.width <= 0 || intersection.height <= 0) return 0;
-  
-  const intersectionArea = intersection.width * intersection.height;
-  const box1Area = box1.width * box1.height;
-  const box2Area = box2.width * box2.height;
-  
-  return intersectionArea / (box1Area + box2Area - intersectionArea);
-}
-
-/**
- * Prevents text selection when clicking on images
- * @param {Event} e - The event object
- */
-function preventTextSelection(e) {
-  if (e.target.tagName === 'IMG') {
-    e.preventDefault();
-    window.getSelection().removeAllRanges();
-  }
-}
-
-// Event listeners
-document.addEventListener('mousedown', preventTextSelection);
-document.addEventListener('selectstart', preventTextSelection);
-
-// Modified click handler
-let clickTimeout;
-document.addEventListener('click', (e) => {
-  if (e.target.tagName === 'IMG') {
-    e.preventDefault();
-    window.getSelection().removeAllRanges();
-    
-    clearTimeout(clickTimeout);
-    clickTimeout = setTimeout(() => {
-      const src = e.target.src;
-      // Force reprocess on click even if already processed
-      state.processedImages.delete(src);
-      detectFacesWithFaceApi(e.target).catch(error => {
-        console.error('Face API click handler error:', error);
-      });
-    }, 100);
-  }
-}, { passive: false });
-
-/**
- * Checks if an element is valid for processing
- * @param {Element} element - The element to validate
- * @returns {boolean} True if the element is valid for processing
- */
-function isValidElement(element) {
-  const isImg = element.tagName === 'IMG';
-  const isSvgImage = element.tagName === 'image';
-  
-  if (!isImg && !isSvgImage) return false;
-  
-  const src = isImg ? element.src : element.getAttribute('xlink:href');
-  const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
-  const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
-  
-  const hasValidSize = (width >= flagShowFrameonImage.minimumImageSize && 
-                       height >= flagShowFrameonImage.minimumImageSize);
-  
-  return (
-    src && 
-    hasValidSize &&
-    !state.processedImages.has(src) &&
-    !element.closest('.face-detection-wrapper')
-  );
-}
-
-/**
- * Processes a visible element for face detection
- * @param {Element} element - The element to process
- */
-function handleVisibleElement(element) {
-  if (!isValidElement(element) || !flagShowFrameonImage.autoProcessImages) return;
-  
-  const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-  if (!state.processedImages.has(src)) {
-    state.processedImages.add(src);
-    processingQueue.add(element);
-  }
-}
-
-/**
- * Starts observing elements on the page for face detection
- */
-function observeElements() {
-  const elements = [
-    ...Array.from(document.getElementsByTagName('img')),
-    ...Array.from(document.getElementsByTagName('image')),
-    ...Array.from(document.querySelectorAll('image[xlink\\:href^="https://"]'))
-  ];
-  
-  // Additional selector for Facebook-style images
-  const fbImages = document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]');
-  elements.push(...Array.from(fbImages));
-  
-  // console.log(`Found ${elements.length} images to process`);
-  
-  elements.forEach(element => {
-    if (element.complete || element.tagName === 'image') {
-      handleVisibleElement(element);
-    }
-    imageObserver.observe(element);
   });
 }
 
-// Create intersection observer
-/** @type {IntersectionObserver} */
-const imageObserver = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting && (entry.target.tagName === 'IMG' || entry.target.tagName === 'image')) {
-      handleVisibleElement(entry.target);
+// Update clearProcessedImagesCache function
+function clearProcessedImagesCache() {
+    imageTracker.clear();
+    clearModelStatus();
+    if (sandboxFrame && sandboxFrame.contentWindow) {
+        sandboxFrame.contentWindow.postMessage({ type: 'CLEAR_CACHE' }, '*');
     }
-  });
-}, {
-  root: null,
-  rootMargin: '50px', // Start loading slightly before images become visible
-  threshold: 0.1 // Trigger when at least 10% of the image is visible
-});
+}
 
-// Observe new images added to the page
-/** @type {MutationObserver} */
-const documentObserver = new MutationObserver((mutations) => {
-  mutations.forEach(mutation => {
-    if (mutation.type === 'childList') {
-      mutation.addedNodes.forEach(node => {
-        // Immediately process any new image nodes
-        if (node.tagName === 'IMG' || node.tagName === 'image') {
-          // console.log('New image detected:', node);
-          // Process immediately without waiting for intersection
-          handleVisibleElement(node);
-          // Also observe for future changes
-          imageObserver.observe(node);
+// Modify clearModelStatus to be more thorough
+function clearModelStatus() {
+    // Clear model status
+    modelStatus.faceApi = {
+        loaded: false,
+        loading: false,
+        error: null
+    };
+    modelStatus.faceNet = {
+        loaded: false,
+        loading: false,
+        error: null
+    };
+    
+    // Clear state
+    state.modelsLoaded = false;
+    state.faceNetLoaded = false;
+    state.modelLoadAttempts = 0;
+    
+    // Clear sandbox if it exists
+    if (sandboxFrame && sandboxFrame.contentWindow) {
+        try {
+            sandboxFrame.contentWindow.postMessage({ type: 'CLEANUP' }, '*');
+        } catch (e) {
+            console.warn('Error during sandbox cleanup:', e);
+        }
+    }
+}
+
+// Add retry mechanism for model loading
+async function retryModelLoad(loadFunction, maxAttempts = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await loadFunction();
+        } catch (error) {
+            console.warn(`Load attempt ${attempt} failed:`, error);
+            lastError = error;
+            if (attempt < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            }
+        }
+    }
+    throw lastError;
+}
+
+// Update message handler to properly handle auto-processing changes
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    console.log('Received message:', message);
+    
+    if (message.type === 'UPDATE_SETTINGS') {
+        console.log('Updating settings:', message.settings);
+        const oldSettings = {...flagShowFrameonImage};
+        flagShowFrameonImage = message.settings;
+        
+        // Handle visual changes
+        const visualSettingsChanged = (
+            flagShowFrameonImage.frameProsessedImage !== oldSettings.frameProsessedImage ||
+            flagShowFrameonImage.frameFaceDetected !== oldSettings.frameFaceDetected ||
+            flagShowFrameonImage.addLabel !== oldSettings.addLabel
+        );
+        
+        if (visualSettingsChanged) {
+            console.log('Visual settings changed, reprocessing images');
+            clearAllFrames();
+            
+            // Mark images for reprocessing but keep their embeddings
+            imageTracker.images.forEach((info, src) => {
+                info.isProcessed = false;  // This will trigger reprocessing
+                // Keep hasBeenTested and embedding data
+            });
+            
+            // Reprocess all visible images
+            if (flagShowFrameonImage.autoProcessImages) {
+                processExistingImages();
+            }
         }
         
-        // Check for images within added nodes
-        if (node.querySelectorAll) {
-          ['IMG', 'image'].forEach(tagName => {
-            const elements = node.querySelectorAll(tagName);
-            elements.forEach(element => {
-              // console.log('New nested image detected:', element);
-              // Process immediately
-              handleVisibleElement(element);
-              // Also observe for future changes
-              imageObserver.observe(element);
+        // Handle auto-processing changes
+        if (flagShowFrameonImage.autoProcessImages !== oldSettings.autoProcessImages) {
+            if (flagShowFrameonImage.autoProcessImages) {
+                console.log('Enabling auto-processing');
+                startObservers();
+                processExistingImages();
+            } else {
+                console.log('Disabling auto-processing');
+                stopObservers();
+                clearAllFrames();
+            }
+        }
+        
+        // Handle minimum size changes
+        if (flagShowFrameonImage.minimumImageSize !== oldSettings.minimumImageSize) {
+            console.log('Minimum size changed, reprocessing images');
+            clearAllFrames();
+            
+            // Reset processing status but keep embeddings
+            imageTracker.images.forEach((info, src) => {
+                info.isProcessed = false;
             });
-          });
+            
+            if (flagShowFrameonImage.autoProcessImages) {
+                processExistingImages();
+            }
         }
-      });
+        
+        sendResponse({ success: true, settings: flagShowFrameonImage });
+    } else if (message.type === 'REPROCESS_ALL') {
+        console.log('Reprocessing all images');
+        clearAllFrames();
+        
+        // Reset all processing status
+        imageTracker.images.forEach((info, src) => {
+            info.hasBeenTested = false;
+            info.isProcessed = false;
+            // Keep embeddings for reuse
+        });
+        
+        // Restart observation and process all images
+        startObservers();
+        processExistingImages();
+        
+        sendResponse({ success: true });
     }
-    // Also check for attribute changes that might affect images
-    else if (mutation.type === 'attributes') {
-      const target = mutation.target;
-      if ((target.tagName === 'IMG' || target.tagName === 'image') && 
-          (mutation.attributeName === 'src' || mutation.attributeName === 'xlink:href')) {
-        // console.log('Image source changed:', target);
-        // Re-process when src changes
-        state.processedImages.delete(target.src || target.getAttribute('xlink:href'));
-        handleVisibleElement(target);
-      }
-    }
-  });
+    
+    return true;
 });
-
-// Start observing with enhanced options
-documentObserver.observe(document.body, {
-  childList: true,
-  subtree: true,
-  attributes: true,
-  attributeFilter: ['src', 'xlink:href'] // Only watch relevant attributes
-});
-
-// Initialize on page load
-window.addEventListener('load', () => {
-  // Clear any existing selection
-  window.getSelection().removeAllRanges();
-  
-  // console.log('Starting automatic image processing...');
-  initializeExtensionContext()
-    .then(() => {
-      loadFaceApiModels().then(() => {
-        if (flagShowFrameonImage.autoProcessImages) {
-          observeElements();
-          // console.log('Automatic image processing enabled');
-        }
-      });
-    })
-    .catch(error => console.error('Initialization error:', error));
-});
-
-// Remove or comment out the click handler if you want only automatic processing
-// document.addEventListener('click', (e) => { ... });
-
-/**
- * Generates embedding for a face image using FaceNet
- * @param {HTMLCanvasElement} faceCanvas - Canvas containing the face image
- * @returns {Promise<Float32Array>} Face embedding vector
- */
-async function generateEmbedding(faceCanvas) {
-  if (!state.faceNetLoaded) {
-    throw new Error('FaceNet model not loaded');
-  }
-
-  const imageData = faceCanvas.getContext("2d").getImageData(0, 0, faceCanvas.width, faceCanvas.height);
-  
-  return new Promise((resolve, reject) => {
-    const handleMessage = (event) => {
-      if (event.data.type === 'EMBEDDING_GENERATED') {
-        window.removeEventListener('message', handleMessage);
-        if (event.data.success) {
-          resolve(new Float32Array(event.data.embedding));
-        } else {
-          reject(new Error(event.data.error));
-        }
-      }
-    };
-    
-    window.addEventListener('message', handleMessage);
-    sandboxFrame.contentWindow.postMessage({
-      type: 'GENERATE_EMBEDDING',
-      imageData: Array.from(imageData.data)
-    }, '*');
-  });
-}
-
-// Add this function to clear all frames and restore original images
-function clearAllFrames() {
-  // Find all face detection wrappers
-  const wrappers = document.querySelectorAll('.face-detection-wrapper');
-  
-  wrappers.forEach(wrapper => {
-    // Get the original image
-    const img = wrapper.querySelector('img, image');
-    if (img) {
-      // Remove the wrapper and insert the original image back
-      wrapper.parentNode.insertBefore(img, wrapper);
-      wrapper.remove();
-    }
-  });
-  
-  // Clear the processed images set to allow reprocessing if needed
-  state.processedImages.clear();
-}
-
-/**
- * Scales back detection boxes based on the image scale factor
- * @param {Array<Object>} detections - Array of face detections
- * @param {number} scaleFactor - Scale factor to apply
- */
-function scaleDetections(detections, scaleFactor) {
-  detections.forEach(detection => {
-    detection.box.x /= scaleFactor;
-    detection.box.y /= scaleFactor;
-    detection.box.width /= scaleFactor;
-    detection.box.height /= scaleFactor;
-  });
-}
-
-/**
- * Creates a canvas for drawing face detections
- * @param {HTMLImageElement} img - The source image
- * @returns {HTMLCanvasElement} The detection canvas
- */
-function createDetectionCanvas(img) {
-  const canvas = document.createElement('canvas');
-  canvas.className = 'face-detection-canvas';
-  canvas.style.position = 'absolute';
-  canvas.style.top = '0';
-  canvas.style.left = '0';
-  canvas.style.pointerEvents = 'none';
-  
-  canvas.width = img.width;
-  canvas.height = img.height;
-  canvas.style.width = img.width + 'px';
-  canvas.style.height = img.height + 'px';
-  
-  return canvas;
-}
-
-/**
- * Adds a result indicator to the wrapper
- * @param {HTMLElement} wrapper - The wrapper element
- * @param {string} text - The text to display
- */
-function addResultIndicator(wrapper, text) {
-  const indicator = document.createElement('div');
-  indicator.className = 'result-indicator';
-  indicator.style.position = 'absolute';
-  indicator.style.top = '5px';
-  indicator.style.right = '5px';
-  indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-  indicator.style.color = 'white';
-  indicator.style.padding = '2px 5px';
-  indicator.style.borderRadius = '3px';
-  indicator.style.fontSize = '12px';
-  indicator.textContent = text;
-  wrapper.appendChild(indicator);
-}
-
-/**
- * Draws face detections on the canvas
- * @param {HTMLCanvasElement} canvas - The canvas to draw on
- * @param {Array<Object>} detections - Array of face detections
- * @param {HTMLImageElement} img - The source image
- */
-function drawDetections(canvas, detections, img) {
-  const ctx = canvas.getContext('2d');
-  const displayToNaturalRatioX = img.naturalWidth / img.width;
-  const displayToNaturalRatioY = img.naturalHeight / img.height;
-  
-  detections.forEach((detection, index) => {
-    const box = detection.box;
-    
-    // Scale coordinates from natural size to display size
-    const scaledBox = {
-      x: box.x / displayToNaturalRatioX,
-      y: box.y / displayToNaturalRatioY,
-      width: box.width / displayToNaturalRatioX,
-      height: box.height / displayToNaturalRatioY
-    };
-    
-    // Draw face box
-    ctx.strokeStyle = 'red';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(
-      scaledBox.x,
-      scaledBox.y,
-      scaledBox.width,
-      scaledBox.height
-    );
-    
-    // Draw corners
-    const cornerSize = Math.min(scaledBox.width, scaledBox.height) * 0.2;
-    ctx.lineWidth = 2;
-    
-    // Define corners
-    const corners = [
-      // Top-left
-      [scaledBox.x, scaledBox.y, scaledBox.x + cornerSize, scaledBox.y],
-      [scaledBox.x, scaledBox.y, scaledBox.x, scaledBox.y + cornerSize],
-      // Top-right
-      [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y],
-      [scaledBox.x + scaledBox.width, scaledBox.y, scaledBox.x + scaledBox.width, scaledBox.y + cornerSize],
-      // Bottom-left
-      [scaledBox.x, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x, scaledBox.y + scaledBox.height],
-      [scaledBox.x, scaledBox.y + scaledBox.height, scaledBox.x + cornerSize, scaledBox.y + scaledBox.height],
-      // Bottom-right
-      [scaledBox.x + scaledBox.width - cornerSize, scaledBox.y + scaledBox.height, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height],
-      [scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height - cornerSize, scaledBox.x + scaledBox.width, scaledBox.y + scaledBox.height]
-    ];
-    
-    // Draw corners
-    corners.forEach(([x1, y1, x2, y2]) => {
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-    });
-    
-    // Add face number if enabled
-    if (flagShowFrameonImage.addLabel) {
-      const fontSize = Math.max(12, Math.min(scaledBox.width, scaledBox.height) * 0.2);
-      ctx.font = `${fontSize}px Arial`;
-      const text = `Face ${index + 1}`;
-      const textWidth = ctx.measureText(text).width;
-      
-      // Draw text background
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-      ctx.fillRect(scaledBox.x, scaledBox.y - fontSize - 8, textWidth + 6, fontSize + 4);
-      
-      // Draw text
-      ctx.fillStyle = 'white';
-      ctx.fillText(text, scaledBox.x + 3, scaledBox.y - 6);
-    }
-  });
-}
