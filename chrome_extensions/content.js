@@ -66,6 +66,80 @@ const modelStatus = {
 };
 
 //=============================================================================
+// Positive Embeddings Management
+//=============================================================================
+
+/** @type {Float32Array[]} */
+let positiveEmbeddings = [];
+let isPositiveEmbeddingsLoaded = false;
+
+/**
+ * Loads positive embeddings from JSON file
+ * @returns {Promise<void>}
+ */
+async function loadPositiveEmbeddings() {
+    if (isPositiveEmbeddingsLoaded) return;
+
+    try {
+        const embeddingsPath = chrome.runtime.getURL('models/positive_embeddings.json');
+        const response = await fetch(embeddingsPath);
+        if (!response.ok) {
+            throw new Error(`Failed to load positive embeddings: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+            throw new Error('Invalid positive embeddings format: expected array');
+        }
+
+        // Take only the first 10 embeddings
+        const limitedData = data.slice(0, 10);
+        
+        // Convert embeddings to Float32Array for efficient comparison
+        positiveEmbeddings = limitedData.map(embedding => {
+            if (!Array.isArray(embedding) || embedding.length !== 512) {
+                throw new Error('Invalid embedding format: expected 512-dimensional array');
+            }
+            return new Float32Array(embedding);
+        });
+
+        console.log(`Loaded ${positiveEmbeddings.length} positive embeddings (limited to first 10)`);
+        isPositiveEmbeddingsLoaded = true;
+    } catch (error) {
+        console.error('Error loading positive embeddings:', error);
+        throw error;
+    }
+}
+
+/**
+ * Compares a face embedding with all positive embeddings
+ * @param {Float32Array} faceEmbedding - The embedding to compare
+ * @returns {Promise<{maxSimilarity: number, matchIndex: number}>}
+ */
+async function compareWithPositiveEmbeddings(faceEmbedding) {
+    if (!isPositiveEmbeddingsLoaded) {
+        throw new Error('Positive embeddings not loaded');
+    }
+
+    let maxSimilarity = -1;
+    let matchIndex = -1;
+
+    for (let i = 0; i < positiveEmbeddings.length; i++) {
+        try {
+            const similarity = await computeFaceSimilarity(faceEmbedding, positiveEmbeddings[i]);
+            if (similarity > maxSimilarity) {
+                maxSimilarity = similarity;
+                matchIndex = i;
+            }
+        } catch (error) {
+            console.warn(`Error comparing with positive embedding ${i}:`, error);
+        }
+    }
+
+    return { maxSimilarity, matchIndex };
+}
+
+//=============================================================================
 // Model Management
 //=============================================================================
 
@@ -201,7 +275,7 @@ let isLoadingModels = false;
  */
 async function loadFaceApiModels() {
     // Check if models are already loaded
-    if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded) {
+    if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded && modelStatus.myModel.loaded) {
         return;
     }
 
@@ -215,7 +289,7 @@ async function loadFaceApiModels() {
         while (isLoadingModels && (Date.now() - waitStart) < 30000) {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
-        if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded) {
+        if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded && modelStatus.myModel.loaded) {
             return;
         }
         if (isLoadingModels) {
@@ -274,63 +348,70 @@ async function loadFaceApiModels() {
             }
         }
         
-        // Verify FaceAPI loaded successfully before proceeding
-        if (!modelStatus.faceApi.loaded) {
-            throw new Error('FaceAPI model failed to load');
-        }
-        
         // Load FaceNet model if not already loaded
         if (!modelStatus.faceNet.loaded && !modelStatus.faceNet.loading) {
             console.log('Loading FaceNet model...');
-            modelStatus.faceNet.loading = true;
-            modelStatus.faceNet.error = null;
+            await loadFaceNetModel();
+        }
+
+        // Load similarity model if not already loaded
+        if (!modelStatus.myModel.loaded && !modelStatus.myModel.loading) {
+            console.log('Loading similarity model...');
+            modelStatus.myModel.loading = true;
+            modelStatus.myModel.error = null;
             
             try {
+                const modelPath = chrome.runtime.getURL('models/myModel/tfjs_graph_model/model.json');
+                // Send load request to sandbox with proper parameters
                 await new Promise((resolve, reject) => {
                     const handleMessage = (event) => {
-                        if (event.data.type === 'MODEL_LOADED' && event.data.modelName === 'faceNet') {
+                        if (event.data.type === 'MODEL_LOADED' && event.data.modelName === 'myModel') {
                             window.removeEventListener('message', handleMessage);
                             if (event.data.success) {
-                                modelStatus.faceNet.loaded = true;
-                                console.log('FaceNet model loaded successfully');
+                                console.log('Similarity model loaded successfully');
+                                modelStatus.myModel.loaded = true;
                                 resolve();
                             } else {
-                                reject(new Error(event.data.error || 'FaceNet model loading failed'));
+                                reject(new Error(event.data.error || 'Similarity model loading failed'));
                             }
                         }
                     };
                     
                     window.addEventListener('message', handleMessage);
-                    const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
+                    console.log('Sending load request for similarity model...');
                     sandboxFrame.contentWindow.postMessage({
                         type: 'LOAD_MODEL',
-                        modelName: 'faceNet',
-                        modelPath: modelPath
+                        modelName: 'myModel',
+                        modelPath: modelPath,
+                        waitForWarmup: true
                     }, '*');
                     
                     setTimeout(() => {
                         window.removeEventListener('message', handleMessage);
-                        reject(new Error('FaceNet model load timeout'));
-                    }, 30000);
+                        reject(new Error('Similarity model load timeout'));
+                    }, 45000);
                 });
+                
+                console.log('Similarity model loaded and warmed up successfully');
             } catch (error) {
-                modelStatus.faceNet.error = error;
-                console.error('Failed to load FaceNet model:', error);
+                modelStatus.myModel.error = error;
+                console.error('Failed to load similarity model:', error);
                 throw error;
             } finally {
-                modelStatus.faceNet.loading = false;
+                modelStatus.myModel.loading = false;
             }
         }
         
-        // Final verification of both models
-        if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded) {
+        // Final verification of all models
+        if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
             const errors = [];
             if (!modelStatus.faceApi.loaded) errors.push('FaceAPI');
             if (!modelStatus.faceNet.loaded) errors.push('FaceNet');
+            if (!modelStatus.myModel.loaded) errors.push('Similarity');
             throw new Error(`Models not loaded: ${errors.join(', ')}`);
         }
         
-        // Set state after both models are confirmed loaded
+        // Set state after all models are confirmed loaded
         state.modelsLoaded = true;
         console.log('All models loaded successfully');
         
@@ -488,8 +569,11 @@ async function createProxyImage(originalImg) {
 // Modify detectFacesWithFaceApi function
 async function detectFacesWithFaceApi(img) {
     try {
-        // Ensure models are loaded before processing
-        await ensureModelsLoaded();
+        // Ensure models and positive embeddings are loaded
+        await Promise.all([
+            ensureModelsLoaded(),
+            loadPositiveEmbeddings()
+        ]);
         
         const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
         const wrapper = createWrapper(img);
@@ -526,10 +610,15 @@ async function detectFacesWithFaceApi(img) {
             const faceCanvas = await extractFaceRegion(proxyImg, detection);
             try {
                 const embedding = await generateEmbedding(faceCanvas);
+                const comparison = await compareWithPositiveEmbeddings(embedding);
+                
                 faceEmbeddings.push({
                     embedding,
-                    detection
+                    detection,
+                    similarity: comparison.maxSimilarity,
+                    matchIndex: comparison.matchIndex
                 });
+                
                 imageTracker.markProcessed(src, true, embedding);
             } catch (error) {
                 console.error('Embedding generation error:', error);
@@ -537,7 +626,7 @@ async function detectFacesWithFaceApi(img) {
             }
         }
 
-        // Store embeddings for later use instead of computing similarities immediately
+        // Store embeddings and comparison results
         if (faceEmbeddings.length > 0) {
             imageTracker.add(src, {
                 embeddings: faceEmbeddings,
@@ -545,7 +634,8 @@ async function detectFacesWithFaceApi(img) {
             });
         }
         
-        updateVisualization(wrapper, img, detections);
+        // Update visualization with similarity information
+        updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings);
         
     } catch (error) {
         console.error('Face detection error:', error);
@@ -606,27 +696,39 @@ const processingQueue = {
 
 // Helper functions for improved visualization
 function createWrapper(img) {
-  // Store original styles if not already stored
-  if (!img.getAttribute('data-original-style')) {
-    img.setAttribute('data-original-style', img.style.cssText);
-  }
-  
-  const wrapper = document.createElement('div');
-  wrapper.className = 'face-detection-wrapper';
-  wrapper.style.position = 'relative';
-  wrapper.style.display = 'inline-block';
-  wrapper.style.width = img.width + 'px';
-  wrapper.style.height = img.height + 'px';
-  
-  if (flagShowFrameonImage.frameProsessedImage) {
-    wrapper.style.border = '3px solid #00ff00';
-    wrapper.style.boxSizing = 'border-box';
-    wrapper.style.padding = '2px';
-  }
-  
-  img.parentElement.insertBefore(wrapper, img);
-  wrapper.appendChild(img);
-  return wrapper;
+    // Store original styles if not already stored
+    if (!img.getAttribute('data-original-style')) {
+        img.setAttribute('data-original-style', img.style.cssText);
+    }
+    
+    // Create wrapper that maintains original image dimensions
+    const wrapper = document.createElement('div');
+    wrapper.className = 'face-detection-wrapper';
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    wrapper.style.margin = '0';
+    wrapper.style.padding = '0';
+    
+    // Get the actual dimensions of the image
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    
+    // Preserve original image styles and positioning
+    const computedStyle = window.getComputedStyle(img);
+    wrapper.style.margin = computedStyle.margin;
+    wrapper.style.verticalAlign = computedStyle.verticalAlign;
+    
+    // Keep original image unchanged
+    img.style.display = 'block';
+    img.style.maxWidth = '100%';
+    img.style.margin = '0';
+    img.style.padding = '0';
+    
+    // Replace the image with the wrapper
+    img.parentElement.insertBefore(wrapper, img);
+    wrapper.appendChild(img);
+    
+    return wrapper;
 }
 
 function addLoadingIndicator(wrapper) {
@@ -644,31 +746,168 @@ function addLoadingIndicator(wrapper) {
   wrapper.appendChild(indicator);
 }
 
-function updateVisualization(wrapper, img, detections) {
-  // Remove existing canvas and indicators
-  const existingCanvas = wrapper.querySelector('.face-detection-canvas');
-  const processingIndicator = wrapper.querySelector('.processing-indicator');
-  if (existingCanvas) existingCanvas.remove();
-  if (processingIndicator) processingIndicator.remove();
-  
-  if (detections.length === 0) {
-    if (flagShowFrameonImage.addLabel) {
-      addResultIndicator(wrapper, 'No Faces Detected');
+function createDetectionCanvas(img) {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'face-detection-canvas';
+    
+    // Set canvas dimensions to match original image
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    canvas.width = width;
+    canvas.height = height;
+    
+    // Position canvas as overlay
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    
+    return canvas;
+}
+
+function updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings) {
+    // Remove existing canvas and indicators
+    const existingCanvas = wrapper.querySelector('.face-detection-canvas');
+    const processingIndicator = wrapper.querySelector('.processing-indicator');
+    if (existingCanvas) existingCanvas.remove();
+    if (processingIndicator) processingIndicator.remove();
+    
+    if (faceEmbeddings.length === 0) {
+        if (flagShowFrameonImage.addLabel) {
+            addResultIndicator(wrapper, 'No Faces Detected');
+        }
+        return;
     }
-    return;
-  }
-  
-  // Create and setup canvas
-  const canvas = createDetectionCanvas(img);
-  if (flagShowFrameonImage.frameFaceDetected) {
-    drawDetections(canvas, detections, img);
-  }
-  
-  if (flagShowFrameonImage.addLabel) {
-    addResultIndicator(wrapper, `${detections.length} Face(s) Detected`);
-  }
-  
-  wrapper.appendChild(canvas);
+    
+    // Create and setup canvas
+    const canvas = createDetectionCanvas(img);
+    
+    // Set canvas size to match actual image dimensions
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    canvas.width = width;
+    canvas.height = height;
+    
+    if (flagShowFrameonImage.frameFaceDetected) {
+        drawDetectionsWithSimilarity(canvas, faceEmbeddings);
+    }
+    
+    if (flagShowFrameonImage.addLabel) {
+        const matchCount = faceEmbeddings.filter(f => f.similarity > 0.7).length;
+        addResultIndicator(wrapper, 
+            `${faceEmbeddings.length} Face(s) Detected, ${matchCount} Match(es)`);
+    }
+    
+    wrapper.appendChild(canvas);
+}
+
+/**
+ * Draws face detection boxes with similarity information
+ * @param {HTMLCanvasElement} canvas - The canvas to draw on
+ * @param {Array} faceEmbeddings - Array of face embeddings with similarity info
+ */
+function drawDetectionsWithSimilarity(canvas, faceEmbeddings) {
+    const ctx = canvas.getContext('2d');
+    ctx.lineWidth = 2;  // Thinner lines for better precision
+    
+    faceEmbeddings.forEach((face, index) => {
+        const { x, y, width, height } = face.detection.box;
+        const similarity = face.similarity || 0;
+        
+        // Calculate frame dimensions with minimal padding
+        const padding = Math.min(width, height) * 0.02;  // Reduced padding to 2%
+        const boxX = x - padding;
+        const boxY = y - padding;
+        const boxWidth = width + (padding * 2);
+        const boxHeight = height + (padding * 2);
+        const cornerRadius = Math.min(boxWidth, boxHeight) * 0.05; // Reduced corner radius to 5%
+        
+        // Set colors based on similarity
+        let strokeColor, fillColor, labelColor;
+        if (similarity > 0.7) {
+            strokeColor = 'rgba(0, 255, 0, 0.9)';  // More visible green
+            fillColor = 'rgba(0, 255, 0, 0.05)';   // Very subtle fill
+            labelColor = 'rgba(0, 255, 0, 1.0)';
+        } else if (similarity > 0.5) {
+            strokeColor = 'rgba(255, 165, 0, 0.9)';
+            fillColor = 'rgba(255, 165, 0, 0.05)';
+            labelColor = 'rgba(255, 165, 0, 1.0)';
+        } else {
+            strokeColor = 'rgba(255, 0, 0, 0.9)';
+            fillColor = 'rgba(255, 0, 0, 0.05)';
+            labelColor = 'rgba(255, 0, 0, 1.0)';
+        }
+        
+        // Draw rounded rectangle for face frame
+        ctx.beginPath();
+        ctx.moveTo(boxX + cornerRadius, boxY);
+        ctx.lineTo(boxX + boxWidth - cornerRadius, boxY);
+        ctx.quadraticCurveTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + cornerRadius);
+        ctx.lineTo(boxX + boxWidth, boxY + boxHeight - cornerRadius);
+        ctx.quadraticCurveTo(boxX + boxWidth, boxY + boxHeight, boxX + boxWidth - cornerRadius, boxY + boxHeight);
+        ctx.lineTo(boxX + cornerRadius, boxY + boxHeight);
+        ctx.quadraticCurveTo(boxX, boxY + boxHeight, boxX, boxY + boxHeight - cornerRadius);
+        ctx.lineTo(boxX, boxY + cornerRadius);
+        ctx.quadraticCurveTo(boxX, boxY, boxX + cornerRadius, boxY);
+        ctx.closePath();
+        
+        // Draw frame with subtle shadow
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = 2;
+        ctx.strokeStyle = strokeColor;
+        ctx.stroke();
+        ctx.shadowColor = 'transparent';
+        
+        // Fill with very subtle color
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+        
+        if (flagShowFrameonImage.addLabel) {
+            // Create compact label
+            const labelHeight = 20;
+            const labelWidth = 100;
+            const labelX = boxX;
+            const labelY = Math.max(0, boxY - labelHeight - 2); // Prevent label from going above image
+            
+            // Draw label background
+            ctx.beginPath();
+            const labelRadius = 2;
+            ctx.moveTo(labelX + labelRadius, labelY);
+            ctx.lineTo(labelX + labelWidth - labelRadius, labelY);
+            ctx.quadraticCurveTo(labelX + labelWidth, labelY, labelX + labelWidth, labelY + labelRadius);
+            ctx.lineTo(labelX + labelWidth, labelY + labelHeight - labelRadius);
+            ctx.quadraticCurveTo(labelX + labelWidth, labelY + labelHeight, labelX + labelWidth - labelRadius, labelY + labelHeight);
+            ctx.lineTo(labelX + labelRadius, labelY + labelHeight);
+            ctx.quadraticCurveTo(labelX, labelY + labelHeight, labelX, labelY + labelHeight - labelRadius);
+            ctx.lineTo(labelX, labelY + labelRadius);
+            ctx.quadraticCurveTo(labelX, labelY, labelX + labelRadius, labelY);
+            ctx.closePath();
+            
+            // Fill label background
+            const gradient = ctx.createLinearGradient(labelX, labelY, labelX, labelY + labelHeight);
+            gradient.addColorStop(0, 'rgba(0, 0, 0, 0.8)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)');
+            ctx.fillStyle = gradient;
+            ctx.fill();
+            
+            // Add subtle label border
+            ctx.strokeStyle = labelColor;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            
+            // Draw text with improved styling
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = '11px Arial';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(
+                `Face ${index + 1} (${(similarity * 100).toFixed(1)}%)`,
+                labelX + 4,
+                labelY + (labelHeight / 2)
+            );
+        }
+    });
 }
 
 /**
@@ -786,7 +1025,7 @@ function isValidElement(element) {
 
 // Add a function to ensure models are loaded
 async function ensureModelsLoaded() {
-    if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded) {
+    if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
         console.log('Models not loaded, loading now...');
         try {
             await loadFaceApiModels();
@@ -797,6 +1036,9 @@ async function ensureModelsLoaded() {
             }
             if (!modelStatus.faceNet.loaded) {
                 throw new Error('FaceNet model failed to load');
+            }
+            if (!modelStatus.myModel.loaded) {
+                throw new Error('Similarity model failed to load');
             }
             
             console.log('Models loaded successfully');
@@ -1278,13 +1520,13 @@ async function retryModelLoad(loadFunction, maxAttempts = 3, delayMs = 1000) {
     throw lastError;
 }
 
-// Modify loadTFModel to use retry mechanism
+// Modify loadTFModel to use retry mechanism with longer timeout
 async function loadTFModel(modelName, modelPath) {
     if (modelStatus[modelName].loaded) return;
     
     if (modelStatus[modelName].loading) {
         const startTime = Date.now();
-        while (modelStatus[modelName].loading && (Date.now() - startTime) < 30000) {
+        while (modelStatus[modelName].loading && (Date.now() - startTime) < 60000) {  // Increased to 60 seconds
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         if (modelStatus[modelName].loaded) return;
@@ -1298,38 +1540,49 @@ async function loadTFModel(modelName, modelPath) {
         modelStatus[modelName].loading = true;
         modelStatus[modelName].error = null;
         
-        await createSandboxFrame();
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Ensure sandbox frame is ready
+        if (!sandboxFrame || !sandboxFrame.contentWindow) {
+            console.log('Creating sandbox frame for model loading...');
+            await createSandboxFrame();
+        }
+        
+        // Add delay to ensure frame is fully ready
+        await new Promise(resolve => setTimeout(resolve, 2000));
         
         await retryModelLoad(async () => {
             return new Promise((resolve, reject) => {
                 const handleMessage = (event) => {
-                    if (event.data.type === 'MODEL_LOADED') {
+                    if (event.data.type === 'MODEL_LOADED' && event.data.modelName === modelName) {
                         window.removeEventListener('message', handleMessage);
                         if (event.data.success) {
+                            console.log(`${modelName} model loaded successfully`);
                             modelStatus[modelName].loaded = true;
                             resolve();
                         } else {
+                            console.error(`${modelName} model loading failed:`, event.data.error);
                             reject(new Error(event.data.error || `${modelName} model loading failed`));
                         }
                     }
                 };
                 
                 window.addEventListener('message', handleMessage);
+                console.log(`Sending load request for ${modelName} model...`);
                 sandboxFrame.contentWindow.postMessage({ 
                     type: 'LOAD_MODEL',
                     modelName: modelName,
-                    modelPath: modelPath
+                    modelPath: modelPath,
+                    waitForWarmup: true
                 }, '*');
                 
                 setTimeout(() => {
                     window.removeEventListener('message', handleMessage);
                     reject(new Error('Model load response timeout'));
-                }, 30000);
+                }, 45000);  // Increased timeout for model loading
             });
-        });
+        }, 3, 5000);  // Increased retry delay
         
     } catch (error) {
+        console.error(`Error loading ${modelName} model:`, error);
         modelStatus[modelName].error = error;
         throw error;
     } finally {
@@ -1350,52 +1603,27 @@ function clearModelStatus() {
     });
 }
 
-// Modify createScaledImage function
+// Modify createScaledImage function to maintain original dimensions
 async function createScaledImage(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
-    // Calculate scale factor to keep image within reasonable bounds
-    const MAX_SIZE = 640;
-    let width = img.width || img.naturalWidth;
-    let height = img.height || img.naturalHeight;
-    let scaleFactor = 1;
-    
-    if (width > MAX_SIZE || height > MAX_SIZE) {
-        scaleFactor = MAX_SIZE / Math.max(width, height);
-        width = Math.floor(width * scaleFactor);
-        height = Math.floor(height * scaleFactor);
-    }
+    // Use original dimensions
+    const width = img.width || img.naturalWidth;
+    const height = img.height || img.naturalHeight;
     
     canvas.width = width;
     canvas.height = height;
     
-    // Draw scaled image
+    // Draw original size image
     try {
         ctx.drawImage(img, 0, 0, width, height);
-        canvas.scaleFactor = scaleFactor;
+        canvas.scaleFactor = 1;  // No scaling
     } catch (error) {
         console.error('Error drawing image to canvas:', error);
-        throw new Error('Failed to create scaled image');
+        throw new Error('Failed to create image canvas');
     }
     
-    return canvas;
-}
-
-/**
- * Creates a canvas for drawing face detections
- * @param {HTMLImageElement} img - The source image
- * @returns {HTMLCanvasElement} A canvas for drawing detections
- */
-function createDetectionCanvas(img) {
-    const canvas = document.createElement('canvas');
-    canvas.className = 'face-detection-canvas';
-    canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.pointerEvents = 'none';
-    canvas.width = img.width;
-    canvas.height = img.height;
     return canvas;
 }
 
@@ -1468,6 +1696,7 @@ function checkModelStatus() {
     const status = {
         faceApi: modelStatus.faceApi.loaded,
         faceNet: modelStatus.faceNet.loaded,
+        myModel: modelStatus.myModel.loaded,
         errors: []
     };
     
@@ -1476,6 +1705,9 @@ function checkModelStatus() {
     }
     if (!modelStatus.faceNet.loaded && modelStatus.faceNet.error) {
         status.errors.push(`FaceNet: ${modelStatus.faceNet.error.message}`);
+    }
+    if (!modelStatus.myModel.loaded && modelStatus.myModel.error) {
+        status.errors.push(`Similarity: ${modelStatus.myModel.error.message}`);
     }
     
     return status;
@@ -1491,6 +1723,10 @@ function getModelLoadingStatus() {
         faceNet: {
             ...modelStatus.faceNet,
             loading: modelStatus.faceNet.loading
+        },
+        myModel: {
+            ...modelStatus.myModel,
+            loading: modelStatus.myModel.loading
         },
         isLoadingModels,
         attempts: state.modelLoadAttempts
