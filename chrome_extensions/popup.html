@@ -134,6 +134,125 @@
         .status.show {
             opacity: 1;
         }
+
+        .section {
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .section-title {
+            color: #2196F3;
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .threshold-description {
+            color: #666;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .radio-group {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            padding: 8px;
+            background-color: white;
+            border-radius: 6px;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: center;
+            padding: 4px;
+        }
+
+        .radio-option input[type="radio"] {
+            margin-right: 6px;
+            cursor: pointer;
+        }
+
+        .radio-option label {
+            font-size: 13px;
+            color: #333;
+            cursor: pointer;
+        }
+
+        .radio-option:hover {
+            background-color: #f0f7ff;
+            border-radius: 4px;
+        }
+
+        .radio-option input[type="radio"]:checked + label {
+            color: #2196F3;
+            font-weight: 600;
+        }
+
+        .checkbox-option {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+        }
+
+        .checkbox-option input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        .slider-container {
+            padding: 10px 15px;
+            background-color: white;
+            border-radius: 6px;
+        }
+
+        .slider-with-labels {
+            position: relative;
+            margin: 20px 10px 5px;
+        }
+
+        .threshold-slider {
+            width: 100%;
+            height: 4px;
+            -webkit-appearance: none;
+            background: #e0e0e0;
+            outline: none;
+            border-radius: 2px;
+            margin: 0 0 20px 0;
+        }
+
+        .threshold-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: #2196F3;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: background .3s ease-in-out;
+        }
+
+        .threshold-slider::-webkit-slider-thumb:hover {
+            background: #1976D2;
+        }
+
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .threshold-value {
+            text-align: center;
+            font-size: 16px;
+            font-weight: bold;
+            color: #2196F3;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -197,6 +316,25 @@
                 <input type="number" id="minimumImageSizeNumber" min="0" max="10000">
             </div>
             <div class="setting-description">Minimum size in pixels for image processing</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Confidence Threshold</div>
+            <div class="threshold-description">Select minimum similarity percentage to consider a match:</div>
+            <div class="slider-container">
+                <div class="slider-with-labels">
+                    <input type="range" id="confidenceThreshold" min="0" max="100" step="10" value="70" class="threshold-slider">
+                    <div class="slider-labels">
+                        <span>0%</span>
+                        <span>20%</span>
+                        <span>40%</span>
+                        <span>60%</span>
+                        <span>80%</span>
+                        <span>100%</span>
+                    </div>
+                </div>
+                <div class="threshold-value">70%</div>
+            </div>
         </div>
 
         <button class="save-button">Save Settings</button>

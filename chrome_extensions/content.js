@@ -40,7 +40,8 @@ let flagShowFrameonImage = {
     frameFaceDetected: true,
     addLabel: true,
     autoProcessImages: true,
-    minimumImageSize: 100
+    minimumImageSize: 100,
+    confidenceThreshold: 70  // Default threshold value
 };
 
 /**
@@ -810,32 +811,29 @@ function updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings) {
  */
 function drawDetectionsWithSimilarity(canvas, faceEmbeddings) {
     const ctx = canvas.getContext('2d');
-    ctx.lineWidth = 2;  // Thinner lines for better precision
+    ctx.lineWidth = 2;
     
     faceEmbeddings.forEach((face, index) => {
         const { x, y, width, height } = face.detection.box;
         const similarity = face.similarity || 0;
+        const similarityPercentage = similarity * 100;
         
         // Calculate frame dimensions with minimal padding
-        const padding = Math.min(width, height) * 0.02;  // Reduced padding to 2%
+        const padding = Math.min(width, height) * 0.02;
         const boxX = x - padding;
         const boxY = y - padding;
         const boxWidth = width + (padding * 2);
         const boxHeight = height + (padding * 2);
-        const cornerRadius = Math.min(boxWidth, boxHeight) * 0.05; // Reduced corner radius to 5%
+        const cornerRadius = Math.min(boxWidth, boxHeight) * 0.05;
         
-        // Set colors based on similarity
+        // Set colors based on similarity threshold
         let strokeColor, fillColor, labelColor;
-        if (similarity > 0.7) {
-            strokeColor = 'rgba(0, 255, 0, 0.9)';  // More visible green
-            fillColor = 'rgba(0, 255, 0, 0.05)';   // Very subtle fill
+        if (similarityPercentage >= flagShowFrameonImage.confidenceThreshold) {
+            strokeColor = 'rgba(0, 255, 0, 0.9)';  // Green for match
+            fillColor = 'rgba(0, 255, 0, 0.05)';
             labelColor = 'rgba(0, 255, 0, 1.0)';
-        } else if (similarity > 0.5) {
-            strokeColor = 'rgba(255, 165, 0, 0.9)';
-            fillColor = 'rgba(255, 165, 0, 0.05)';
-            labelColor = 'rgba(255, 165, 0, 1.0)';
         } else {
-            strokeColor = 'rgba(255, 0, 0, 0.9)';
+            strokeColor = 'rgba(255, 0, 0, 0.9)';  // Red for no match
             fillColor = 'rgba(255, 0, 0, 0.05)';
             labelColor = 'rgba(255, 0, 0, 1.0)';
         }
@@ -869,7 +867,7 @@ function drawDetectionsWithSimilarity(canvas, faceEmbeddings) {
             const labelHeight = 20;
             const labelWidth = 100;
             const labelX = boxX;
-            const labelY = Math.max(0, boxY - labelHeight - 2); // Prevent label from going above image
+            const labelY = Math.max(0, boxY - labelHeight - 2);
             
             // Draw label background
             ctx.beginPath();
@@ -901,8 +899,9 @@ function drawDetectionsWithSimilarity(canvas, faceEmbeddings) {
             ctx.fillStyle = '#FFFFFF';
             ctx.font = '11px Arial';
             ctx.textBaseline = 'middle';
+            const matchText = similarityPercentage >= flagShowFrameonImage.confidenceThreshold ? 'Match' : 'No match';
             ctx.fillText(
-                `Face ${index + 1} (${(similarity * 100).toFixed(1)}%)`,
+                `Face ${index + 1} (${similarityPercentage.toFixed(1)}% - ${matchText})`,
                 labelX + 4,
                 labelY + (labelHeight / 2)
             );
@@ -1797,3 +1796,33 @@ async function computeImageSimilarities(src) {
         }
     }
 }
+
+// Add message listener for settings updates
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'SETTINGS_UPDATED') {
+        flagShowFrameonImage = {
+            ...flagShowFrameonImage,
+            ...message.settings
+        };
+        
+        // Reprocess visible images with new settings
+        if (flagShowFrameonImage.autoProcessImages) {
+            processExistingImages();
+        }
+    }
+});
+
+// Load initial settings
+chrome.storage.sync.get({
+    frameProsessedImage: true,
+    frameFaceDetected: true,
+    addLabel: true,
+    autoProcessImages: true,
+    minimumImageSize: 100,
+    confidenceThreshold: 70
+}, function(items) {
+    flagShowFrameonImage = {
+        ...flagShowFrameonImage,
+        ...items
+    };
+});

@@ -12,7 +12,8 @@ const settings = {
     addLabel: document.getElementById('addLabel'),
     autoProcessImages: document.getElementById('autoProcessImages'),
     minimumImageSizeRange: document.getElementById('minimumImageSizeRange'),
-    minimumImageSizeNumber: document.getElementById('minimumImageSizeNumber')
+    minimumImageSizeNumber: document.getElementById('minimumImageSizeNumber'),
+    confidenceThreshold: document.getElementById('confidenceThreshold')
 };
 
 /**
@@ -25,7 +26,8 @@ function saveAndApplySettings(showStatus = true) {
         frameFaceDetected: settings.frameFaceDetected.checked,
         addLabel: settings.addLabel.checked,
         autoProcessImages: settings.autoProcessImages.checked,
-        minimumImageSize: parseInt(settings.minimumImageSizeNumber.value)
+        minimumImageSize: parseInt(settings.minimumImageSizeNumber.value),
+        confidenceThreshold: parseInt(settings.confidenceThreshold.value)
     };
 
     console.log('Saving new settings:', newSettings);
@@ -92,7 +94,8 @@ function loadSavedSettings() {
         frameFaceDetected: true,
         addLabel: true,
         autoProcessImages: true,
-        minimumImageSize: 100
+        minimumImageSize: 100,
+        confidenceThreshold: 70
     }, (items) => {
         // Set checkbox states
         settings.frameProsessedImage.checked = items.frameProsessedImage;
@@ -103,7 +106,18 @@ function loadSavedSettings() {
         // Set range and number input values
         settings.minimumImageSizeRange.value = items.minimumImageSize;
         settings.minimumImageSizeNumber.value = items.minimumImageSize;
+
+        // Set confidence threshold slider
+        settings.confidenceThreshold.value = items.confidenceThreshold;
+        updateThresholdValue(items.confidenceThreshold);
     });
+}
+
+function updateThresholdValue(value) {
+    const thresholdValue = document.querySelector('.threshold-value');
+    if (thresholdValue) {
+        thresholdValue.textContent = `${value}%`;
+    }
 }
 
 // Initialize event listeners
@@ -153,10 +167,50 @@ function initializeEventListeners() {
             });
         });
     });
+
+    // Save settings when changed
+    document.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(input => {
+        input.addEventListener('change', saveSettings);
+    });
+
+    // Add confidence threshold slider listener
+    settings.confidenceThreshold.addEventListener('input', (e) => {
+        updateThresholdValue(e.target.value);
+        saveAndApplySettings(false);
+    });
 }
 
 // Initialize popup
 document.addEventListener('DOMContentLoaded', () => {
     loadSavedSettings();
     initializeEventListeners();
-}); 
+});
+
+function saveSettings() {
+    // Get current settings
+    const settings = {
+        frameProsessedImage: document.getElementById('frameProsessedImage').checked,
+        frameFaceDetected: document.getElementById('frameFaceDetected').checked,
+        addLabel: document.getElementById('addLabel').checked,
+        autoProcessImages: document.getElementById('autoProcessImages').checked,
+        confidenceThreshold: parseInt(document.getElementById('confidenceThreshold').value)
+    };
+
+    // Save to storage
+    chrome.storage.sync.set(settings, function() {
+        // Show save confirmation
+        const status = document.querySelector('.status');
+        status.classList.add('show');
+        setTimeout(() => status.classList.remove('show'), 2000);
+
+        // Notify content script
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+            if (tabs[0]?.id) {
+                chrome.tabs.sendMessage(tabs[0].id, {
+                    type: 'SETTINGS_UPDATED',
+                    settings: settings
+                });
+            }
+        });
+    });
+} 
