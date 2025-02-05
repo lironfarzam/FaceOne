@@ -154,6 +154,10 @@ async function createSandboxFrame() {
  * Loads the FaceNet model in sandbox
  */
 async function loadFaceNetModel() {
+    if (modelStatus.faceNet.loaded) {
+        return;
+    }
+
     const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
     return new Promise((resolve, reject) => {
         const handleMessage = (event) => {
@@ -162,6 +166,7 @@ async function loadFaceNetModel() {
                 if (event.data.success) {
                     if (event.data.modelInfo && event.data.modelInfo.warmedUp) {
                         modelStatus.faceNet.loaded = true;
+                        state.faceNetLoaded = true;
                         console.log('FaceNet model loaded and warmed up successfully');
                         resolve();
                     } else {
@@ -521,28 +526,23 @@ async function detectFacesWithFaceApi(img) {
             const faceCanvas = await extractFaceRegion(proxyImg, detection);
             try {
                 const embedding = await generateEmbedding(faceCanvas);
-                faceEmbeddings.push(embedding);
+                faceEmbeddings.push({
+                    embedding,
+                    detection
+                });
                 imageTracker.markProcessed(src, true, embedding);
-                
-                // If there are multiple faces, compute similarities between them
-                if (faceEmbeddings.length > 1) {
-                    const lastIndex = faceEmbeddings.length - 1;
-                    for (let i = 0; i < lastIndex; i++) {
-                        try {
-                            const similarity = await computeFaceSimilarity(
-                                faceEmbeddings[i],
-                                faceEmbeddings[lastIndex]
-                            );
-                            console.log(`Similarity between face ${i + 1} and ${lastIndex + 1}: ${similarity}`);
-                        } catch (error) {
-                            console.error('Error computing similarity:', error);
-                        }
-                    }
-                }
             } catch (error) {
                 console.error('Embedding generation error:', error);
                 imageTracker.markProcessed(src, false);
             }
+        }
+
+        // Store embeddings for later use instead of computing similarities immediately
+        if (faceEmbeddings.length > 0) {
+            imageTracker.add(src, {
+                embeddings: faceEmbeddings,
+                timestamp: Date.now()
+            });
         }
         
         updateVisualization(wrapper, img, detections);
@@ -1127,17 +1127,16 @@ async function processExistingImages() {
     }
 }
 
-// Modify generateEmbedding to verify model readiness
+// Modify generateEmbedding to ensure model readiness
 async function generateEmbedding(faceCanvas) {
     return new Promise((resolve, reject) => {
-        // First check model status
         const checkModelStatus = (event) => {
             if (event.data.type === 'MODEL_STATUS') {
                 window.removeEventListener('message', checkModelStatus);
                 if (event.data.isReady) {
                     proceedWithEmbedding();
                 } else {
-                    reject(new Error('FaceNet model not ready: ' + event.data.reason));
+                    reject(new Error('FaceNet model not ready: ' + (event.data.reason || 'Unknown reason')));
                 }
             }
         };
@@ -1149,13 +1148,13 @@ async function generateEmbedding(faceCanvas) {
                     if (event.data.success) {
                         resolve(new Float32Array(event.data.embedding));
                     } else {
-                        reject(new Error(event.data.error));
+                        reject(new Error(event.data.error || 'Embedding generation failed'));
                     }
                 }
             };
 
             window.addEventListener('message', handleEmbedding);
-            const imageData = faceCanvas.getContext("2d").getImageData(0, 0, faceCanvas.width, faceCanvas.height);
+            const imageData = faceCanvas.getContext('2d').getImageData(0, 0, faceCanvas.width, faceCanvas.height);
             
             sandboxFrame.contentWindow.postMessage({
                 type: 'GENERATE_EMBEDDING',
@@ -1168,7 +1167,6 @@ async function generateEmbedding(faceCanvas) {
             }, 30000);
         };
 
-        // First check model status
         window.addEventListener('message', checkModelStatus);
         sandboxFrame.contentWindow.postMessage({
             type: 'CHECK_MODEL_STATUS',
@@ -1522,4 +1520,44 @@ async function checkTensorFlowStatus() {
             resolve({ initialized: false, error: 'Status check timeout' });
         }, 5000);
     });
+}
+
+// Add function to compute similarities when needed
+async function computeImageSimilarities(src) {
+    const imageInfo = imageTracker.images.get(src);
+    if (!imageInfo || !imageInfo.embeddings || imageInfo.embeddings.length <= 1) {
+        return;
+    }
+
+    // Only compute similarities if we haven't already
+    if (!imageInfo.similarities) {
+        try {
+            const similarities = [];
+            const embeddings = imageInfo.embeddings;
+            
+            for (let i = 0; i < embeddings.length; i++) {
+                for (let j = i + 1; j < embeddings.length; j++) {
+                    try {
+                        const similarity = await computeFaceSimilarity(
+                            embeddings[i].embedding,
+                            embeddings[j].embedding
+                        );
+                        similarities.push({
+                            face1: i + 1,
+                            face2: j + 1,
+                            similarity
+                        });
+                    } catch (error) {
+                        if (error.message !== 'Similarity model not loaded') {
+                            console.error(`Error computing similarity between faces ${i + 1} and ${j + 1}:`, error);
+                        }
+                    }
+                }
+            }
+            
+            imageInfo.similarities = similarities;
+        } catch (error) {
+            console.error('Error computing similarities:', error);
+        }
+    }
 }

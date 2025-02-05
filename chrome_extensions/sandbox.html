@@ -541,54 +541,30 @@
             }
         }, { once: true });
 
-        // Message handler for model loading
+        // Modify handleModelLoad to use ModelManager
         async function handleModelLoad(data) {
             try {
-                const { modelName, modelPath } = data;
+                const { modelName, modelPath, waitForWarmup } = data;
                 console.log(`Loading ${modelName} model from ${modelPath}...`);
                 
-                if (!tf) {
-                    throw new Error('TensorFlow not initialized');
+                if (!modelManager.state.isInitialized) {
+                    await modelManager.initialize();
                 }
                 
-                // Load the model
-                const model = await tf.loadGraphModel(modelPath);
+                const result = await modelManager.loadModel(modelName, modelPath);
                 
-                // Store model in the appropriate variable
-                if (modelName === 'faceNet') {
-                    faceNetModel = model;
-                } else if (modelName === 'myModel') {
-                    similarityModel = model;
-                }
-                
-                // Create appropriate dummy input based on model type
-                let dummyInput;
-                if (modelName === 'faceNet') {
-                    dummyInput = tf.zeros([1, 160, 160, 3]);
-                } else if (modelName === 'myModel') {
-                    dummyInput = [tf.zeros([1, 512]), tf.zeros([1, 512])];
-                }
-                
-                // Warmup the model
-                const warmupResult = await model.predict(dummyInput);
-                await (Array.isArray(warmupResult) ? Promise.all(warmupResult.map(t => t.data())) : warmupResult.data());
-                
-                // Cleanup
-                if (Array.isArray(dummyInput)) {
-                    dummyInput.forEach(t => t.dispose());
-                } else {
-                    dummyInput.dispose();
-                }
-                if (Array.isArray(warmupResult)) {
-                    warmupResult.forEach(t => t.dispose());
-                } else {
-                    warmupResult.dispose();
+                if (waitForWarmup && !modelManager.state.warmedUp[modelName]) {
+                    await modelManager.warmupModel(modelName);
                 }
                 
                 window.parent.postMessage({
                     type: 'MODEL_LOADED',
                     modelName: modelName,
-                    success: true
+                    success: true,
+                    modelInfo: {
+                        ...result.modelInfo,
+                        warmedUp: modelManager.state.warmedUp[modelName]
+                    }
                 }, '*');
                 
             } catch (error) {
@@ -612,7 +588,7 @@
                 
                 switch (data.type) {
                     case 'INIT':
-                        await initTensorFlow();
+                        await modelManager.initialize();
                         response.success = true;
                         response.info = {
                             version: tf.version.tfjs,
@@ -626,10 +602,10 @@
                         return; // handleModelLoad sends its own response
                         
                     case 'GENERATE_EMBEDDING':
-                        if (!faceNetModel || !modelWarmedUp) {
+                        if (!modelManager.isReady('faceNet')) {
                             throw new Error('FaceNet model not ready');
                         }
-                        const result = await generateEmbedding(data.imageData);
+                        const result = await modelManager.generateEmbedding(data.imageData);
                         window.parent.postMessage(result, '*');
                         return;
                         
@@ -663,14 +639,11 @@
                         
                     case 'CHECK_MODEL_STATUS':
                         const modelName = data.modelName;
-                        const model = modelManager.models[modelName];
-                        const isWarmedUp = modelManager.state.warmedUp[modelName];
-                        
                         window.parent.postMessage({
                             type: 'MODEL_STATUS',
-                            isReady: model && isWarmedUp,
-                            reason: !model ? 'Model not loaded' : 
-                                    !isWarmedUp ? 'Model not warmed up' : null
+                            isReady: modelManager.isReady(modelName),
+                            reason: !modelManager.models[modelName] ? 'Model not loaded' : 
+                                   !modelManager.state.warmedUp[modelName] ? 'Model not warmed up' : null
                         }, '*');
                         return;
                         
