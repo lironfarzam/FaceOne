@@ -37,7 +37,7 @@ const state = {
  */
 let flagShowFrameonImage = {
     frameProsessedImage: true,
-    frameFaceDetected: true,
+    frameFaceDetected: true,    
     addLabel: true,
     autoProcessImages: true,
     minimumImageSize: 100,
@@ -272,6 +272,41 @@ async function loadFaceNetModel() {
 let isLoadingModels = false;
 
 /**
+ * Configuration options for Face API detection
+ */
+const FACE_API_DETECTION_OPTIONS = {
+    ssdMobilenetv1: {
+        minConfidence: 0.3,
+        inputSize: 640,
+        scoreThreshold: 0.3,
+        maxNumBoxes: 100,
+        scaleFactor: 0.8,
+        iouThreshold: 0.5
+    },
+    tinyFaceDetector: {
+        inputSize: 416,
+        scoreThreshold: 0.01,  // Reduced threshold for better detection on small images
+        minFaceSize: 20,
+        scaleFactor: 0.709,
+        maxNumBoxes: 100,
+        iouThreshold: 0.3
+    }
+};
+
+// Size thresholds for model selection
+const MODEL_SELECTION_THRESHOLDS = {
+    get MINIMUM_SIZE() {
+        return Math.max(32, flagShowFrameonImage.minimumImageSize);  // Never go below 32px (model requirement)
+    },
+    get SMALL_IMAGE() {
+        return Math.max(160, this.MINIMUM_SIZE * 2);  // Adaptive small image threshold
+    },
+    get LARGE_IMAGE() {
+        return Math.max(640, this.SMALL_IMAGE * 2);  // Adaptive large image threshold
+    }
+};
+
+/**
  * Loads all required models with retry mechanism
  */
 async function loadFaceApiModels() {
@@ -321,19 +356,23 @@ async function loadFaceApiModels() {
             throw new Error('Sandbox frame not properly initialized');
         }
         
-        // Load FaceAPI first if not already loaded
+        // Load both models
         if (!modelStatus.faceApi.loaded && !modelStatus.faceApi.loading) {
-            console.log('Loading FaceAPI model...');
+            console.log('Loading FaceAPI models...');
             modelStatus.faceApi.loading = true;
             modelStatus.faceApi.error = null;
             
             try {
-                const modelPath = chrome.runtime.getURL('models');
+                const modelPath = chrome.runtime.getURL('models/FaceAPI');
                 await retryModelLoad(async () => {
                     try {
-                        await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
+                        // Load both models in parallel with correct subdirectory paths
+                        await Promise.all([
+                            faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`),
+                            faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`)
+                        ]);
                         modelStatus.faceApi.loaded = true;
-                        console.log('FaceAPI model loaded successfully');
+                        console.log('FaceAPI models loaded successfully');
                         return true;
                     } catch (error) {
                         console.error('FaceAPI load attempt failed:', error);
@@ -342,7 +381,7 @@ async function loadFaceApiModels() {
                 }, 3, 1000);
             } catch (error) {
                 modelStatus.faceApi.error = error;
-                console.error('Failed to load FaceAPI model:', error);
+                console.error('Failed to load FaceAPI models:', error);
                 throw error;
             } finally {
                 modelStatus.faceApi.loading = false;
@@ -363,7 +402,6 @@ async function loadFaceApiModels() {
             
             try {
                 const modelPath = chrome.runtime.getURL('models/myModel/tfjs_graph_model/model.json');
-                // Send load request to sandbox with proper parameters
                 await new Promise((resolve, reject) => {
                     const handleMessage = (event) => {
                         if (event.data.type === 'MODEL_LOADED' && event.data.modelName === 'myModel') {
@@ -460,20 +498,6 @@ async function loadFaceApiModels() {
 // Image Processing
 //=============================================================================
 
-/**
- * Configuration options for Face API detection
- */
-const FACE_API_DETECTION_OPTIONS = {
-    scoreThreshold: 0.3,
-    inputSize: 320,
-    scaleFactor: 0.8,
-    maxNumBoxes: 100,
-    minConfidence: 0.3,
-    iouThreshold: 0.5,
-    useTinyModel: false,
-    minFaceSize: 20
-};
-
 // Replace all image tracking with a single system
 const imageTracker = {
     images: new Map(), // Map<string, ImageInfo>
@@ -526,13 +550,76 @@ const imageTracker = {
     }
 };
 
+/**
+ * Checks if an element is valid for processing
+ * @param {Element} element - The element to validate
+ * @returns {boolean} True if the element is valid for processing
+ */
+function isValidElement(element) {
+    const isImg = element.tagName === 'IMG';
+    const isSvgImage = element.tagName === 'image';
+    
+    if (!isImg && !isSvgImage) return false;
+    
+    const src = isImg ? element.src : element.getAttribute('xlink:href');
+    if (!src) return false;
+
+    // Get dimensions, handling both regular images and SVG images
+    let width, height;
+    if (isImg) {
+        width = element.naturalWidth || element.width || element.clientWidth;
+        height = element.naturalHeight || element.height || element.clientHeight;
+    } else {
+        // For SVG images, check various attributes
+        width = parseInt(element.getAttribute('width')) || 
+               parseInt(element.style.width) || 
+               element.getBoundingClientRect().width;
+        height = parseInt(element.getAttribute('height')) || 
+                parseInt(element.style.height) || 
+                element.getBoundingClientRect().height;
+    }
+
+    // If we still don't have dimensions, try to get them from the parent SVG
+    if ((!width || !height) && isSvgImage) {
+        const parentSvg = element.closest('svg');
+        if (parentSvg) {
+            width = parseInt(parentSvg.getAttribute('width')) || 
+                   parseInt(parentSvg.style.width) || 
+                   parentSvg.getBoundingClientRect().width;
+            height = parseInt(parentSvg.getAttribute('height')) || 
+                    parseInt(parentSvg.style.height) || 
+                    parentSvg.getBoundingClientRect().height;
+        }
+    }
+
+    // Convert any CSS pixel values
+    if (typeof width === 'string') width = parseInt(width);
+    if (typeof height === 'string') height = parseInt(height);
+
+    // Use minimum dimension for validation
+    const minDimension = Math.min(width || 0, height || 0);
+    
+    // Check against minimum size from settings
+    const hasValidSize = minDimension >= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
+    
+    // Additional check for SVG images to ensure they're not icons or decorative elements
+    const isSvgIcon = isSvgImage && element.closest('svg')?.getAttribute('aria-hidden') === 'true';
+    
+    return (
+        src && 
+        hasValidSize &&
+        !isSvgIcon &&
+        !imageTracker.has(src) &&
+        !element.closest('.face-detection-wrapper')
+    );
+}
+
 // Add cross-origin image handling function
 async function createProxyImage(originalImg) {
     return new Promise((resolve, reject) => {
-        // Create a blob URL from the image
-        const createBlobUrl = async () => {
+        const createBlobUrl = async (url) => {
             try {
-                const response = await fetch(originalImg.src, { mode: 'cors' });
+                const response = await fetch(url, { mode: 'cors' });
                 const blob = await response.blob();
                 return URL.createObjectURL(blob);
             } catch (error) {
@@ -549,9 +636,12 @@ async function createProxyImage(originalImg) {
         };
 
         img.onerror = async () => {
-            // If direct loading fails, try using a blob URL
             try {
-                const blobUrl = await createBlobUrl();
+                const src = originalImg.tagName === 'IMG' ? 
+                    originalImg.src : 
+                    originalImg.getAttribute('xlink:href');
+                
+                const blobUrl = await createBlobUrl(src);
                 if (blobUrl) {
                     img.src = blobUrl;
                 } else {
@@ -563,14 +653,112 @@ async function createProxyImage(originalImg) {
         };
 
         // First try loading directly with crossOrigin
-        img.src = originalImg.src;
+        if (originalImg.tagName === 'IMG') {
+            img.src = originalImg.src;
+        } else {
+            img.src = originalImg.getAttribute('xlink:href');
+        }
     });
 }
 
-// Modify detectFacesWithFaceApi function
+function roundToMultipleOf32(num) {
+    return Math.ceil(num / 32) * 32;
+}
+
+// Add new function to handle tiny image processing
+async function processTinyImage(img) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Calculate dimensions that are multiples of 32
+    const minSize = 32; // Minimum size required by TinyFaceDetector
+    const scaleFactor = Math.max(2, Math.ceil(32 / Math.min(img.width, img.height)));
+    const targetWidth = roundToMultipleOf32(img.width * scaleFactor);
+    const targetHeight = roundToMultipleOf32(img.height * scaleFactor);
+    
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    
+    // Use better upscaling algorithm
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+    
+    return {
+        canvas,
+        scaleFactor: {
+            x: targetWidth / img.width,
+            y: targetHeight / img.height
+        }
+    };
+}
+
+function selectFaceDetectionModel(img) {
+    const width = img.width || img.naturalWidth;
+    const height = img.height || img.naturalHeight;
+    const minDimension = Math.min(width, height);
+    const maxDimension = Math.max(width, height);
+    
+    // Skip images smaller than minimum size
+    if (minDimension < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
+        throw new Error(`Image too small for face detection (${width}x${height}). Minimum size required: ${MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE}px`);
+    }
+
+    // For small images, use tinyFaceDetector with optimized settings
+    if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
+        const inputSize = roundToMultipleOf32(Math.max(32, minDimension));
+        return {
+            model: 'tinyFaceDetector',
+            options: new faceapi.TinyFaceDetectorOptions({
+                ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
+                inputSize: inputSize,
+                scoreThreshold: 0.01,  // More lenient threshold for small images
+                minFaceSize: Math.max(16, Math.floor(minDimension * 0.3)), // Smaller minimum face size
+                scaleFactor: 0.5  // More granular scale steps
+            })
+        };
+    }
+
+    // For large images, use ssdMobilenetv1
+    if (minDimension >= MODEL_SELECTION_THRESHOLDS.LARGE_IMAGE) {
+        return {
+            model: 'ssdMobilenetv1',
+            options: new faceapi.SsdMobilenetv1Options({
+                ...FACE_API_DETECTION_OPTIONS.ssdMobilenetv1,
+                inputSize: roundToMultipleOf32(Math.min(640, minDimension))
+            })
+        };
+    }
+
+    // For medium-sized images, choose based on aspect ratio and image quality
+    const aspectRatio = width / height;
+    const isSquarish = aspectRatio > 0.7 && aspectRatio < 1.3;
+
+    // Prefer ssdMobilenetv1 for well-proportioned medium images
+    if (isSquarish && minDimension >= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE * 1.5) {
+        return {
+            model: 'ssdMobilenetv1',
+            options: new faceapi.SsdMobilenetv1Options({
+                ...FACE_API_DETECTION_OPTIONS.ssdMobilenetv1,
+                inputSize: roundToMultipleOf32(Math.min(640, minDimension))
+            })
+        };
+    }
+
+    // Default to tinyFaceDetector for other cases with adaptive input size
+    return {
+        model: 'tinyFaceDetector',
+        options: new faceapi.TinyFaceDetectorOptions({
+            ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
+            inputSize: roundToMultipleOf32(Math.max(32, minDimension)),
+            minFaceSize: Math.max(16, Math.floor(minDimension * 0.15))
+        })
+    };
+}
+
+// Modify detectFacesWithFaceApi to handle scaling correctly
 async function detectFacesWithFaceApi(img) {
     try {
-        // Ensure models and positive embeddings are loaded
         await Promise.all([
             ensureModelsLoaded(),
             loadPositiveEmbeddings()
@@ -583,29 +771,52 @@ async function detectFacesWithFaceApi(img) {
             addLoadingIndicator(wrapper);
         }
 
-        // Create a proxy image to handle cross-origin
         let proxyImg;
         try {
             proxyImg = await createProxyImage(img);
         } catch (error) {
             console.error('Failed to create proxy image:', error);
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, 'Failed to load image');
+            }
             throw new Error('Unable to process cross-origin image');
         }
 
-        const scaledImg = await createScaledImage(proxyImg);
+        let scaledImg = await createScaledImage(proxyImg);
+        let scaleFactors = { x: 1, y: 1 };
         
-        const detections = await faceapi.detectAllFaces(
-            scaledImg,
-            new faceapi.SsdMobilenetv1Options({
-                ...FACE_API_DETECTION_OPTIONS,
-                scoreThreshold: 0.4
-            })
-        );
-        
-        if (scaledImg.scaleFactor !== 1) {
-            scaleDetections(detections, scaledImg.scaleFactor);
+        // Handle tiny images differently
+        const minDimension = Math.min(scaledImg.width, scaledImg.height);
+        if (minDimension <= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
+            console.log('Processing tiny image with special handling...');
+            const { canvas, scaleFactor } = await processTinyImage(scaledImg);
+            scaledImg = canvas;
+            scaleFactors = scaleFactor;
         }
-        
+
+        const { model, options } = selectFaceDetectionModel(scaledImg);
+        console.log(`Using ${model} for detection with image size: ${scaledImg.width}x${scaledImg.height}`);
+
+        let detections = await (model === 'ssdMobilenetv1' 
+            ? faceapi.detectAllFaces(scaledImg, options)
+            : faceapi.detectAllFaces(scaledImg, options));
+
+        // Log detection results for debugging
+        console.log(`Detected ${detections.length} faces in image (${scaledImg.width}x${scaledImg.height})`);
+
+        // Scale back the detections if we upscaled
+        if (scaleFactors.x !== 1 || scaleFactors.y !== 1) {
+            detections = detections.map(detection => ({
+                ...detection,
+                box: {
+                    x: detection.box.x / scaleFactors.x,
+                    y: detection.box.y / scaleFactors.y,
+                    width: detection.box.width / scaleFactors.x,
+                    height: detection.box.height / scaleFactors.y
+                }
+            }));
+        }
+
         const faceEmbeddings = [];
         for (const detection of detections) {
             const faceCanvas = await extractFaceRegion(proxyImg, detection);
@@ -633,13 +844,60 @@ async function detectFacesWithFaceApi(img) {
                 embeddings: faceEmbeddings,
                 timestamp: Date.now()
             });
+            
+            // Update visualization with similarity information
+            updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings);
+        } else {
+            // Clear any existing visualizations
+            const existingCanvas = wrapper.querySelector('.face-detection-canvas');
+            const processingIndicator = wrapper.querySelector('.processing-indicator');
+            if (existingCanvas) existingCanvas.remove();
+            if (processingIndicator) processingIndicator.remove();
+
+            // Add indicator for no faces detected
+            if (flagShowFrameonImage.addLabel) {
+                const indicator = document.createElement('div');
+                indicator.className = 'result-indicator';
+                indicator.style.position = 'absolute';
+                indicator.style.top = '5px';
+                indicator.style.right = '5px';
+                indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+                indicator.style.color = 'white';
+                indicator.style.padding = '2px 5px';
+                indicator.style.borderRadius = '3px';
+                indicator.style.fontSize = '12px';
+                indicator.textContent = `No faces detected (${scaledImg.width}x${scaledImg.height})`;
+                wrapper.appendChild(indicator);
+            }
+
+            // Add subtle border to indicate processing completed
+            if (flagShowFrameonImage.frameProsessedImage) {
+                const canvas = createDetectionCanvas(img);
+                const ctx = canvas.getContext('2d');
+                ctx.strokeStyle = 'rgba(128, 128, 128, 0.5)';  // Gray color for no detection
+                ctx.lineWidth = 2;
+                ctx.strokeRect(0, 0, canvas.width, canvas.height);
+                wrapper.appendChild(canvas);
+            }
         }
-        
-        // Update visualization with similarity information
-        updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings);
         
     } catch (error) {
         console.error('Face detection error:', error);
+        const wrapper = img.closest('.face-detection-wrapper');
+        if (wrapper && flagShowFrameonImage.addLabel) {
+            const indicator = document.createElement('div');
+            indicator.className = 'result-indicator';
+            indicator.style.position = 'absolute';
+            indicator.style.top = '5px';
+            indicator.style.right = '5px';
+            indicator.style.backgroundColor = 'rgba(255, 0, 0, 0.7)';
+            indicator.style.color = 'white';
+            indicator.style.padding = '2px 5px';
+            indicator.style.borderRadius = '3px';
+            indicator.style.fontSize = '12px';
+            indicator.textContent = `Detection failed: ${error.message}`;
+            wrapper.appendChild(indicator);
+        }
         throw error;
     }
 }
@@ -996,32 +1254,6 @@ document.addEventListener('click', (e) => {
     }
 }, { passive: false });
 
-/**
- * Checks if an element is valid for processing
- * @param {Element} element - The element to validate
- * @returns {boolean} True if the element is valid for processing
- */
-function isValidElement(element) {
-    const isImg = element.tagName === 'IMG';
-    const isSvgImage = element.tagName === 'image';
-    
-    if (!isImg && !isSvgImage) return false;
-    
-    const src = isImg ? element.src : element.getAttribute('xlink:href');
-    const width = element.width || element.clientWidth || parseInt(element.getAttribute('width')) || 0;
-    const height = element.height || element.clientHeight || parseInt(element.getAttribute('height')) || 0;
-    
-    const hasValidSize = (width >= flagShowFrameonImage.minimumImageSize && 
-                         height >= flagShowFrameonImage.minimumImageSize);
-    
-    return (
-        src && 
-        hasValidSize &&
-        !imageTracker.has(src) &&
-        !element.closest('.face-detection-wrapper')
-    );
-}
-
 // Add a function to ensure models are loaded
 async function ensureModelsLoaded() {
     if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
@@ -1111,8 +1343,8 @@ function observeElements() {
     const elements = [
         ...Array.from(document.getElementsByTagName('img')),
         ...Array.from(document.getElementsByTagName('image')),
-        ...Array.from(document.querySelectorAll('image[xlink\\:href^="https://"]')),
-        ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]'))
+        ...Array.from(document.querySelectorAll('svg image[xlink\\:href]')),
+        ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"]'))
     ].filter(element => isValidElement(element));
     
     // Initialize imageObserver if needed
@@ -1338,8 +1570,8 @@ async function processExistingImages() {
         const elements = [
             ...Array.from(document.getElementsByTagName('img')),
             ...Array.from(document.getElementsByTagName('image')),
-            ...Array.from(document.querySelectorAll('image[xlink\\:href^="https://"]')),
-            ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"][xlink\\:href^="https://"]'))
+            ...Array.from(document.querySelectorAll('svg image[xlink\\:href]')),
+            ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"]'))
         ].filter(element => isValidElement(element));
         
         console.log(`Found ${elements.length} valid images to process`);

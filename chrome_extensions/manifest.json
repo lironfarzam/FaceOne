@@ -29,8 +29,8 @@
     {
       "matches": ["<all_urls>"],
       "js": [
-        "face-api.min.js",
-        "content.js"
+        "lib/face-api.min.js",
+        "js/content.js"
       ],
       "run_at": "document_idle"
     }
@@ -38,9 +38,10 @@
   "web_accessible_resources": [{
     "resources": [
       "sandbox.html",
-      "tf.min.js",
-      "tf-converter.min.js",
-      "models/*"
+      "lib/tf.min.js",
+      "lib/tf-converter.min.js",
+      "models/*",
+      "css/*"
     ],
     "matches": ["<all_urls>"]
   }],
