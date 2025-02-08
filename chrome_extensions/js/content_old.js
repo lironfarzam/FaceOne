@@ -498,7 +498,7 @@ async function loadFaceApiModels() {
 // Image Processing
 //=============================================================================
 
-// Replace image tracking with simplified system
+// Replace all image tracking with a single system
 const imageTracker = {
     images: new Map(), // Map<string, ImageInfo>
     maxSize: 1000,
@@ -512,32 +512,33 @@ const imageTracker = {
         
         this.images.set(src, {
             isProcessed: false,
-            shouldDisplay: true, // Default to true until we process faces
-            hasSimilarFaces: false,
+            hasBeenTested: false,
+            canDelete: false,
+            embedding: null,
             timestamp: Date.now(),
             ...info
         });
     },
     
-    markProcessed(src, shouldDisplay, hasSimilarFaces = false) {
+    markProcessed(src, success = true, embedding = null) {
         const info = this.images.get(src) || {};
         this.images.set(src, {
             ...info,
-            isProcessed: true,
-            shouldDisplay: shouldDisplay,
-            hasSimilarFaces: hasSimilarFaces,
+            isProcessed: success,
+            hasBeenTested: true,
+            embedding: embedding,
             timestamp: Date.now()
         });
     },
     
     shouldProcess(src) {
         const info = this.images.get(src);
-        return !info || !info.isProcessed;
+        return !info || (!info.hasBeenTested && !info.isProcessed);
     },
     
-    shouldDisplay(src) {
+    getEmbedding(src) {
         const info = this.images.get(src);
-        return info ? info.shouldDisplay : true;
+        return info ? info.embedding : null;
     },
     
     has(src) {
@@ -755,7 +756,7 @@ function selectFaceDetectionModel(img) {
     };
 }
 
-// Modify detectFacesWithFaceApi to handle display logic
+// Modify detectFacesWithFaceApi to handle scaling correctly
 async function detectFacesWithFaceApi(img) {
     try {
         await Promise.all([
@@ -778,15 +779,13 @@ async function detectFacesWithFaceApi(img) {
             if (flagShowFrameonImage.addLabel) {
                 addResultIndicator(wrapper, 'Failed to load image');
             }
-            // Ensure image remains visible even if proxy creation fails
-            img.style.visibility = 'visible';
-            img.style.display = 'block';
             throw new Error('Unable to process cross-origin image');
         }
 
         let scaledImg = await createScaledImage(proxyImg);
         let scaleFactors = { x: 1, y: 1 };
         
+        // Handle tiny images differently
         const minDimension = Math.min(scaledImg.width, scaledImg.height);
         if (minDimension <= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
             console.log('Processing tiny image with special handling...');
@@ -802,8 +801,10 @@ async function detectFacesWithFaceApi(img) {
             ? faceapi.detectAllFaces(scaledImg, options)
             : faceapi.detectAllFaces(scaledImg, options));
 
+        // Log detection results for debugging
         console.log(`Detected ${detections.length} faces in image (${scaledImg.width}x${scaledImg.height})`);
 
+        // Scale back the detections if we upscaled
         if (scaleFactors.x !== 1 || scaleFactors.y !== 1) {
             detections = detections.map(detection => ({
                 ...detection,
@@ -816,91 +817,86 @@ async function detectFacesWithFaceApi(img) {
             }));
         }
 
-        // Process faces and check for similarities
-        let hasSimilarFaces = false;
-        if (detections.length > 1) {
-            const faceEmbeddings = [];
-            for (const detection of detections) {
-                const faceCanvas = await extractFaceRegion(proxyImg, detection);
-                try {
-                    const embedding = await generateEmbedding(faceCanvas);
-                    faceEmbeddings.push(embedding);
-                } catch (error) {
-                    console.error('Embedding generation error:', error);
-                }
-            }
-
-            // Compare each pair of faces
-            for (let i = 0; i < faceEmbeddings.length; i++) {
-                for (let j = i + 1; j < faceEmbeddings.length; j++) {
-                    try {
-                        const similarity = await computeFaceSimilarity(
-                            faceEmbeddings[i],
-                            faceEmbeddings[j]
-                        );
-                        if (similarity >= flagShowFrameonImage.confidenceThreshold / 100) {
-                            hasSimilarFaces = true;
-                            break;
-                        }
-                    } catch (error) {
-                        console.error('Similarity computation error:', error);
-                    }
-                }
-                if (hasSimilarFaces) break;
+        const faceEmbeddings = [];
+        for (const detection of detections) {
+            const faceCanvas = await extractFaceRegion(proxyImg, detection);
+            try {
+                const embedding = await generateEmbedding(faceCanvas);
+                const comparison = await compareWithPositiveEmbeddings(embedding);
+                
+                faceEmbeddings.push({
+                    embedding,
+                    detection,
+                    similarity: comparison.maxSimilarity,
+                    matchIndex: comparison.matchIndex
+                });
+                
+                imageTracker.markProcessed(src, true, embedding);
+            } catch (error) {
+                console.error('Embedding generation error:', error);
+                imageTracker.markProcessed(src, false);
             }
         }
 
-        // Update image tracker with results
-        const shouldDisplay = !hasSimilarFaces;
-        imageTracker.markProcessed(src, shouldDisplay, hasSimilarFaces);
-
-        // Always ensure the image is visible
-        img.style.visibility = 'visible';
-        img.style.display = 'block';
-
-        // Update visualization
-        if (shouldDisplay) {
-            if (detections.length > 0) {
-                updateVisualizationWithSimilarity(wrapper, img, detections.map(detection => ({
-                    detection,
-                    similarity: 0
-                })));
-            } else {
-                // Clear any existing visualizations
-                const existingCanvas = wrapper.querySelector('.face-detection-canvas');
-                const processingIndicator = wrapper.querySelector('.processing-indicator');
-                if (existingCanvas) existingCanvas.remove();
-                if (processingIndicator) processingIndicator.remove();
-
-                if (flagShowFrameonImage.addLabel) {
-                    addResultIndicator(wrapper, `No faces detected (${scaledImg.width}x${scaledImg.height})`);
-                }
-
-                if (flagShowFrameonImage.frameProsessedImage) {
-                    const canvas = createDetectionCanvas(img);
-                    const ctx = canvas.getContext('2d');
-                    ctx.strokeStyle = 'rgba(128, 128, 128, 0.5)';
-                    ctx.lineWidth = 2;
-                    ctx.strokeRect(0, 0, canvas.width, canvas.height);
-                    wrapper.appendChild(canvas);
-                }
-            }
+        // Store embeddings and comparison results
+        if (faceEmbeddings.length > 0) {
+            imageTracker.add(src, {
+                embeddings: faceEmbeddings,
+                timestamp: Date.now()
+            });
+            
+            // Update visualization with similarity information
+            updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings);
         } else {
-            // Hide or modify display for images with similar faces
-            img.style.filter = 'blur(10px)';  // Or handle differently based on your requirements
+            // Clear any existing visualizations
+            const existingCanvas = wrapper.querySelector('.face-detection-canvas');
+            const processingIndicator = wrapper.querySelector('.processing-indicator');
+            if (existingCanvas) existingCanvas.remove();
+            if (processingIndicator) processingIndicator.remove();
+
+            // Add indicator for no faces detected
             if (flagShowFrameonImage.addLabel) {
-                addResultIndicator(wrapper, 'Similar faces detected - Image hidden');
+                const indicator = document.createElement('div');
+                indicator.className = 'result-indicator';
+                indicator.style.position = 'absolute';
+                indicator.style.top = '5px';
+                indicator.style.right = '5px';
+                indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+                indicator.style.color = 'white';
+                indicator.style.padding = '2px 5px';
+                indicator.style.borderRadius = '3px';
+                indicator.style.fontSize = '12px';
+                indicator.textContent = `No faces detected (${scaledImg.width}x${scaledImg.height})`;
+                wrapper.appendChild(indicator);
+            }
+
+            // Add subtle border to indicate processing completed
+            if (flagShowFrameonImage.frameProsessedImage) {
+                const canvas = createDetectionCanvas(img);
+                const ctx = canvas.getContext('2d');
+                ctx.strokeStyle = 'rgba(128, 128, 128, 0.5)';  // Gray color for no detection
+                ctx.lineWidth = 2;
+                ctx.strokeRect(0, 0, canvas.width, canvas.height);
+                wrapper.appendChild(canvas);
             }
         }
         
     } catch (error) {
         console.error('Face detection error:', error);
-        // Ensure image remains visible even if processing fails
-        img.style.visibility = 'visible';
-        img.style.display = 'block';
         const wrapper = img.closest('.face-detection-wrapper');
         if (wrapper && flagShowFrameonImage.addLabel) {
-            addResultIndicator(wrapper, `Detection failed: ${error.message}`);
+            const indicator = document.createElement('div');
+            indicator.className = 'result-indicator';
+            indicator.style.position = 'absolute';
+            indicator.style.top = '5px';
+            indicator.style.right = '5px';
+            indicator.style.backgroundColor = 'rgba(255, 0, 0, 0.7)';
+            indicator.style.color = 'white';
+            indicator.style.padding = '2px 5px';
+            indicator.style.borderRadius = '3px';
+            indicator.style.fontSize = '12px';
+            indicator.textContent = `Detection failed: ${error.message}`;
+            wrapper.appendChild(indicator);
         }
         throw error;
     }
@@ -962,17 +958,6 @@ function createWrapper(img) {
     // Store original styles if not already stored
     if (!img.getAttribute('data-original-style')) {
         img.setAttribute('data-original-style', img.style.cssText);
-        
-        // For SVG images, store additional attributes
-        if (img.tagName === 'image') {
-            const attrs = ['xlink:href', 'preserveAspectRatio', 'width', 'height', 'x', 'y'];
-            attrs.forEach(attr => {
-                const value = img.getAttribute(attr);
-                if (value) {
-                    img.setAttribute(`data-original-${attr}`, value);
-                }
-            });
-        }
     }
     
     // Create wrapper that maintains original image dimensions
@@ -984,20 +969,8 @@ function createWrapper(img) {
     wrapper.style.padding = '0';
     
     // Get the actual dimensions of the image
-    let width, height;
-    if (img.tagName === 'IMG') {
-        width = img.naturalWidth || img.width;
-        height = img.naturalHeight || img.height;
-    } else {
-        // For SVG images
-        const parentSvg = img.closest('svg');
-        width = parseInt(img.getAttribute('width')) || 
-               parseInt(img.style.width) || 
-               (parentSvg ? parentSvg.getBoundingClientRect().width : img.getBoundingClientRect().width);
-        height = parseInt(img.getAttribute('height')) || 
-                parseInt(img.style.height) || 
-                (parentSvg ? parentSvg.getBoundingClientRect().height : img.getBoundingClientRect().height);
-    }
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
     
     // Preserve original image styles and positioning
     const computedStyle = window.getComputedStyle(img);
@@ -1005,40 +978,6 @@ function createWrapper(img) {
     wrapper.style.verticalAlign = computedStyle.verticalAlign;
     
     // Keep original image unchanged
-        
-    // Special handling for SVG images
-    if (img.tagName === 'image') {
-        // Create a clone of the original SVG structure
-        const parentSvg = img.closest('svg');
-        if (parentSvg) {
-            const svgClone = parentSvg.cloneNode(false);
-            const imgClone = img.cloneNode(true);
-            svgClone.appendChild(imgClone);
-            wrapper.appendChild(svgClone);
-            
-            // Store reference to original elements
-            wrapper.setAttribute('data-original-svg', true);
-            wrapper.setAttribute('data-original-image-id', img.id || '');
-            
-            // Hide original
-            img.style.visibility = 'hidden';
-            
-            // Position wrapper where the original was
-            const rect = img.getBoundingClientRect();
-            wrapper.style.position = 'absolute';
-            wrapper.style.left = rect.left + 'px';
-            wrapper.style.top = rect.top + 'px';
-            
-            // Insert wrapper as a sibling of the original SVG
-            parentSvg.parentElement.insertBefore(wrapper, parentSvg.nextSibling);
-        } else {
-            // Fallback for standalone SVG images
-            wrapper.appendChild(img);
-            img.parentElement.insertBefore(wrapper, img);
-            wrapper.appendChild(img);
-        }
-    } else {
-    // Regular IMG element handling
     img.style.display = 'block';
     img.style.maxWidth = '100%';
     img.style.margin = '0';
@@ -1047,12 +986,10 @@ function createWrapper(img) {
     // Replace the image with the wrapper
     img.parentElement.insertBefore(wrapper, img);
     wrapper.appendChild(img);
-}
     
     return wrapper;
 }
 
-// Add back the missing loading indicator function
 function addLoadingIndicator(wrapper) {
   const indicator = document.createElement('div');
   indicator.className = 'processing-indicator';
@@ -1068,14 +1005,13 @@ function addLoadingIndicator(wrapper) {
   wrapper.appendChild(indicator);
 }
 
-// Add back the missing detection canvas function
 function createDetectionCanvas(img) {
     const canvas = document.createElement('canvas');
     canvas.className = 'face-detection-canvas';
     
     // Set canvas dimensions to match original image
-    const width = img.naturalWidth || img.width || parseInt(img.getAttribute('width'));
-    const height = img.naturalHeight || img.height || parseInt(img.getAttribute('height'));
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
     canvas.width = width;
     canvas.height = height;
     
@@ -1090,80 +1026,13 @@ function createDetectionCanvas(img) {
     return canvas;
 }
 
-// Add back the missing result indicator function
-function addResultIndicator(wrapper, text) {
-    const indicator = document.createElement('div');
-    indicator.className = 'result-indicator';
-    indicator.style.position = 'absolute';
-    indicator.style.top = '5px';
-    indicator.style.right = '5px';
-    indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-    indicator.style.color = 'white';
-    indicator.style.padding = '2px 5px';
-    indicator.style.borderRadius = '3px';
-    indicator.style.fontSize = '12px';
-    indicator.textContent = text;
-    wrapper.appendChild(indicator);
-}
-
-// Add cleanup function for when processing is done
-function cleanupWrapper(wrapper) {
-    if (!wrapper) return;
-    
-    const img = wrapper.querySelector('img, image');
-    if (!img) return;
-    
-    // Restore original styles
-    const originalStyle = img.getAttribute('data-original-style');
-    if (originalStyle !== null) {
-        img.style.cssText = originalStyle;
-        img.removeAttribute('data-original-style');
-    }
-    
-    // Special cleanup for SVG images
-    if (img.tagName === 'image') {
-        // Restore original attributes
-        const attrs = ['xlink:href', 'preserveAspectRatio', 'width', 'height', 'x', 'y'];
-        attrs.forEach(attr => {
-            const originalValue = img.getAttribute(`data-original-${attr}`);
-            if (originalValue !== null) {
-                img.setAttribute(attr, originalValue);
-                img.removeAttribute(`data-original-${attr}`);
-            }
-        });
-        
-        // If this was part of an SVG structure
-        if (wrapper.getAttribute('data-original-svg')) {
-            const originalSvg = img.closest('svg');
-            if (originalSvg) {
-                const originalImg = document.getElementById(wrapper.getAttribute('data-original-image-id')) ||
-                                 originalSvg.querySelector('image');
-                if (originalImg) {
-                    originalImg.style.visibility = 'visible';
-                }
-            }
-        }
-    }
-    
-    // Move the image back to its original position
-    if (wrapper.parentElement) {
-        wrapper.parentElement.insertBefore(img, wrapper);
-        wrapper.parentElement.removeChild(wrapper);
-    }
-}
-
-// Modify updateVisualizationWithSimilarity to ensure image visibility
 function updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings) {
     // Remove existing canvas and indicators
     const existingCanvas = wrapper.querySelector('.face-detection-canvas');
     const processingIndicator = wrapper.querySelector('.processing-indicator');
     if (existingCanvas) existingCanvas.remove();
     if (processingIndicator) processingIndicator.remove();
-
-    // Ensure image is visible
-    img.style.visibility = 'visible';
-    img.style.display = 'block';
-
+    
     if (faceEmbeddings.length === 0) {
         if (flagShowFrameonImage.addLabel) {
             addResultIndicator(wrapper, 'No Faces Detected');
@@ -1175,8 +1044,8 @@ function updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings) {
     const canvas = createDetectionCanvas(img);
     
     // Set canvas size to match actual image dimensions
-    const width = img.naturalWidth || img.width || parseInt(img.getAttribute('width'));
-    const height = img.naturalHeight || img.height || parseInt(img.getAttribute('height'));
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
     canvas.width = width;
     canvas.height = height;
     
@@ -2188,23 +2057,4 @@ chrome.storage.sync.get({
         ...flagShowFrameonImage,
         ...items
     };
-});
-
-// Add function to check if image should be displayed
-function shouldDisplayImage(src) {
-    return imageTracker.shouldDisplay(src);
-}
-
-// Modify storage event listener to handle display updates
-chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'sync' && changes.confidenceThreshold) {
-        // Clear processed status to allow reprocessing with new threshold
-        imageTracker.images.forEach((info, src) => {
-            info.isProcessed = false;
-        });
-        // Reprocess visible images
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
-        }
-    }
 });
