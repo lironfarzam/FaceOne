@@ -556,62 +556,66 @@ const imageTracker = {
  * @returns {boolean} True if the element is valid for processing
  */
 function isValidElement(element) {
-    const isImg = element.tagName === 'IMG';
-    const isSvgImage = element.tagName === 'image';
-    
-    if (!isImg && !isSvgImage) return false;
-    
-    const src = isImg ? element.src : element.getAttribute('xlink:href');
-    if (!src) return false;
+    // Check if element exists
+    if (!element) return false;
 
-    // Get dimensions, handling both regular images and SVG images
+    // Handle all possible image types
+    const isImg = element.tagName === 'IMG';
+    const isSvgImage = element.tagName.toLowerCase() === 'image';
+    const hasSvgImage = element.querySelector && element.querySelector('image[xlink\\:href]');
+    const hasBackgroundImage = window.getComputedStyle(element).backgroundImage !== 'none';
+
+    if (!isImg && !isSvgImage && !hasSvgImage && !hasBackgroundImage) return false;
+
+    // Get the source URL
+    let src;
+    if (isImg) {
+        src = element.src;
+    } else if (isSvgImage || hasSvgImage) {
+        const imageElement = isSvgImage ? element : element.querySelector('image');
+        src = imageElement?.getAttribute('xlink:href') || 
+              imageElement?.getAttribute('href') ||
+              imageElement?.getAttribute('src');
+    } else if (hasBackgroundImage) {
+        // Extract URL from background-image CSS
+        src = window.getComputedStyle(element).backgroundImage.slice(4, -1).replace(/["']/g, "");
+    }
+
+    if (!src || src.startsWith('data:') || src.includes('emoji')) return false;
+
+    // Get dimensions
     let width, height;
     if (isImg) {
         width = element.naturalWidth || element.width || element.clientWidth;
         height = element.naturalHeight || element.height || element.clientHeight;
-    } else {
-        // For SVG images, check various attributes
-        width = parseInt(element.getAttribute('width')) || 
-               parseInt(element.style.width) || 
+    } else if (isSvgImage || hasSvgImage) {
+        const imageElement = isSvgImage ? element : element.querySelector('image');
+        const parentSvg = imageElement?.closest('svg');
+        width = parseInt(imageElement?.getAttribute('width')) || 
+               parseInt(imageElement?.style.width) || 
+               parentSvg?.width?.baseVal?.value ||
                element.getBoundingClientRect().width;
-        height = parseInt(element.getAttribute('height')) || 
-                parseInt(element.style.height) || 
+        height = parseInt(imageElement?.getAttribute('height')) || 
+                parseInt(imageElement?.style.height) || 
+                parentSvg?.height?.baseVal?.value ||
                 element.getBoundingClientRect().height;
+    } else {
+        const rect = element.getBoundingClientRect();
+        width = rect.width;
+        height = rect.height;
     }
 
-    // If we still don't have dimensions, try to get them from the parent SVG
-    if ((!width || !height) && isSvgImage) {
-        const parentSvg = element.closest('svg');
-        if (parentSvg) {
-            width = parseInt(parentSvg.getAttribute('width')) || 
-                   parseInt(parentSvg.style.width) || 
-                   parentSvg.getBoundingClientRect().width;
-            height = parseInt(parentSvg.getAttribute('height')) || 
-                    parseInt(parentSvg.style.height) || 
-                    parentSvg.getBoundingClientRect().height;
-        }
-    }
-
-    // Convert any CSS pixel values
-    if (typeof width === 'string') width = parseInt(width);
-    if (typeof height === 'string') height = parseInt(height);
-
-    // Use minimum dimension for validation
+    // Validate size
     const minDimension = Math.min(width || 0, height || 0);
-    
-    // Check against minimum size from settings
     const hasValidSize = minDimension >= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
+
+    // Additional checks
+    const isHidden = element.offsetParent === null || 
+                    window.getComputedStyle(element).display === 'none' ||
+                    window.getComputedStyle(element).visibility === 'hidden';
+    const isProcessed = element.closest('.face-detection-wrapper');
     
-    // Additional check for SVG images to ensure they're not icons or decorative elements
-    const isSvgIcon = isSvgImage && element.closest('svg')?.getAttribute('aria-hidden') === 'true';
-    
-    return (
-        src && 
-        hasValidSize &&
-        !isSvgIcon &&
-        !imageTracker.has(src) &&
-        !element.closest('.face-detection-wrapper')
-    );
+    return hasValidSize && !isHidden && !isProcessed;
 }
 
 // Add cross-origin image handling function
@@ -948,97 +952,106 @@ const processingQueue = {
 };
 
 // Helper functions for improved visualization
-function createWrapper(img) {
-    // Store original styles if not already stored
-    if (!img.getAttribute('data-original-style')) {
-        img.setAttribute('data-original-style', img.style.cssText);
-        
-        // For SVG images, store additional attributes
-        if (img.tagName === 'image') {
-            const attrs = ['xlink:href', 'preserveAspectRatio', 'width', 'height', 'x', 'y'];
-            attrs.forEach(attr => {
-                const value = img.getAttribute(attr);
-                if (value) {
-                    img.setAttribute(`data-original-${attr}`, value);
-                }
-            });
-        }
-    }
-    
-    // Create wrapper that maintains original image dimensions
+function createWrapper(element) {
+    // Store original styles
+    const originalStyles = {
+        element: element.getAttribute('style') || '',
+        computed: window.getComputedStyle(element),
+        classes: element.getAttribute('class') || ''
+    };
+
+    // Create wrapper
     const wrapper = document.createElement('div');
     wrapper.className = 'face-detection-wrapper';
-    wrapper.style.position = 'relative';
+    wrapper.style.position = 'relative';  // Changed from absolute
     wrapper.style.display = 'inline-block';
     wrapper.style.margin = '0';
     wrapper.style.padding = '0';
-    
-    // Get the actual dimensions of the image
-    let width, height;
-    if (img.tagName === 'IMG') {
-        width = img.naturalWidth || img.width;
-        height = img.naturalHeight || img.height;
-    } else {
-        // For SVG images
-        const parentSvg = img.closest('svg');
-        width = parseInt(img.getAttribute('width')) || 
-               parseInt(img.style.width) || 
-               (parentSvg ? parentSvg.getBoundingClientRect().width : img.getBoundingClientRect().width);
-        height = parseInt(img.getAttribute('height')) || 
-                parseInt(img.style.height) || 
-                (parentSvg ? parentSvg.getBoundingClientRect().height : img.getBoundingClientRect().height);
-    }
-    
-    // Preserve original image styles and positioning
-    const computedStyle = window.getComputedStyle(img);
-    wrapper.style.margin = computedStyle.margin;
-    wrapper.style.verticalAlign = computedStyle.verticalAlign;
-    
-    // Keep original image unchanged
+
+    // Determine image type and handle accordingly
+    const isImg = element.tagName === 'IMG';
+    const isSvgImage = element.tagName.toLowerCase() === 'image';
+    const hasSvgImage = element.querySelector && element.querySelector('image[xlink\\:href]');
+    const hasBackgroundImage = window.getComputedStyle(element).backgroundImage !== 'none';
+
+    let imageElement = element;  // Default to using the original element
+    let src;
+
+    if (isImg) {
+        src = element.src;
+        // Preserve original image styles
+        wrapper.style.display = originalStyles.computed.display;
+        wrapper.style.position = originalStyles.computed.position;
+        wrapper.style.margin = originalStyles.computed.margin;
+    } else if (isSvgImage || hasSvgImage) {
+        const svgImage = isSvgImage ? element : element.querySelector('image');
+        src = svgImage?.getAttribute('xlink:href') || 
+              svgImage?.getAttribute('href') || 
+              svgImage?.getAttribute('src');
+
+        // For SVG images, create a clone instead of moving the original
+        const svgClone = element.cloneNode(true);
+        imageElement = svgClone;
         
-    // Special handling for SVG images
-    if (img.tagName === 'image') {
-        // Create a clone of the original SVG structure
-        const parentSvg = img.closest('svg');
-        if (parentSvg) {
-            const svgClone = parentSvg.cloneNode(false);
-            const imgClone = img.cloneNode(true);
-            svgClone.appendChild(imgClone);
-            wrapper.appendChild(svgClone);
-            
-            // Store reference to original elements
-            wrapper.setAttribute('data-original-svg', true);
-            wrapper.setAttribute('data-original-image-id', img.id || '');
-            
-            // Hide original
-            img.style.visibility = 'hidden';
-            
-            // Position wrapper where the original was
-            const rect = img.getBoundingClientRect();
+        // Store reference to original
+        const originalId = element.id || `svg-${Math.random().toString(36).substr(2, 9)}`;
+        element.id = originalId;
+        wrapper.setAttribute('data-original-svg-id', originalId);
+        
+        // Don't hide original immediately
+        element.style.opacity = '1';
+    } else if (hasBackgroundImage) {
+        src = originalStyles.computed.backgroundImage.slice(4, -1).replace(/["']/g, "");
+        
+        // Create an img element for the background image
+        imageElement = document.createElement('img');
+        imageElement.src = src;
+        
+        // Copy dimensions and styling
+        const rect = element.getBoundingClientRect();
+        imageElement.style.width = '100%';
+        imageElement.style.height = '100%';
+        imageElement.style.objectFit = originalStyles.computed.backgroundSize === 'cover' ? 'cover' : 'contain';
+        
+        // Store original background
+        element.setAttribute('data-original-background', element.style.background);
+        wrapper.style.width = `${rect.width}px`;
+        wrapper.style.height = `${rect.height}px`;
+    }
+
+    // Store original state
+    wrapper.setAttribute('data-original-styles', JSON.stringify(originalStyles));
+    wrapper.setAttribute('data-image-type', isImg ? 'img' : isSvgImage ? 'svg' : hasSvgImage ? 'svg-nested' : 'background');
+
+    // Set up wrapper dimensions and position
+    const rect = element.getBoundingClientRect();
+    if (!isImg) {
+        wrapper.style.width = `${rect.width}px`;
+        wrapper.style.height = `${rect.height}px`;
+        
+        // Only set absolute positioning for background images
+        if (hasBackgroundImage) {
             wrapper.style.position = 'absolute';
-            wrapper.style.left = rect.left + 'px';
-            wrapper.style.top = rect.top + 'px';
-            
-            // Insert wrapper as a sibling of the original SVG
-            parentSvg.parentElement.insertBefore(wrapper, parentSvg.nextSibling);
-        } else {
-            // Fallback for standalone SVG images
-            wrapper.appendChild(img);
-            img.parentElement.insertBefore(wrapper, img);
-            wrapper.appendChild(img);
+            wrapper.style.left = `${rect.left}px`;
+            wrapper.style.top = `${rect.top}px`;
+            wrapper.style.zIndex = originalStyles.computed.zIndex;
+        }
+    }
+
+    // Add the image element to the wrapper
+    if (imageElement !== element) {
+        wrapper.appendChild(imageElement);
+        // For background images, position the original element
+        if (hasBackgroundImage) {
+            element.style.position = 'relative';
+            element.parentElement.insertBefore(wrapper, element);
         }
     } else {
-    // Regular IMG element handling
-    img.style.display = 'block';
-    img.style.maxWidth = '100%';
-    img.style.margin = '0';
-    img.style.padding = '0';
-    
-    // Replace the image with the wrapper
-    img.parentElement.insertBefore(wrapper, img);
-    wrapper.appendChild(img);
-}
-    
+        // For regular images, just wrap them
+        element.parentElement.insertBefore(wrapper, element);
+        wrapper.appendChild(element);
+    }
+
     return wrapper;
 }
 
@@ -1099,46 +1112,45 @@ function addResultIndicator(wrapper, text) {
 // Add cleanup function for when processing is done
 function cleanupWrapper(wrapper) {
     if (!wrapper) return;
-    
-    const img = wrapper.querySelector('img, image');
-    if (!img) return;
-    
-    // Restore original styles
-    const originalStyle = img.getAttribute('data-original-style');
-    if (originalStyle !== null) {
-        img.style.cssText = originalStyle;
-        img.removeAttribute('data-original-style');
-    }
-    
-    // Special cleanup for SVG images
-    if (img.tagName === 'image') {
-        // Restore original attributes
-        const attrs = ['xlink:href', 'preserveAspectRatio', 'width', 'height', 'x', 'y'];
-        attrs.forEach(attr => {
-            const originalValue = img.getAttribute(`data-original-${attr}`);
-            if (originalValue !== null) {
-                img.setAttribute(attr, originalValue);
-                img.removeAttribute(`data-original-${attr}`);
-            }
-        });
+
+    try {
+        // Get original element and stored data
+        const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
+        const imageType = wrapper.getAttribute('data-image-type');
         
-        // If this was part of an SVG structure
-        if (wrapper.getAttribute('data-original-svg')) {
-            const originalSvg = img.closest('svg');
+        let element;
+        if (imageType === 'img') {
+            element = wrapper.querySelector('img');
+            if (element) {
+                // Restore original styles
+                element.style.cssText = originalStyles.element;
+                element.className = originalStyles.classes;
+                wrapper.parentElement.insertBefore(element, wrapper);
+            }
+        } else if (imageType === 'svg' || imageType === 'svg-nested') {
+            const originalId = wrapper.getAttribute('data-original-svg-id');
+            const originalSvg = document.getElementById(originalId);
             if (originalSvg) {
-                const originalImg = document.getElementById(wrapper.getAttribute('data-original-image-id')) ||
-                                 originalSvg.querySelector('image');
-                if (originalImg) {
-                    originalImg.style.visibility = 'visible';
-                }
+                originalSvg.style.opacity = '1';
+                originalSvg.style.cssText = originalStyles.element;
+                originalSvg.className = originalStyles.classes;
+            }
+        } else if (imageType === 'background') {
+            const bgElement = document.querySelector(`[data-original-background]`);
+            if (bgElement) {
+                bgElement.style.background = bgElement.getAttribute('data-original-background');
+                bgElement.removeAttribute('data-original-background');
+                bgElement.style.cssText = originalStyles.element;
+                bgElement.className = originalStyles.classes;
             }
         }
-    }
-    
-    // Move the image back to its original position
-    if (wrapper.parentElement) {
-        wrapper.parentElement.insertBefore(img, wrapper);
-        wrapper.parentElement.removeChild(wrapper);
+
+        // Remove wrapper
+        if (wrapper.parentElement) {
+            wrapper.parentElement.removeChild(wrapper);
+        }
+    } catch (error) {
+        console.error('Error cleaning up wrapper:', error);
     }
 }
 
@@ -2209,3 +2221,49 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
         }
     }
 });
+
+function applyBlurEffect(element, shouldBlur) {
+    const wrapper = element.closest('.face-detection-wrapper');
+    if (!wrapper) return;
+
+    const imageType = wrapper.getAttribute('data-image-type');
+    const blurAmount = '10px';
+
+    switch (imageType) {
+        case 'img':
+            const img = wrapper.querySelector('img');
+            if (img) {
+                img.style.filter = shouldBlur ? `blur(${blurAmount})` : 'none';
+            }
+            break;
+
+        case 'svg':
+        case 'svg-nested':
+            const svgImage = element.tagName.toLowerCase() === 'image' ? 
+                element : element.querySelector('image');
+            if (svgImage) {
+                if (shouldBlur) {
+                    const filterId = `blur-${Math.random().toString(36).substr(2, 9)}`;
+                    const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+                    filter.setAttribute('id', filterId);
+                    const blur = document.createElementNS('http://www.w3.org/2000/svg', 'feGaussianBlur');
+                    blur.setAttribute('stdDeviation', '10');
+                    filter.appendChild(blur);
+                    svgImage.closest('svg').appendChild(filter);
+                    svgImage.setAttribute('filter', `url(#${filterId})`);
+                } else {
+                    svgImage.removeAttribute('filter');
+                    const filters = svgImage.closest('svg').querySelectorAll('filter');
+                    filters.forEach(filter => filter.remove());
+                }
+            }
+            break;
+
+        case 'background':
+            const bgImg = wrapper.querySelector('img');
+            if (bgImg) {
+                bgImg.style.filter = shouldBlur ? `blur(${blurAmount})` : 'none';
+            }
+            break;
+    }
+}
