@@ -41,7 +41,8 @@ let flagShowFrameonImage = {
     addLabel: true,
     autoProcessImages: true,
     minimumImageSize: 100,
-    confidenceThreshold: 70  // Default threshold value
+    confidenceThreshold: 70,  // Default threshold value
+    processingMode: 'face_detection'  // 'face_detection' or 'blur'
 };
 
 /**
@@ -778,15 +779,13 @@ async function detectFacesWithFaceApi(img) {
             if (flagShowFrameonImage.addLabel) {
                 addResultIndicator(wrapper, 'Failed to load image');
             }
-            // Ensure image remains visible even if proxy creation fails
-            img.style.visibility = 'visible';
-            img.style.display = 'block';
             throw new Error('Unable to process cross-origin image');
         }
 
         let scaledImg = await createScaledImage(proxyImg);
         let scaleFactors = { x: 1, y: 1 };
         
+        // Handle tiny images differently
         const minDimension = Math.min(scaledImg.width, scaledImg.height);
         if (minDimension <= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
             console.log('Processing tiny image with special handling...');
@@ -804,6 +803,7 @@ async function detectFacesWithFaceApi(img) {
 
         console.log(`Detected ${detections.length} faces in image (${scaledImg.width}x${scaledImg.height})`);
 
+        // Scale back detections if we upscaled
         if (scaleFactors.x !== 1 || scaleFactors.y !== 1) {
             detections = detections.map(detection => ({
                 ...detection,
@@ -816,88 +816,78 @@ async function detectFacesWithFaceApi(img) {
             }));
         }
 
-        // Process faces and check for similarities
-        let hasSimilarFaces = false;
-        if (detections.length > 1) {
-            const faceEmbeddings = [];
-            for (const detection of detections) {
-                const faceCanvas = await extractFaceRegion(proxyImg, detection);
-                try {
-                    const embedding = await generateEmbedding(faceCanvas);
-                    faceEmbeddings.push(embedding);
-                } catch (error) {
-                    console.error('Embedding generation error:', error);
-                }
-            }
-
-            // Compare each pair of faces
-            for (let i = 0; i < faceEmbeddings.length; i++) {
-                for (let j = i + 1; j < faceEmbeddings.length; j++) {
-                    try {
-                        const similarity = await computeFaceSimilarity(
-                            faceEmbeddings[i],
-                            faceEmbeddings[j]
-                        );
-                        if (similarity >= flagShowFrameonImage.confidenceThreshold / 100) {
-                            hasSimilarFaces = true;
-                            break;
-                        }
-                    } catch (error) {
-                        console.error('Similarity computation error:', error);
-                    }
-                }
-                if (hasSimilarFaces) break;
+        const faceEmbeddings = [];
+        for (const detection of detections) {
+            const faceCanvas = await extractFaceRegion(proxyImg, detection);
+            try {
+                const embedding = await generateEmbedding(faceCanvas);
+                const comparison = await compareWithPositiveEmbeddings(embedding);
+                
+                faceEmbeddings.push({
+                    embedding,
+                    detection,
+                    similarity: comparison.maxSimilarity,
+                    matchIndex: comparison.matchIndex
+                });
+                
+                console.log(`Face detected with similarity score: ${(comparison.maxSimilarity * 100).toFixed(2)}%`);
+            } catch (error) {
+                console.error('Embedding generation error:', error);
             }
         }
 
-        // Update image tracker with results
-        const shouldDisplay = !hasSimilarFaces;
-        imageTracker.markProcessed(src, shouldDisplay, hasSimilarFaces);
+        // Store embeddings and comparison results
+        if (faceEmbeddings.length > 0) {
+            imageTracker.add(src, {
+                embeddings: faceEmbeddings,
+                timestamp: Date.now()
+            });
 
-        // Always ensure the image is visible
-        img.style.visibility = 'visible';
-        img.style.display = 'block';
-
-        // Update visualization
-        if (shouldDisplay) {
-            if (detections.length > 0) {
-                updateVisualizationWithSimilarity(wrapper, img, detections.map(detection => ({
-                    detection,
-                    similarity: 0
-                })));
-            } else {
-                // Clear any existing visualizations
-                const existingCanvas = wrapper.querySelector('.face-detection-canvas');
-                const processingIndicator = wrapper.querySelector('.processing-indicator');
-                if (existingCanvas) existingCanvas.remove();
-                if (processingIndicator) processingIndicator.remove();
-
-                if (flagShowFrameonImage.addLabel) {
-                    addResultIndicator(wrapper, `No faces detected (${scaledImg.width}x${scaledImg.height})`);
-                }
-
-                if (flagShowFrameonImage.frameProsessedImage) {
-                    const canvas = createDetectionCanvas(img);
-                    const ctx = canvas.getContext('2d');
-                    ctx.strokeStyle = 'rgba(128, 128, 128, 0.5)';
-                    ctx.lineWidth = 2;
-                    ctx.strokeRect(0, 0, canvas.width, canvas.height);
-                    wrapper.appendChild(canvas);
+            // Handle different processing modes
+            if (flagShowFrameonImage.processingMode === 'face_detection') {
+                // Face detection mode: show frames and labels
+                updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings);
+            } else if (flagShowFrameonImage.processingMode === 'blur') {
+                // Blur mode: blur faces that match the criteria
+                const shouldBlur = faceEmbeddings.some(face => 
+                    face.similarity >= flagShowFrameonImage.confidenceThreshold / 100
+                );
+                
+                if (shouldBlur) {
+                    // Apply blur effect to the image
+                    img.style.filter = 'blur(10px)';
+                    if (flagShowFrameonImage.addLabel) {
+                        addResultIndicator(wrapper, 'Image blurred - Similar faces detected');
+                    }
+                } else {
+                    img.style.filter = 'none';
+                    if (flagShowFrameonImage.addLabel) {
+                        addResultIndicator(wrapper, 'No matching faces detected');
+                    }
                 }
             }
         } else {
-            // Hide or modify display for images with similar faces
-            img.style.filter = 'blur(10px)';  // Or handle differently based on your requirements
+            // Clear any existing visualizations
+            const existingCanvas = wrapper.querySelector('.face-detection-canvas');
+            const processingIndicator = wrapper.querySelector('.processing-indicator');
+            if (existingCanvas) existingCanvas.remove();
+            if (processingIndicator) processingIndicator.remove();
+
             if (flagShowFrameonImage.addLabel) {
-                addResultIndicator(wrapper, 'Similar faces detected - Image hidden');
+                addResultIndicator(wrapper, `No faces detected (${scaledImg.width}x${scaledImg.height})`);
+            }
+            
+            // Ensure no blur is applied when no faces are detected
+            if (flagShowFrameonImage.processingMode === 'blur') {
+                img.style.filter = 'none';
             }
         }
         
+        // Mark image as processed
+        imageTracker.markProcessed(src, true);
+        
     } catch (error) {
         console.error('Face detection error:', error);
-        // Ensure image remains visible even if processing fails
-        img.style.visibility = 'visible';
-        img.style.display = 'block';
         const wrapper = img.closest('.face-detection-wrapper');
         if (wrapper && flagShowFrameonImage.addLabel) {
             addResultIndicator(wrapper, `Detection failed: ${error.message}`);
@@ -2182,7 +2172,8 @@ chrome.storage.sync.get({
     addLabel: true,
     autoProcessImages: true,
     minimumImageSize: 100,
-    confidenceThreshold: 70
+    confidenceThreshold: 70,
+    processingMode: 'face_detection'  // Add default mode
 }, function(items) {
     flagShowFrameonImage = {
         ...flagShowFrameonImage,
@@ -2195,16 +2186,26 @@ function shouldDisplayImage(src) {
     return imageTracker.shouldDisplay(src);
 }
 
-// Modify storage event listener to handle display updates
+// Modify storage event listener to handle display updates and mode changes
 chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'sync' && changes.confidenceThreshold) {
-        // Clear processed status to allow reprocessing with new threshold
-        imageTracker.images.forEach((info, src) => {
-            info.isProcessed = false;
-        });
-        // Reprocess visible images
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
+    if (namespace === 'sync') {
+        let needsReprocessing = false;
+        
+        // Check for relevant setting changes
+        if (changes.confidenceThreshold || changes.processingMode) {
+            needsReprocessing = true;
+        }
+        
+        if (needsReprocessing) {
+            // Clear processed status to allow reprocessing
+            imageTracker.images.forEach((info, src) => {
+                info.isProcessed = false;
+            });
+            
+            // Reprocess visible images
+            if (flagShowFrameonImage.autoProcessImages) {
+                processExistingImages();
+            }
         }
     }
 });
