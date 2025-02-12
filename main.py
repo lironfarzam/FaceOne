@@ -12,6 +12,7 @@ import sys
 from datetime import datetime
 import tensorflow as tf
 import pprint as pp
+import shutil
 
 
 from tensorflow.keras.models import Model, Sequential, load_model
@@ -633,14 +634,21 @@ def load_saved_model(filepath: str, custom_objects: dict = None) -> tf.keras.Mod
 
 
 def save_trained_model(model: tf.keras.Model, filepath: str) -> None:
-    """Save a trained model to both HDF5 and SavedModel formats.
+    """Save a trained model to both HDF5 and SavedModel formats, and copy to Chrome extension.
 
     Args:
         model (tf.keras.Model): The trained model to be saved.
         filepath (str): Path to the file where the model will be saved.
     """
-    # Ensure the directory exists
+    # Load config for Chrome extension path
+    config = load_config()
+    chrome_ext_path = config["chrome_extension_model_path"]
+    chrome_ext_embeddings_path = config["chrome_extension_embeddings_path"]
+
+    # Ensure the directories exist
     os.makedirs(filepath, exist_ok=True)
+    os.makedirs(os.path.dirname(chrome_ext_path), exist_ok=True)
+    os.makedirs(os.path.dirname(chrome_ext_embeddings_path), exist_ok=True)
 
     # Save the model in HDF5 format
     h5_filepath = os.path.join(filepath, "HDF5", "model.h5")
@@ -657,10 +665,29 @@ def save_trained_model(model: tf.keras.Model, filepath: str) -> None:
     print("-" * 50)
 
     # Save the model as TensorFlow SavedModel
-    saved_model_path = filepath + "/saved_model/model"
+    saved_model_path = os.path.join(filepath, "saved_model", "model")
     model.export(saved_model_path)
     print_green(f"Model saved as TensorFlow SavedModel to {saved_model_path}")
     print("-" * 50)
+
+    # Convert and save model for TensorFlow.js
+    tfjs_path = os.path.join(filepath, "tfjs_graph_model")
+    convert_model_to_format(filepath)
+    print_green(f"Model converted to TensorFlow.js format at {tfjs_path}")
+    print("-" * 50)
+
+    # Copy TFJS model to Chrome extension directory
+    if os.path.exists(tfjs_path):
+        # Remove existing files in chrome extension directory if they exist
+        if os.path.exists(chrome_ext_path):
+            shutil.rmtree(chrome_ext_path)
+
+        # Copy the new files
+        shutil.copytree(tfjs_path, chrome_ext_path)
+        print_green(f"Model copied to Chrome extension at {chrome_ext_path}")
+        print("-" * 50)
+    else:
+        print_red(f"Error: TFJS model not found at {tfjs_path}")
 
 
 # Train the Siamese Model
@@ -879,20 +906,34 @@ def save_positive_embeddings(
     num_samples: int = 100,
 ) -> None:
     """
-    Randomly save a specified number of positive embeddings to a JSON file.
+    Randomly save a specified number of positive embeddings to JSON files.
 
     Args:
         filepath (str): Path to the file where the positive embeddings will be saved.
         positive_embeddings (np.ndarray): NumPy array containing the positive embeddings.
         num_samples (int, optional): Number of positive embeddings to save. Defaults to 100.
     """
+    config = load_config()
+    chrome_ext_embeddings_path = config["chrome_extension_embeddings_path"]
+
+    # Ensure directories exist
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    os.makedirs(os.path.dirname(chrome_ext_embeddings_path), exist_ok=True)
+
     sample_indices = random.sample(range(len(positive_embeddings)), num_samples)
     positive_embeddings_sampled = positive_embeddings[sample_indices].tolist()
 
+    # Save to original location
     with open(filepath, "w") as file:
         json.dump(positive_embeddings_sampled, file)
-
     print_green(f"Positive embeddings saved to {filepath}")
+
+    # Save to Chrome extension location
+    with open(chrome_ext_embeddings_path, "w") as file:
+        json.dump(positive_embeddings_sampled, file)
+    print_green(
+        f"Positive embeddings copied to Chrome extension at {chrome_ext_embeddings_path}"
+    )
     print("-" * 50)
 
 

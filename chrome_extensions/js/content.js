@@ -83,7 +83,7 @@ async function loadPositiveEmbeddings() {
     if (isPositiveEmbeddingsLoaded) return;
 
     try {
-        const embeddingsPath = chrome.runtime.getURL('models/positive_embeddings.json');
+        const embeddingsPath = chrome.runtime.getURL('models/embeddings/positive_embeddings.json');
         const response = await fetch(embeddingsPath);
         if (!response.ok) {
             throw new Error(`Failed to load positive embeddings: ${response.statusText}`);
