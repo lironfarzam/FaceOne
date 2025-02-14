@@ -41,7 +41,8 @@
       "lib/tf.min.js",
       "lib/tf-converter.min.js",
       "models/*",
-      "css/*"
+      "css/*",
+      "js/imageWorker.js"
     ],
     "matches": ["<all_urls>"]
   }],
