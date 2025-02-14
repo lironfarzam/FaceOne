@@ -17,11 +17,13 @@ const settings = {
 };
 
 /**
- * Saves and applies settings to Chrome storage and active tabs
- * @param {boolean} showStatus - Whether to show the save status message
+ * Gets current settings from UI elements
+ * @returns {Object} Current settings object
  */
-function saveAndApplySettings(showStatus = true) {
-    const newSettings = {
+function getCurrentSettings() {
+    return {
+        processingMode: document.querySelector('.mode-button.active').id === 'faceDetectionMode' ? 
+            'face_detection' : 'blur',
         frameProsessedImage: settings.frameProsessedImage.checked,
         frameFaceDetected: settings.frameFaceDetected.checked,
         addLabel: settings.addLabel.checked,
@@ -29,90 +31,69 @@ function saveAndApplySettings(showStatus = true) {
         minimumImageSize: parseInt(settings.minimumImageSizeNumber.value),
         confidenceThreshold: parseInt(settings.confidenceThreshold.value)
     };
-
-    console.log('Saving new settings:', newSettings);
-
-    // Save to Chrome storage
-    chrome.storage.sync.set(newSettings, () => {
-        if (chrome.runtime.lastError) {
-            console.error('Error saving settings:', chrome.runtime.lastError);
-            return;
-        }
-        
-        if (showStatus) {
-            showSaveStatus();
-        }
-        
-        // Update content script settings
-        updateContentScriptSettings(newSettings);
-    });
 }
 
 /**
- * Shows the save status message briefly
+ * Updates settings in Chrome storage and notifies content script
+ * @param {Object} newSettings - Settings to update
+ * @param {boolean} showStatus - Whether to show the save status message
+ * @returns {Promise} Resolves when settings are saved and applied
  */
-function showSaveStatus() {
+async function updateSettings(newSettings, showStatus = true) {
+    console.log('Saving settings:', newSettings);
+
+    try {
+        // Save to Chrome storage
+        await new Promise((resolve, reject) => {
+            chrome.storage.sync.set(newSettings, () => {
+                if (chrome.runtime.lastError) {
+                    reject(chrome.runtime.lastError);
+                } else {
+                    resolve();
+                }
+            });
+        });
+
+        // Show status if requested
+        if (showStatus) {
+            showSaveStatus();
+        }
+
+        // Notify content script
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0]?.id) {
+            await chrome.tabs.sendMessage(tabs[0].id, {
+                type: 'SETTINGS_UPDATED',
+                settings: newSettings
+            });
+        }
+
+        return true;
+    } catch (error) {
+        console.error('Error updating settings:', error);
+        showStatus('Error saving settings', 'error');
+        return false;
+    }
+}
+
+/**
+ * Shows the save status message
+ * @param {string} message - Message to show
+ * @param {string} type - Type of message ('success' or 'error')
+ */
+function showStatus(message = 'Settings saved', type = 'success') {
     const status = document.querySelector('.status');
-    status.classList.add('show');
+    status.textContent = message;
+    status.className = `status show ${type}`;
     setTimeout(() => {
         status.classList.remove('show');
     }, 2000);
 }
 
 /**
- * Updates settings in active content script
- * @param {Object} settings - The new settings to apply
+ * Updates threshold value display
+ * @param {number} value - New threshold value
  */
-function updateContentScriptSettings(settings) {
-    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-        if (!tabs[0]?.id) {
-            console.error('No active tab found');
-            return;
-        }
-        
-        console.log('Sending settings update:', settings);
-        chrome.tabs.sendMessage(tabs[0].id, {
-            type: 'UPDATE_SETTINGS',
-            settings: settings
-        }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.error('Error sending settings:', chrome.runtime.lastError);
-                return;
-            }
-            console.log('Settings update response:', response);
-        });
-    });
-}
-
-/**
- * Loads saved settings from Chrome storage
- */
-function loadSavedSettings() {
-    chrome.storage.sync.get({
-        // Default values
-        frameProsessedImage: true,
-        frameFaceDetected: true,
-        addLabel: true,
-        autoProcessImages: true,
-        minimumImageSize: 100,
-        confidenceThreshold: 70
-    }, (items) => {
-        // Set checkbox states
-        settings.frameProsessedImage.checked = items.frameProsessedImage;
-        settings.frameFaceDetected.checked = items.frameFaceDetected;
-        settings.addLabel.checked = items.addLabel;
-        settings.autoProcessImages.checked = items.autoProcessImages;
-        
-        // Set range and number input values
-        settings.minimumImageSizeRange.value = items.minimumImageSize;
-        settings.minimumImageSizeNumber.value = items.minimumImageSize;
-
-        // Set confidence threshold slider
-        settings.confidenceThreshold.value = items.confidenceThreshold;
-        updateThresholdValue(items.confidenceThreshold);
-    });
-}
-
 function updateThresholdValue(value) {
     const thresholdValue = document.querySelector('.threshold-value');
     if (thresholdValue) {
@@ -120,97 +101,143 @@ function updateThresholdValue(value) {
     }
 }
 
+/**
+ * Loads saved settings from Chrome storage
+ */
+async function loadSavedSettings() {
+    const defaults = {
+        processingMode: 'face_detection',
+        frameProsessedImage: true,
+        frameFaceDetected: true,
+        addLabel: true,
+        autoProcessImages: true,
+        minimumImageSize: 100,
+        confidenceThreshold: 70
+    };
+
+    try {
+        const items = await new Promise(resolve => {
+            chrome.storage.sync.get(defaults, resolve);
+        });
+
+        // Update UI elements
+        settings.frameProsessedImage.checked = items.frameProsessedImage;
+        settings.frameFaceDetected.checked = items.frameFaceDetected;
+        settings.addLabel.checked = items.addLabel;
+        settings.autoProcessImages.checked = items.autoProcessImages;
+        settings.minimumImageSizeRange.value = items.minimumImageSize;
+        settings.minimumImageSizeNumber.value = items.minimumImageSize;
+        settings.confidenceThreshold.value = items.confidenceThreshold;
+
+        // Update mode buttons
+        const faceDetectionButton = document.getElementById('faceDetectionMode');
+        const blurButton = document.getElementById('blurMode');
+        if (items.processingMode === 'face_detection') {
+            faceDetectionButton.classList.add('active');
+            blurButton.classList.remove('active');
+        } else {
+            blurButton.classList.add('active');
+            faceDetectionButton.classList.remove('active');
+        }
+
+        updateThresholdValue(items.confidenceThreshold);
+    } catch (error) {
+        console.error('Error loading settings:', error);
+        showStatus('Error loading settings', 'error');
+    }
+}
+
 // Initialize event listeners
 function initializeEventListeners() {
-    // Add change listeners to checkboxes for immediate effect
-    ['frameProsessedImage', 'frameFaceDetected', 'addLabel', 'autoProcessImages'].forEach(setting => {
-        settings[setting].addEventListener('change', () => {
-            saveAndApplySettings(false);
+    // Mode switching
+    ['faceDetectionMode', 'blurMode'].forEach(id => {
+        const button = document.getElementById(id);
+        button.addEventListener('click', async () => {
+            if (button.classList.contains('active')) return;
+            
+            const newSettings = getCurrentSettings();
+            newSettings.processingMode = id === 'faceDetectionMode' ? 'face_detection' : 'blur';
+            await updateSettings(newSettings, true);
         });
     });
 
-    // Sync range and number inputs
+    // Checkbox changes
+    ['frameProsessedImage', 'frameFaceDetected', 'addLabel', 'autoProcessImages'].forEach(id => {
+        settings[id].addEventListener('change', async () => {
+            await updateSettings(getCurrentSettings(), false);
+        });
+    });
+
+    // Range and number input sync
     settings.minimumImageSizeRange.addEventListener('input', (e) => {
         settings.minimumImageSizeNumber.value = e.target.value;
     });
 
-    settings.minimumImageSizeNumber.addEventListener('input', (e) => {
+    settings.minimumImageSizeNumber.addEventListener('input', async (e) => {
         let value = parseInt(e.target.value);
         value = Math.max(0, Math.min(value, 10000));
         settings.minimumImageSizeRange.value = value;
         e.target.value = value;
-        saveAndApplySettings(false);
+        await updateSettings(getCurrentSettings(), false);
     });
 
-    // Save button handler
-    document.querySelector('.save-button').addEventListener('click', () => {
-        saveAndApplySettings(true);
-    });
-
-    // Add reprocess button handler
-    document.querySelector('.reprocess-button').addEventListener('click', () => {
-        chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-            if (!tabs[0]?.id) {
-                console.error('No active tab found');
-                return;
-            }
-            
-            console.log('Requesting reprocess of all images');
-            chrome.tabs.sendMessage(tabs[0].id, {
-                type: 'REPROCESS_ALL'
-            }, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.error('Error requesting reprocess:', chrome.runtime.lastError);
-                    return;
-                }
-                console.log('Reprocess response:', response);
-            });
-        });
-    });
-
-    // Save settings when changed
-    document.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach(input => {
-        input.addEventListener('change', saveSettings);
-    });
-
-    // Add confidence threshold slider listener
+    // Confidence threshold changes
     settings.confidenceThreshold.addEventListener('input', (e) => {
         updateThresholdValue(e.target.value);
-        saveAndApplySettings(false);
+    });
+
+    settings.confidenceThreshold.addEventListener('change', async () => {
+        await updateSettings(getCurrentSettings(), false);
+    });
+
+    // Reprocess button
+    document.querySelector('.reprocess-button')?.addEventListener('click', async () => {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0]?.id) {
+            try {
+                await chrome.tabs.sendMessage(tabs[0].id, { type: 'REPROCESS_ALL' });
+                showStatus('Reprocessing images...', 'success');
+            } catch (error) {
+                console.error('Error requesting reprocess:', error);
+                showStatus('Error reprocessing images', 'error');
+            }
+        }
     });
 }
 
-// Initialize popup
+/**
+ * Initializes the popup UI and functionality
+ */
+async function initializePopup() {
+    try {
+        // Load and apply saved settings first
+        await loadSavedSettings();
+        
+        // Initialize all event listeners
+        initializeEventListeners();
+        
+        // Additional initialization if needed
+        console.log('Popup initialized successfully');
+    } catch (error) {
+        console.error('Error initializing popup:', error);
+        showStatus('Error initializing popup', 'error');
+    }
+}
+
+// Single DOMContentLoaded event listener
 document.addEventListener('DOMContentLoaded', () => {
-    loadSavedSettings();
-    initializeEventListeners();
-});
-
-function saveSettings() {
-    // Get current settings
-    const settings = {
-        frameProsessedImage: document.getElementById('frameProsessedImage').checked,
-        frameFaceDetected: document.getElementById('frameFaceDetected').checked,
-        addLabel: document.getElementById('addLabel').checked,
-        autoProcessImages: document.getElementById('autoProcessImages').checked,
-        confidenceThreshold: parseInt(document.getElementById('confidenceThreshold').value)
-    };
-
-    // Save to storage
-    chrome.storage.sync.set(settings, function() {
-        // Show save confirmation
-        const status = document.querySelector('.status');
-        status.classList.add('show');
-        setTimeout(() => status.classList.remove('show'), 2000);
-
-        // Notify content script
-        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-            if (tabs[0]?.id) {
-                chrome.tabs.sendMessage(tabs[0].id, {
-                    type: 'SETTINGS_UPDATED',
-                    settings: settings
-                });
-            }
-        });
+    // Initialize DOM elements
+    Object.keys(settings).forEach(key => {
+        const element = document.getElementById(key);
+        if (!element) {
+            console.warn(`Element not found: ${key}`);
+        }
+        settings[key] = element;
     });
-} 
+
+    // Initialize popup
+    initializePopup().catch(error => {
+        console.error('Failed to initialize popup:', error);
+        showStatus('Failed to initialize popup', 'error');
+    });
+}); 
