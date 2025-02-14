@@ -151,7 +151,7 @@ let faceNetModel = null;
 /**
  * Creates sandbox iframe for TensorFlow operations and waits for it to be ready
  */
-async function createSandboxFrame() {
+async function createSandboxFrame(timeout) {
     if (sandboxFrame && sandboxFrame.contentWindow) return;
 
     // Cleanup any existing frame
@@ -202,7 +202,7 @@ async function createSandboxFrame() {
                 tfInitTimeout = setTimeout(() => {
                     cleanup();
                     reject(new Error('TF initialization timeout'));
-                }, 30000); // 30 second timeout for TF initialization
+                }, timeout);
             };
             
             const handleError = (error) => {
@@ -344,12 +344,12 @@ async function loadFaceApiModels() {
         
         state.modelLoadAttempts++;
         
-        // Create and wait for sandbox frame first
+        // Create and wait for sandbox frame with dynamic timeout
         if (!sandboxFrame || !sandboxFrame.contentWindow) {
             console.log('Creating sandbox frame...');
-            await createSandboxFrame();
-            // Additional wait to ensure frame is fully ready
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await createSandboxFrame(state.modelLoadAttempts);
+            // Reduced wait time but still ensure frame is ready
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
         // Verify sandbox frame is properly initialized
@@ -503,6 +503,21 @@ async function loadFaceApiModels() {
 const imageTracker = {
     images: new Map(), // Map<string, ImageInfo>
     maxSize: 1000,
+    cleanupInterval: 60000, // Cleanup every minute
+    maxAge: 5 * 60 * 1000, // Keep items for 5 minutes
+    
+    constructor() {
+        setInterval(() => this.cleanup(), this.cleanupInterval);
+    },
+    
+    cleanup() {
+        const now = Date.now();
+        for (const [src, info] of this.images) {
+            if (now - info.timestamp > this.maxAge) {
+                this.images.delete(src);
+            }
+        }
+    },
     
     add(src, info = {}) {
         if (this.images.size >= this.maxSize) {
@@ -906,49 +921,73 @@ async function detectFacesWithFaceApi(img) {
 
 // Optimize queue processing with batching and prioritization
 const processingQueue = {
-  items: [],
-  processing: false,
-  batchSize: 3,  // Process 3 images at a time
-  
-  add(element, priority = false) {
-    const item = { element, priority };
-    if (priority) {
-      this.items.unshift(item);
-    } else {
-      this.items.push(item);
-    }
-    this.process();
-  },
-  
-  async process() {
-    if (this.processing || this.items.length === 0) return;
+    items: [],
+    processing: false,
+    batchSize: 5,  // Increased from 3 to 5 for better throughput
+    processingTimeout: 20000, // 20 second timeout for processing
     
-    this.processing = true;
-    while (this.items.length > 0) {
-      const batch = this.items.splice(0, this.batchSize);
-      const promises = batch.map(async ({ element }) => {
-        try {
-          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-          
-          // Check cache first
-          if (imageTracker.has(src)) {
-            const embedding = imageTracker.getEmbedding(src);
-            // Handle cached embedding (e.g., display visualization)
-            return;
-          }
-          
-          await detectFacesWithFaceApi(element);
-        } catch (error) {
-          console.error('Processing error:', error);
-          const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-          imageTracker.markProcessed(src, false);
+    add(element, priority = false) {
+        const item = { 
+            element, 
+            priority,
+            timestamp: Date.now() 
+        };
+        
+        if (priority) {
+            this.items.unshift(item);
+        } else {
+            this.items.push(item);
         }
-      });
-      
-      await Promise.all(promises);
+        
+        // Start processing if not already running
+        if (!this.processing) {
+            this.process();
+        }
+    },
+    
+    async process() {
+        if (this.processing || this.items.length === 0) return;
+        
+        this.processing = true;
+        while (this.items.length > 0) {
+            // Process items in batches with timeout protection
+            const batch = this.items.splice(0, this.batchSize);
+            const promises = batch.map(async ({ element, timestamp }) => {
+                try {
+                    // Skip if item is too old
+                    if (Date.now() - timestamp > this.processingTimeout) {
+                        console.log('Skipping stale item');
+                        return;
+                    }
+                    
+                    const src = element.tagName === 'IMG' ? 
+                        element.src : element.getAttribute('xlink:href');
+                    
+                    // Check cache first
+                    if (imageTracker.has(src)) {
+                        return;
+                    }
+                    
+                    await Promise.race([
+                        detectFacesWithFaceApi(element),
+                        new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error('Processing timeout')), 
+                            this.processingTimeout)
+                        )
+                    ]);
+                } catch (error) {
+                    console.error('Processing error:', error);
+                }
+            });
+            
+            await Promise.all(promises);
+            
+            // Add small delay between batches but make it dynamic
+            const delay = Math.max(50, Math.min(batch.length * 20, 200));
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        this.processing = false;
     }
-    this.processing = false;
-  }
 };
 
 // Helper functions for improved visualization
@@ -2227,27 +2266,32 @@ function applyBlurEffect(element, shouldBlur) {
     if (!wrapper) return;
 
     const imageType = wrapper.getAttribute('data-image-type');
-    const blurAmount = '10px';
-
+    const blurAmount = shouldBlur ? '10px' : '0px';
+    
+    // Use CSS transform to trigger GPU acceleration
+    const transform = shouldBlur ? 'translateZ(0)' : 'none';
+    
     switch (imageType) {
         case 'img':
             const img = wrapper.querySelector('img');
             if (img) {
-                img.style.filter = shouldBlur ? `blur(${blurAmount})` : 'none';
+                img.style.filter = `blur(${blurAmount})`;
+                img.style.transform = transform;
+                // Add will-change to hint browser about animation
+                img.style.willChange = shouldBlur ? 'filter' : 'auto';
             }
             break;
 
         case 'svg':
         case 'svg-nested':
-            const svgImage = element.tagName.toLowerCase() === 'image' ? 
-                element : element.querySelector('image');
+            const svgImage = wrapper.querySelector('image');
             if (svgImage) {
                 if (shouldBlur) {
                     const filterId = `blur-${Math.random().toString(36).substr(2, 9)}`;
                     const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
                     filter.setAttribute('id', filterId);
                     const blur = document.createElementNS('http://www.w3.org/2000/svg', 'feGaussianBlur');
-                    blur.setAttribute('stdDeviation', '10');
+                    blur.setAttribute('stdDeviation', '5');
                     filter.appendChild(blur);
                     svgImage.closest('svg').appendChild(filter);
                     svgImage.setAttribute('filter', `url(#${filterId})`);
@@ -2260,10 +2304,33 @@ function applyBlurEffect(element, shouldBlur) {
             break;
 
         case 'background':
-            const bgImg = wrapper.querySelector('img');
-            if (bgImg) {
-                bgImg.style.filter = shouldBlur ? `blur(${blurAmount})` : 'none';
+            const bgElement = wrapper.querySelector('img');
+            if (bgElement) {
+                bgElement.style.filter = `blur(${blurAmount})`;
+                bgElement.style.transform = transform;
+                bgElement.style.willChange = shouldBlur ? 'filter' : 'auto';
             }
             break;
     }
+}
+
+// Add debounced reprocess function
+const debouncedReprocess = debounce(async () => {
+    if (flagShowFrameonImage.autoProcessImages) {
+        await processExistingImages();
+        observeElements();
+    }
+}, 250);
+
+// Helper debounce function
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
 }
