@@ -30,6 +30,7 @@
       "matches": ["<all_urls>"],
       "js": [
         "lib/face-api.min.js",
+        "js/workerPool.js",
         "js/content.js"
       ],
       "run_at": "document_idle"
@@ -42,7 +43,8 @@
       "lib/tf-converter.min.js",
       "models/*",
       "css/*",
-      "js/imageWorker.js"
+      "js/imageWorker.js",
+      "js/workerPool.js"
     ],
     "matches": ["<all_urls>"]
   }],
