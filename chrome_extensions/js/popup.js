@@ -5,17 +5,55 @@
  * @version 1.0.0
  */
 
-// DOM Elements
+//=============================================================================
+// Global Variables and Constants
+//=============================================================================
+/**
+ * UI element references
+ * @type {Object.<string, HTMLElement>}
+ */
 const settings = {
-    frameProsessedImage: document.getElementById('frameProsessedImage'),
-    frameFaceDetected: document.getElementById('frameFaceDetected'),
-    addLabel: document.getElementById('addLabel'),
-    autoProcessImages: document.getElementById('autoProcessImages'),
-    minimumImageSizeRange: document.getElementById('minimumImageSizeRange'),
-    minimumImageSizeNumber: document.getElementById('minimumImageSizeNumber'),
-    confidenceThreshold: document.getElementById('confidenceThreshold')
+    frameProsessedImage: null,
+    frameFaceDetected: null,
+    addLabel: null,
+    autoProcessImages: null,
+    minimumImageSizeRange: null,
+    minimumImageSizeNumber: null,
+    confidenceThreshold: null
 };
 
+/**
+ * Default settings values
+ * @type {Object}
+ */
+const DEFAULT_SETTINGS = {
+    processingMode: 'face_detection',
+    autoProcessImages: true,
+    addLabel: true,
+    frameFaceDetected: true,
+    confidenceThreshold: 70
+};
+
+//=============================================================================
+// Initialization
+//=============================================================================
+/**
+ * Initializes the popup UI and functionality
+ */
+async function initializePopup() {
+    try {
+        await loadSavedSettings();
+        initializeEventListeners();
+        console.log('Popup initialized successfully');
+    } catch (error) {
+        console.error('Error initializing popup:', error);
+        showStatus('Error initializing popup', 'error');
+    }
+}
+
+//=============================================================================
+// Settings Management
+//=============================================================================
 /**
  * Gets current settings from UI elements
  * @returns {Object} Current settings object
@@ -77,31 +115,6 @@ async function updateSettings(newSettings, showStatus = true) {
 }
 
 /**
- * Shows the save status message
- * @param {string} message - Message to show
- * @param {string} type - Type of message ('success' or 'error')
- */
-function showStatus(message = 'Settings saved', type = 'success') {
-    const status = document.querySelector('.status');
-    status.textContent = message;
-    status.className = `status show ${type}`;
-    setTimeout(() => {
-        status.classList.remove('show');
-    }, 2000);
-}
-
-/**
- * Updates threshold value display
- * @param {number} value - New threshold value
- */
-function updateThresholdValue(value) {
-    const thresholdValue = document.querySelector('.threshold-value');
-    if (thresholdValue) {
-        thresholdValue.textContent = `${value}%`;
-    }
-}
-
-/**
  * Loads saved settings from Chrome storage
  */
 async function loadSavedSettings() {
@@ -147,7 +160,57 @@ async function loadSavedSettings() {
     }
 }
 
-// Initialize event listeners
+/**
+ * Saves settings to Chrome storage and notifies content script
+ * @param {string} key - Setting key to update
+ * @param {any} value - New value for the setting
+ */
+function saveSettings(key, value) {
+    // ... existing saveSettings code ...
+}
+
+//=============================================================================
+// UI Management
+//=============================================================================
+/**
+ * Updates UI based on selected mode
+ * @param {string} mode - The selected processing mode
+ */
+function updateUIForMode(mode) {
+    // ... existing updateUIForMode code ...
+}
+
+/**
+ * Shows status message in the UI
+ * @param {string} message - Message to display
+ * @param {string} [type='success'] - Type of message
+ */
+function showStatus(message, type = 'success') {
+    const status = document.querySelector('.status');
+    status.textContent = message;
+    status.className = `status show ${type}`;
+    setTimeout(() => {
+        status.classList.remove('show');
+    }, 2000);
+}
+
+/**
+ * Updates threshold value display
+ * @param {number} value - New threshold value
+ */
+function updateThresholdValue(value) {
+    const thresholdValue = document.querySelector('.threshold-value');
+    if (thresholdValue) {
+        thresholdValue.textContent = `${value}%`;
+    }
+}
+
+//=============================================================================
+// Event Listeners
+//=============================================================================
+/**
+ * Initializes all event listeners for UI elements
+ */
 function initializeEventListeners() {
     // Mode switching
     ['faceDetectionMode', 'blurMode'].forEach(id => {
@@ -205,26 +268,9 @@ function initializeEventListeners() {
     });
 }
 
-/**
- * Initializes the popup UI and functionality
- */
-async function initializePopup() {
-    try {
-        // Load and apply saved settings first
-        await loadSavedSettings();
-        
-        // Initialize all event listeners
-        initializeEventListeners();
-        
-        // Additional initialization if needed
-        console.log('Popup initialized successfully');
-    } catch (error) {
-        console.error('Error initializing popup:', error);
-        showStatus('Error initializing popup', 'error');
-    }
-}
-
-// Single DOMContentLoaded event listener
+//=============================================================================
+// Initialization Call
+//=============================================================================
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize DOM elements
     Object.keys(settings).forEach(key => {
