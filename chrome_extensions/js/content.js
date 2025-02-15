@@ -949,6 +949,17 @@ async function detectFacesWithFaceApi(img) {
             return;
         }
         
+        if (isFacebookProfile) {
+            // Handle Facebook profile picture specific cleanup
+            const svgParent = wrapper.previousSibling;
+            if (svgParent?.tagName.toLowerCase() === 'svg') {
+                const image = svgParent.querySelector('image');
+                if (image) {
+                    image.style.opacity = '0';
+                }
+            }
+        }
+        
     } catch (error) {
         console.error('Face detection error:', error);
         // Ensure image remains visible on error
@@ -1036,73 +1047,105 @@ const processingQueue = {
 
 // Helper functions for improved visualization
 function createWrapper(element) {
-    // Check if element is already wrapped
     const existingWrapper = element.closest('.face-detection-wrapper');
     if (existingWrapper) return existingWrapper;
 
     const wrapper = document.createElement('div');
     wrapper.className = 'face-detection-wrapper';
-    
-    // Determine image type
+
+    // Handle Facebook-style SVG profile pictures
     const isSvgImage = element.tagName.toLowerCase() === 'image';
-    const hasSvgParent = element.closest('svg');
-    
-    if (isSvgImage || hasSvgParent) {
-        // Special handling for SVG images
+    const svgParent = element.closest('svg');
+    const isFacebookProfile = svgParent?.closest('[data-visualcompletion]');
+
+    if (isSvgImage) {
         const svgUrl = element.getAttribute('xlink:href') || element.getAttribute('href');
         if (!svgUrl) return null;
-        
-        // Create regular img element to handle the image
+
+        // Create img element while preserving original structure
         const imgElement = document.createElement('img');
         imgElement.src = svgUrl;
-        imgElement.style.width = element.getAttribute('width') || '100%';
-        imgElement.style.height = element.getAttribute('height') || '100%';
         
-        // Copy relevant attributes
-        const preserveAspectRatio = element.getAttribute('preserveAspectRatio');
-        if (preserveAspectRatio) {
-            imgElement.style.objectFit = preserveAspectRatio.includes('slice') ? 'cover' : 'contain';
+        // Copy original dimensions and styling
+        const originalRect = element.getBoundingClientRect();
+        wrapper.style.width = `${originalRect.width}px`;
+        wrapper.style.height = `${originalRect.height}px`;
+        
+        // Preserve Facebook-specific styling
+        if (isFacebookProfile) {
+            // Keep original container's position and structure
+            wrapper.style.position = 'absolute';
+            wrapper.style.inset = '0';
+            wrapper.style.zIndex = '1'; // Place above original but below other UI
+            
+            // Copy mask and border radius if present
+            const mask = svgParent.querySelector('mask');
+            if (mask) {
+                const rect = mask.querySelector('rect');
+                if (rect) {
+                    wrapper.style.borderRadius = `${rect.getAttribute('rx')}px`;
+                }
+            }
+            
+            // Maintain original image position
+            imgElement.style.position = 'absolute';
+            imgElement.style.width = '100%';
+            imgElement.style.height = '100%';
+            imgElement.style.objectFit = 'cover';
+            
+            // Store reference to original elements
+            wrapper.setAttribute('data-original-container', isFacebookProfile.className);
+            wrapper.setAttribute('data-image-type', 'facebook-profile');
+            
+            // Insert wrapper next to original SVG
+            svgParent.parentNode.insertBefore(wrapper, svgParent.nextSibling);
+            
+            // Don't hide original immediately
+            element.style.opacity = '0.01';
+        } else {
+            // Regular SVG image handling
+            wrapper.style.position = 'relative';
+            wrapper.style.display = 'inline-block';
+            imgElement.style.width = '100%';
+            imgElement.style.height = '100%';
+            imgElement.style.objectFit = 'contain';
+            
+            element.parentNode.insertBefore(wrapper, element);
         }
         
-        // Set wrapper styles
-        wrapper.style.position = 'relative';
-        wrapper.style.display = 'inline-block';
-        wrapper.style.width = element.getAttribute('width') || element.width?.baseVal?.value + 'px' || '100%';
-        wrapper.style.height = element.getAttribute('height') || element.height?.baseVal?.value + 'px' || '100%';
-        
-        // Store original SVG reference
-        wrapper.setAttribute('data-original-svg-id', element.id || `svg-${Date.now()}`);
-        wrapper.setAttribute('data-image-type', 'svg');
-        
-        // Add the new img element to wrapper
         wrapper.appendChild(imgElement);
-        
-        // Position wrapper next to original SVG
-        element.parentNode.insertBefore(wrapper, element);
-        
-        // Don't hide original immediately to prevent flicker
-        element.style.opacity = '0.01';
-        
         return wrapper;
     }
-    
-    // Regular image handling...
-    wrapper.setAttribute('data-image-type', 'img');
+
+    // Regular image handling remains unchanged
     wrapper.style.position = 'relative';
     wrapper.style.display = 'inline-block';
     wrapper.style.width = element.offsetWidth + 'px';
     wrapper.style.height = element.offsetHeight + 'px';
     
-    // Maintain original image appearance
     element.style.width = '100%';
     element.style.height = '100%';
     element.style.objectFit = 'contain';
     
-    // Replace image with wrapper
     element.parentNode.insertBefore(wrapper, element);
     wrapper.appendChild(element);
     
     return wrapper;
+}
+
+// Add cleanup function specific to Facebook profile pictures
+function cleanupFacebookProfileWrapper(wrapper) {
+    if (wrapper.getAttribute('data-image-type') === 'facebook-profile') {
+        const originalContainer = wrapper.getAttribute('data-original-container');
+        const svgParent = wrapper.previousSibling;
+        if (svgParent?.tagName.toLowerCase() === 'svg') {
+            const image = svgParent.querySelector('image');
+            if (image) {
+                image.style.opacity = '1';
+            }
+        }
+    }
+    wrapper.remove();
 }
 
 // Add cleanup function for SVG images
