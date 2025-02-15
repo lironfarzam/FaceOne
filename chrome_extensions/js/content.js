@@ -7,9 +7,8 @@
  */
 
 //=============================================================================
-// Configuration and State Management
+// 1. Core Configuration and Types
 //=============================================================================
-
 /**
  * @typedef {Object} State
  * @property {boolean} modelsLoaded - Indicates if ML models are loaded
@@ -31,39 +30,40 @@ const state = {
     maxParallelProcessing: 3
 };
 
-/**
- * Extension settings with default values
- * @type {Object}
- */
+//=============================================================================
+// 2. Model Management
+//=============================================================================
+const modelStatus = {
+    faceApi: { loaded: false, loading: false, error: null },
+    faceNet: { loaded: false, loading: false, error: null },
+    myModel: { loaded: false, loading: false, error: null }
+};
+
+//=============================================================================
+// 3. Settings Management
+//=============================================================================
 let flagShowFrameonImage = {
     frameProsessedImage: true,
     frameFaceDetected: true,    
     addLabel: true,
     autoProcessImages: true,
     minimumImageSize: 100,
-    confidenceThreshold: 70,  // Default threshold value
-    processingMode: 'face_detection'  // 'face_detection' or 'blur'
+    confidenceThreshold: 70,
+    processingMode: 'face_detection'
 };
 
-/**
- * Model loading status tracking
- * @type {Object}
- */
-const modelStatus = {
-    faceApi: {
-        loaded: false,
-        loading: false,
-        error: null
+//=============================================================================
+// 4. Constants and Configuration
+//=============================================================================
+const MODEL_SELECTION_THRESHOLDS = {
+    get MINIMUM_SIZE() {
+        return Math.max(16, flagShowFrameonImage.minimumImageSize);
     },
-    faceNet: {
-        loaded: false,
-        loading: false,
-        error: null
+    get SMALL_IMAGE() {
+        return Math.max(96, this.MINIMUM_SIZE * 2);
     },
-    myModel: {  // Add new model status
-        loaded: false,
-        loading: false,
-        error: null
+    get LARGE_IMAGE() {
+        return Math.max(320, this.SMALL_IMAGE * 2);
     }
 };
 
@@ -291,19 +291,6 @@ const FACE_API_DETECTION_OPTIONS = {
         scaleFactor: 0.709,
         maxNumBoxes: 100,
         iouThreshold: 0.3
-    }
-};
-
-// Size thresholds for model selection
-const MODEL_SELECTION_THRESHOLDS = {
-    get MINIMUM_SIZE() {
-        return Math.max(16, flagShowFrameonImage.minimumImageSize);  // Reduced from 32 to 16
-    },
-    get SMALL_IMAGE() {
-        return Math.max(96, this.MINIMUM_SIZE * 2);  // Reduced from 160 to 96
-    },
-    get LARGE_IMAGE() {
-        return Math.max(320, this.SMALL_IMAGE * 2);  // Reduced from 640 to 320
     }
 };
 
