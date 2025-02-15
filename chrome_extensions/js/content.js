@@ -802,7 +802,15 @@ function detectImageRotation(imageData) {
     return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
 }
 
-// Update detectFacesWithFaceApi to handle rotation more gracefully
+// Add helper function to detect Facebook profile images
+function isFacebookProfileImage(element) {
+    // Check if element is within Facebook's profile picture container
+    return element.closest('[data-visualcompletion="media-vc-image"]') !== null ||
+           element.closest('[data-type="profile_picture"]') !== null ||
+           element.closest('.profile-photo-container') !== null;
+}
+
+// Update the detectFacesWithFaceApi function to use the helper
 async function detectFacesWithFaceApi(img) {
     const wrapper = createWrapper(img);
     const processingKey = `processing_${Date.now()}`;
@@ -949,7 +957,7 @@ async function detectFacesWithFaceApi(img) {
             return;
         }
         
-        if (isFacebookProfile) {
+        if (isFacebookProfileImage(img)) {
             // Handle Facebook profile picture specific cleanup
             const svgParent = wrapper.previousSibling;
             if (svgParent?.tagName.toLowerCase() === 'svg') {
@@ -1056,7 +1064,7 @@ function createWrapper(element) {
     // Handle Facebook-style SVG profile pictures
     const isSvgImage = element.tagName.toLowerCase() === 'image';
     const svgParent = element.closest('svg');
-    const isFacebookProfile = svgParent?.closest('[data-visualcompletion]');
+    const isFacebookProfile = isFacebookProfileImage(element);
 
     if (isSvgImage) {
         const svgUrl = element.getAttribute('xlink:href') || element.getAttribute('href');
