@@ -277,16 +277,16 @@ let isLoadingModels = false;
  */
 const FACE_API_DETECTION_OPTIONS = {
     ssdMobilenetv1: {
-        minConfidence: 0.3,
+        minConfidence: 0.2, // Reduced from 0.3 for better detection
         inputSize: 640,
-        scoreThreshold: 0.3,
+        scoreThreshold: 0.2,
         maxNumBoxes: 100,
         scaleFactor: 0.8,
         iouThreshold: 0.5
     },
     tinyFaceDetector: {
         inputSize: 416,
-        scoreThreshold: 0.01,  // Reduced threshold for better detection on small images
+        scoreThreshold: 0.01,
         minFaceSize: 20,
         scaleFactor: 0.709,
         maxNumBoxes: 100,
@@ -297,13 +297,13 @@ const FACE_API_DETECTION_OPTIONS = {
 // Size thresholds for model selection
 const MODEL_SELECTION_THRESHOLDS = {
     get MINIMUM_SIZE() {
-        return Math.max(32, flagShowFrameonImage.minimumImageSize);  // Never go below 32px (model requirement)
+        return Math.max(16, flagShowFrameonImage.minimumImageSize);  // Reduced from 32 to 16
     },
     get SMALL_IMAGE() {
-        return Math.max(160, this.MINIMUM_SIZE * 2);  // Adaptive small image threshold
+        return Math.max(96, this.MINIMUM_SIZE * 2);  // Reduced from 160 to 96
     },
     get LARGE_IMAGE() {
-        return Math.max(640, this.SMALL_IMAGE * 2);  // Adaptive large image threshold
+        return Math.max(320, this.SMALL_IMAGE * 2);  // Reduced from 640 to 320
     }
 };
 
@@ -504,7 +504,9 @@ const imageTracker = {
     images: new Map(), // Map<string, ImageInfo>
     maxSize: 1000,
     cleanupInterval: 60000, // Cleanup every minute
-    maxAge: 5 * 60 * 1000, // Keep items for 5 minutes
+    // maxAge: 5 * 60 * 1000, // Keep items for 5 minutes
+    maxAge: 1 * 10 * 1000, // Keep items for 10 seconds
+
     
     constructor() {
         setInterval(() => this.cleanup(), this.cleanupInterval);
@@ -537,13 +539,18 @@ const imageTracker = {
     
     markProcessed(src, shouldDisplay, hasSimilarFaces = false) {
         const info = this.images.get(src) || {};
-        this.images.set(src, {
+        const newInfo = {
             ...info,
             isProcessed: true,
             shouldDisplay: shouldDisplay,
             hasSimilarFaces: hasSimilarFaces,
-            timestamp: Date.now()
-        });
+            timestamp: Date.now(),
+            processingComplete: true // Add flag to indicate complete processing
+        };
+        this.images.set(src, newInfo);
+        
+        // Log processing completion
+        console.log(`Image processing complete: ${src}`, newInfo);
     },
     
     shouldProcess(src) {
@@ -592,45 +599,18 @@ function isValidElement(element) {
               imageElement?.getAttribute('href') ||
               imageElement?.getAttribute('src');
     } else if (hasBackgroundImage) {
-        // Extract URL from background-image CSS
         src = window.getComputedStyle(element).backgroundImage.slice(4, -1).replace(/["']/g, "");
     }
 
     if (!src || src.startsWith('data:') || src.includes('emoji')) return false;
 
-    // Get dimensions
-    let width, height;
-    if (isImg) {
-        width = element.naturalWidth || element.width || element.clientWidth;
-        height = element.naturalHeight || element.height || element.clientHeight;
-    } else if (isSvgImage || hasSvgImage) {
-        const imageElement = isSvgImage ? element : element.querySelector('image');
-        const parentSvg = imageElement?.closest('svg');
-        width = parseInt(imageElement?.getAttribute('width')) || 
-               parseInt(imageElement?.style.width) || 
-               parentSvg?.width?.baseVal?.value ||
-               element.getBoundingClientRect().width;
-        height = parseInt(imageElement?.getAttribute('height')) || 
-                parseInt(imageElement?.style.height) || 
-                parentSvg?.height?.baseVal?.value ||
-                element.getBoundingClientRect().height;
-    } else {
-        const rect = element.getBoundingClientRect();
-        width = rect.width;
-        height = rect.height;
-    }
-
-    // Validate size
-    const minDimension = Math.min(width || 0, height || 0);
-    const hasValidSize = minDimension >= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
-
-    // Additional checks
+    // Remove size validation - we'll handle any size
     const isHidden = element.offsetParent === null || 
                     window.getComputedStyle(element).display === 'none' ||
                     window.getComputedStyle(element).visibility === 'hidden';
     const isProcessed = element.closest('.face-detection-wrapper');
     
-    return hasValidSize && !isHidden && !isProcessed;
+    return !isHidden && !isProcessed;
 }
 
 // Add cross-origin image handling function
@@ -775,8 +755,59 @@ function selectFaceDetectionModel(img) {
     };
 }
 
-// Modify detectFacesWithFaceApi to handle display logic
+// Update normalizeImageRotation to work without requiring EXIF
+async function normalizeImageRotation(img) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set dimensions
+    canvas.width = img.width || img.naturalWidth;
+    canvas.height = img.height || img.naturalHeight;
+    
+    // Basic draw without rotation
+    try {
+        ctx.drawImage(img, 0, 0);
+        
+        // Try to detect rotation by analyzing the image content
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const shouldRotate = detectImageRotation(imageData);
+        
+        if (shouldRotate) {
+            // Create new canvas with swapped dimensions
+            const rotatedCanvas = document.createElement('canvas');
+            const rotatedCtx = rotatedCanvas.getContext('2d');
+            rotatedCanvas.width = canvas.height;
+            rotatedCanvas.height = canvas.width;
+            
+            // Rotate 90 degrees clockwise
+            rotatedCtx.translate(rotatedCanvas.width/2, rotatedCanvas.height/2);
+            rotatedCtx.rotate(Math.PI/2);
+            rotatedCtx.drawImage(canvas, -canvas.width/2, -canvas.height/2);
+            
+            return rotatedCanvas;
+        }
+        
+        return canvas;
+    } catch (error) {
+        console.error('Error in image rotation:', error);
+        return canvas; // Return original canvas if rotation fails
+    }
+}
+
+// Add helper function to detect if image needs rotation
+function detectImageRotation(imageData) {
+    // Simple heuristic: check if height is significantly larger than width
+    // This assumes portrait photos are more likely to need rotation
+    const aspectRatio = imageData.width / imageData.height;
+    return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
+}
+
+// Update detectFacesWithFaceApi to handle rotation more gracefully
 async function detectFacesWithFaceApi(img) {
+    const wrapper = createWrapper(img);
+    const processingKey = `processing_${Date.now()}`;
+    wrapper.setAttribute('data-processing-key', processingKey);
+    
     try {
         await Promise.all([
             ensureModelsLoaded(),
@@ -784,7 +815,6 @@ async function detectFacesWithFaceApi(img) {
         ]);
         
         const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
-        const wrapper = createWrapper(img);
         
         if (flagShowFrameonImage.addLabel) {
             addLoadingIndicator(wrapper);
@@ -793,44 +823,52 @@ async function detectFacesWithFaceApi(img) {
         let proxyImg;
         try {
             proxyImg = await createProxyImage(img);
+            proxyImg = await normalizeImageRotation(proxyImg);
         } catch (error) {
-            console.error('Failed to create proxy image:', error);
-            if (flagShowFrameonImage.addLabel) {
-                addResultIndicator(wrapper, 'Failed to load image');
-            }
-            throw new Error('Unable to process cross-origin image');
+            console.warn('Image normalization failed, proceeding with original:', error);
+            proxyImg = img; // Fall back to original image
         }
 
-        let scaledImg = await createScaledImage(proxyImg);
-        let scaleFactors = { x: 1, y: 1 };
+        // Create scaled version of the image if needed
+        const scaledCanvas = await createScaledImage(proxyImg);
+        const scaleFactor = scaledCanvas.scaleFactor || 1;
+
+        // Try multiple angles if initial detection fails
+        let detections = [];
+        // Expanded angles array to handle more orientations
+        const angles = [0, -15, 15, -30, 30, -45, 45, 90, -90]; 
         
-        // Handle tiny images differently
-        const minDimension = Math.min(scaledImg.width, scaledImg.height);
-        if (minDimension <= MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
-            console.log('Processing tiny image with special handling...');
-            const { canvas, scaleFactor } = await processTinyImage(scaledImg);
-            scaledImg = canvas;
-            scaleFactors = scaleFactor;
+        for (const angle of angles) {
+            if (detections.length === 0) {
+                const rotatedCanvas = await rotateImage(scaledCanvas, angle);
+                const { model, options } = selectFaceDetectionModel(rotatedCanvas);
+                
+                try {
+                    const angleDetections = await (model === 'ssdMobilenetv1' 
+                        ? faceapi.detectAllFaces(rotatedCanvas, options)
+                        : faceapi.detectAllFaces(rotatedCanvas, options));
+                    
+                    if (angleDetections.length > 0) {
+                        detections = adjustDetectionCoordinates(angleDetections, angle, rotatedCanvas);
+                        console.log(`Found faces at ${angle} degrees rotation`);
+                        break;
+                    }
+                } catch (error) {
+                    console.warn(`Detection failed at ${angle} degrees:`, error);
+                    continue;
+                }
+            }
         }
-
-        const { model, options } = selectFaceDetectionModel(scaledImg);
-        console.log(`Using ${model} for detection with image size: ${scaledImg.width}x${scaledImg.height}`);
-
-        let detections = await (model === 'ssdMobilenetv1' 
-            ? faceapi.detectAllFaces(scaledImg, options)
-            : faceapi.detectAllFaces(scaledImg, options));
-
-        console.log(`Detected ${detections.length} faces in image (${scaledImg.width}x${scaledImg.height})`);
 
         // Scale back detections if we upscaled
-        if (scaleFactors.x !== 1 || scaleFactors.y !== 1) {
+        if (scaleFactor !== 1) {
             detections = detections.map(detection => ({
                 ...detection,
                 box: {
-                    x: detection.box.x / scaleFactors.x,
-                    y: detection.box.y / scaleFactors.y,
-                    width: detection.box.width / scaleFactors.x,
-                    height: detection.box.height / scaleFactors.y
+                    x: detection.box.x / scaleFactor,
+                    y: detection.box.y / scaleFactor,
+                    width: detection.box.width / scaleFactor,
+                    height: detection.box.height / scaleFactor
                 }
             }));
         }
@@ -893,7 +931,7 @@ async function detectFacesWithFaceApi(img) {
             if (processingIndicator) processingIndicator.remove();
 
             if (flagShowFrameonImage.addLabel) {
-                addResultIndicator(wrapper, `No faces detected (${scaledImg.width}x${scaledImg.height})`);
+                addResultIndicator(wrapper, `No faces detected (${scaledCanvas.width}x${scaledCanvas.height})`);
             }
             
             // Ensure no blur is applied when no faces are detected
@@ -905,11 +943,17 @@ async function detectFacesWithFaceApi(img) {
         // Mark image as processed
         imageTracker.markProcessed(src, true);
         
+        // Verify wrapper still exists and matches our processing key
+        if (!wrapper.isConnected || wrapper.getAttribute('data-processing-key') !== processingKey) {
+            console.warn('Wrapper was removed or replaced during processing');
+            return;
+        }
+        
     } catch (error) {
         console.error('Face detection error:', error);
-        const wrapper = img.closest('.face-detection-wrapper');
-        if (wrapper && flagShowFrameonImage.addLabel) {
-            addResultIndicator(wrapper, `Detection failed: ${error.message}`);
+        // Ensure image remains visible on error
+        if (img.style.visibility === 'hidden') {
+            img.style.visibility = 'visible';
         }
         throw error;
     }
@@ -992,106 +1036,85 @@ const processingQueue = {
 
 // Helper functions for improved visualization
 function createWrapper(element) {
-    // Store original styles
-    const originalStyles = {
-        element: element.getAttribute('style') || '',
-        computed: window.getComputedStyle(element),
-        classes: element.getAttribute('class') || ''
-    };
+    // Check if element is already wrapped
+    const existingWrapper = element.closest('.face-detection-wrapper');
+    if (existingWrapper) return existingWrapper;
 
-    // Create wrapper
     const wrapper = document.createElement('div');
     wrapper.className = 'face-detection-wrapper';
-    wrapper.style.position = 'relative';  // Changed from absolute
-    wrapper.style.display = 'inline-block';
-    wrapper.style.margin = '0';
-    wrapper.style.padding = '0';
-
-    // Determine image type and handle accordingly
-    const isImg = element.tagName === 'IMG';
+    
+    // Determine image type
     const isSvgImage = element.tagName.toLowerCase() === 'image';
-    const hasSvgImage = element.querySelector && element.querySelector('image[xlink\\:href]');
-    const hasBackgroundImage = window.getComputedStyle(element).backgroundImage !== 'none';
-
-    let imageElement = element;  // Default to using the original element
-    let src;
-
-    if (isImg) {
-        src = element.src;
-        // Preserve original image styles
-        wrapper.style.display = originalStyles.computed.display;
-        wrapper.style.position = originalStyles.computed.position;
-        wrapper.style.margin = originalStyles.computed.margin;
-    } else if (isSvgImage || hasSvgImage) {
-        const svgImage = isSvgImage ? element : element.querySelector('image');
-        src = svgImage?.getAttribute('xlink:href') || 
-              svgImage?.getAttribute('href') || 
-              svgImage?.getAttribute('src');
-
-        // For SVG images, create a clone instead of moving the original
-        const svgClone = element.cloneNode(true);
-        imageElement = svgClone;
+    const hasSvgParent = element.closest('svg');
+    
+    if (isSvgImage || hasSvgParent) {
+        // Special handling for SVG images
+        const svgUrl = element.getAttribute('xlink:href') || element.getAttribute('href');
+        if (!svgUrl) return null;
         
-        // Store reference to original
-        const originalId = element.id || `svg-${Math.random().toString(36).substr(2, 9)}`;
-        element.id = originalId;
-        wrapper.setAttribute('data-original-svg-id', originalId);
+        // Create regular img element to handle the image
+        const imgElement = document.createElement('img');
+        imgElement.src = svgUrl;
+        imgElement.style.width = element.getAttribute('width') || '100%';
+        imgElement.style.height = element.getAttribute('height') || '100%';
         
-        // Don't hide original immediately
-        element.style.opacity = '1';
-    } else if (hasBackgroundImage) {
-        src = originalStyles.computed.backgroundImage.slice(4, -1).replace(/["']/g, "");
-        
-        // Create an img element for the background image
-        imageElement = document.createElement('img');
-        imageElement.src = src;
-        
-        // Copy dimensions and styling
-        const rect = element.getBoundingClientRect();
-        imageElement.style.width = '100%';
-        imageElement.style.height = '100%';
-        imageElement.style.objectFit = originalStyles.computed.backgroundSize === 'cover' ? 'cover' : 'contain';
-        
-        // Store original background
-        element.setAttribute('data-original-background', element.style.background);
-        wrapper.style.width = `${rect.width}px`;
-        wrapper.style.height = `${rect.height}px`;
-    }
-
-    // Store original state
-    wrapper.setAttribute('data-original-styles', JSON.stringify(originalStyles));
-    wrapper.setAttribute('data-image-type', isImg ? 'img' : isSvgImage ? 'svg' : hasSvgImage ? 'svg-nested' : 'background');
-
-    // Set up wrapper dimensions and position
-    const rect = element.getBoundingClientRect();
-    if (!isImg) {
-        wrapper.style.width = `${rect.width}px`;
-        wrapper.style.height = `${rect.height}px`;
-        
-        // Only set absolute positioning for background images
-        if (hasBackgroundImage) {
-            wrapper.style.position = 'absolute';
-            wrapper.style.left = `${rect.left}px`;
-            wrapper.style.top = `${rect.top}px`;
-            wrapper.style.zIndex = originalStyles.computed.zIndex;
+        // Copy relevant attributes
+        const preserveAspectRatio = element.getAttribute('preserveAspectRatio');
+        if (preserveAspectRatio) {
+            imgElement.style.objectFit = preserveAspectRatio.includes('slice') ? 'cover' : 'contain';
         }
+        
+        // Set wrapper styles
+        wrapper.style.position = 'relative';
+        wrapper.style.display = 'inline-block';
+        wrapper.style.width = element.getAttribute('width') || element.width?.baseVal?.value + 'px' || '100%';
+        wrapper.style.height = element.getAttribute('height') || element.height?.baseVal?.value + 'px' || '100%';
+        
+        // Store original SVG reference
+        wrapper.setAttribute('data-original-svg-id', element.id || `svg-${Date.now()}`);
+        wrapper.setAttribute('data-image-type', 'svg');
+        
+        // Add the new img element to wrapper
+        wrapper.appendChild(imgElement);
+        
+        // Position wrapper next to original SVG
+        element.parentNode.insertBefore(wrapper, element);
+        
+        // Don't hide original immediately to prevent flicker
+        element.style.opacity = '0.01';
+        
+        return wrapper;
     }
-
-    // Add the image element to the wrapper
-    if (imageElement !== element) {
-        wrapper.appendChild(imageElement);
-        // For background images, position the original element
-        if (hasBackgroundImage) {
-            element.style.position = 'relative';
-            element.parentElement.insertBefore(wrapper, element);
-        }
-    } else {
-        // For regular images, just wrap them
-        element.parentElement.insertBefore(wrapper, element);
-        wrapper.appendChild(element);
-    }
-
+    
+    // Regular image handling...
+    wrapper.setAttribute('data-image-type', 'img');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    wrapper.style.width = element.offsetWidth + 'px';
+    wrapper.style.height = element.offsetHeight + 'px';
+    
+    // Maintain original image appearance
+    element.style.width = '100%';
+    element.style.height = '100%';
+    element.style.objectFit = 'contain';
+    
+    // Replace image with wrapper
+    element.parentNode.insertBefore(wrapper, element);
+    wrapper.appendChild(element);
+    
     return wrapper;
+}
+
+// Add cleanup function for SVG images
+function cleanupSvgWrapper(wrapper) {
+    const originalSvgId = wrapper.getAttribute('data-original-svg-id');
+    if (originalSvgId) {
+        const originalSvg = document.getElementById(originalSvgId);
+        if (originalSvg) {
+            originalSvg.style.opacity = '1';
+        }
+    }
+    wrapper.remove();
 }
 
 // Add back the missing loading indicator function
@@ -1749,7 +1772,7 @@ async function processExistingImages() {
         console.log(`Found ${elements.length} valid images to process`);
         
         // Process images in batches with delay between batches
-        const batchSize = 3;
+        const batchSize = 1;  // Keep this at 1 for better stability
         for (let i = 0; i < elements.length; i += batchSize) {
             const batch = elements.slice(i, i + batchSize);
             await Promise.all(batch.map(async element => {
@@ -1762,8 +1785,8 @@ async function processExistingImages() {
                 }
             }));
             
-            // Add small delay between batches to prevent overwhelming
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Increase delay between batches
+            await new Promise(resolve => setTimeout(resolve, 500)); // Increased from 100ms to 500ms
         }
         
         console.log('Finished processing existing images');
@@ -2006,28 +2029,54 @@ function clearModelStatus() {
     });
 }
 
-// Modify createScaledImage function to maintain original dimensions
+// Update createScaledImage to handle small images
 async function createScaledImage(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
-    // Use original dimensions
-    const width = img.width || img.naturalWidth;
-    const height = img.height || img.naturalHeight;
+    // Get original dimensions
+    const originalWidth = img.width || img.naturalWidth;
+    const originalHeight = img.height || img.naturalHeight;
     
-    canvas.width = width;
-    canvas.height = height;
+    // Calculate minimum required size
+    const minRequiredSize = MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
+    const smallestDimension = Math.min(originalWidth, originalHeight);
     
-    // Draw original size image
-    try {
-        ctx.drawImage(img, 0, 0, width, height);
-        canvas.scaleFactor = 1;  // No scaling
-    } catch (error) {
-        console.error('Error drawing image to canvas:', error);
-        throw new Error('Failed to create image canvas');
+    let targetWidth = originalWidth;
+    let targetHeight = originalHeight;
+    let scaleFactor = 1;
+    
+    // Scale up if image is too small
+    if (smallestDimension < minRequiredSize) {
+        scaleFactor = Math.ceil(minRequiredSize / smallestDimension);
+        targetWidth = Math.round(originalWidth * scaleFactor);
+        targetHeight = Math.round(originalHeight * scaleFactor);
+        
+        // Ensure dimensions are multiples of 32 for better model performance
+        targetWidth = Math.ceil(targetWidth / 32) * 32;
+        targetHeight = Math.ceil(targetHeight / 32) * 32;
     }
     
-    return canvas;
+    // Set canvas dimensions
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    
+    // Use better quality settings for upscaling
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    
+    try {
+        // Draw image with scaling if needed
+        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+        
+        // Store scale factor for later use
+        canvas.scaleFactor = scaleFactor;
+        
+        return canvas;
+    } catch (error) {
+        console.error('Error creating scaled image:', error);
+        throw new Error('Failed to create scaled image canvas');
+    }
 }
 
 /**
@@ -2400,3 +2449,80 @@ async function initializeExtension() {
     
     // ... rest of initialization ...
 }
+
+// Add helper function to rotate image
+async function rotateImage(canvas, angle) {
+    const rotatedCanvas = document.createElement('canvas');
+    const ctx = rotatedCanvas.getContext('2d');
+    
+    // Calculate new dimensions to fit rotated image
+    const radians = (angle * Math.PI) / 180;
+    const sin = Math.abs(Math.sin(radians));
+    const cos = Math.abs(Math.cos(radians));
+    const width = canvas.width;
+    const height = canvas.height;
+    rotatedCanvas.width = width * cos + height * sin;
+    rotatedCanvas.height = width * sin + height * cos;
+    
+    // Move to center and rotate
+    ctx.translate(rotatedCanvas.width/2, rotatedCanvas.height/2);
+    ctx.rotate(radians);
+    ctx.drawImage(canvas, -width/2, -height/2);
+    
+    return rotatedCanvas;
+}
+
+// Add helper function to adjust detection coordinates
+function adjustDetectionCoordinates(detections, angle, canvas) {
+    const radians = (-angle * Math.PI) / 180;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    
+    return detections.map(detection => {
+        const { x, y, width, height } = detection.box;
+        const cx = x + width/2 - centerX;
+        const cy = y + height/2 - centerY;
+        
+        // Rotate coordinates back
+        const rotatedX = cx * Math.cos(radians) - cy * Math.sin(radians);
+        const rotatedY = cx * Math.sin(radians) + cy * Math.cos(radians);
+        
+        return {
+            ...detection,
+            box: {
+                x: rotatedX + centerX - width/2,
+                y: rotatedY + centerY - height/2,
+                width,
+                height
+            }
+        };
+    });
+}
+
+// Add recovery function
+function recoverFailedImage(img) {
+    // Restore original visibility
+    img.style.visibility = 'visible';
+    img.style.opacity = '1';
+    
+    // Remove any processing-related classes/attributes
+    const wrapper = img.closest('.face-detection-wrapper');
+    if (wrapper) {
+        const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
+        Object.assign(img.style, originalStyles);
+        
+        // Unwrap the image if needed
+        if (wrapper.parentNode) {
+            wrapper.parentNode.insertBefore(img, wrapper);
+            wrapper.remove();
+        }
+    }
+}
+
+// Add to error handling
+window.addEventListener('error', function(event) {
+    if (event.target.tagName === 'IMG') {
+        console.warn('Recovering failed image:', event.target.src);
+        recoverFailedImage(event.target);
+    }
+});
