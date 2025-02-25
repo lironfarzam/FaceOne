@@ -2422,70 +2422,31 @@ function debounce(func, wait) {
     };
 }
 
-// Create worker pool instance
-const workerPool = new WorkerPool();
-
-// Update existing processingQueue with worker pool functionality
-Object.assign(processingQueue, {
-    async getImageData(element) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = element.width || element.naturalWidth;
-        canvas.height = element.height || element.naturalHeight;
-        ctx.drawImage(element, 0, 0);
-        return ctx.getImageData(0, 0, canvas.width, canvas.height);
-    },
-
-    async process() {
-        if (this.processing || this.items.length === 0) return;
-        
-        this.processing = true;
-        while (this.items.length > 0) {
-            const batch = this.items.splice(0, this.batchSize);
-            const promises = batch.map(async ({ element, timestamp }) => {
-                try {
-                    if (Date.now() - timestamp > this.processingTimeout) {
-                        console.log('Skipping stale item');
-                        return;
-                    }
-                    
-                    const src = element.tagName === 'IMG' ? 
-                        element.src : element.getAttribute('xlink:href');
-                    
-                    if (imageTracker.has(src)) return;
-                    
-                    const imageData = await this.getImageData(element);
-                    const processedData = await Promise.race([
-                        workerPool.processImage(imageData),
-                        new Promise((_, reject) => 
-                            setTimeout(() => reject(new Error('Processing timeout')), 
-                            this.processingTimeout)
-                        )
-                    ]);
-                    
-                    await detectFacesWithFaceApi(element, processedData);
-                } catch (error) {
-                    console.error('Processing error:', error);
-                }
-            });
-            
-            await Promise.all(promises);
-            const delay = Math.max(20, Math.min(batch.length * 10, 100));
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-        
-        this.processing = false;
-    }
+// Replace the old WorkerPool instantiation with EnhancedWorkerPool
+const workerPool = new EnhancedWorkerPool({
+    maxWorkers: 4,
+    taskTimeout: 30000,
+    retryAttempts: 2,
+    batchSize: 4
 });
 
-// Initialize worker pool during extension initialization
+// Initialize the worker pool during extension initialization
 async function initializeExtension() {
-    // ... other initialization code ...
-    
-    // Initialize worker pool
-    await workerPool.initialize();
-    
-    // ... rest of initialization ...
+    try {
+        // Initialize worker pool
+        await workerPool.initialize();
+        
+        // Load models and other initialization
+        await loadFaceApiModels();
+        await loadPositiveEmbeddings();
+        
+        if (flagShowFrameonImage.autoProcessImages) {
+            await processExistingImages();
+            observeElements();
+        }
+    } catch (error) {
+        console.error('Extension initialization failed:', error);
+    }
 }
 
 // Add helper function to rotate image

@@ -5,169 +5,232 @@
  * @version 1.0.0
  */
 
-//=============================================================================
-// Worker Pool Class Definition
-//=============================================================================
 /**
- * Manages a pool of Web Workers for parallel image processing
- * @class
+ * Priority Queue for task management
  */
-class WorkerPool {
-    /**
-     * Creates a new WorkerPool instance
-     * @param {number} size - Number of workers to create (defaults to CPU core count)
-     */
-    constructor(size = navigator.hardwareConcurrency || 4) {
-        /** @type {number} Number of workers in the pool */
-        this.size = size;
-        /** @type {Worker[]} Array of worker instances */
-        this.workers = [];
-        /** @type {Array<Object>} Queue of pending tasks */
-        this.taskQueue = [];
-        /** @type {Map<Worker, Object>} Map of active workers to their current tasks */
-        this.activeWorkers = new Map();
+class PriorityQueue {
+    constructor() {
+        this.items = [];
+        this.processing = new Set();
     }
 
-    //=========================================================================
-    // Initialization Methods
-    //=========================================================================
+    add(task, priority = 0) {
+        this.items.push({ task, priority, timestamp: Date.now() });
+        this.items.sort((a, b) => b.priority - a.priority);
+    }
+
+    next() {
+        return this.items.shift();
+    }
+
+    cleanup() {
+        const now = Date.now();
+        this.items = this.items.filter(item => 
+            now - item.timestamp < this.options.taskTimeout
+        );
+    }
+}
+
+/**
+ * Enhanced Worker Pool with optimized resource management
+ */
+class EnhancedWorkerPool {
+    constructor(options = {}) {
+        this.options = {
+            maxWorkers: navigator.hardwareConcurrency || 4,
+            taskTimeout: 30000,
+            retryAttempts: 2,
+            batchSize: 4,
+            ...options
+        };
+
+        this.workers = new Map(); // Worker instances
+        this.taskQueue = new PriorityQueue();
+        this.idleWorkers = new Set();
+        this.stats = {
+            processed: 0,
+            errors: 0,
+            avgProcessingTime: 0
+        };
+    }
+
     /**
-     * Initializes the worker pool
-     * Creates and initializes the specified number of workers
-     * @returns {Promise<void>}
+     * Initialize worker pool with warm-up
      */
     async initialize() {
-        for (let i = 0; i < this.size; i++) {
-            try {
-                const worker = new Worker(chrome.runtime.getURL('js/imageWorker.js'));
-                await this.initializeWorker(worker, i);
-                this.workers.push(worker);
-            } catch (error) {
-                console.warn(`Failed to initialize worker ${i}:`, error);
+        try {
+            // Create workers
+            for (let i = 0; i < this.options.maxWorkers; i++) {
+                const worker = await this.createWorker(i);
+                this.workers.set(i, worker);
+                this.idleWorkers.add(worker);
             }
+
+            // Warm up workers
+            await this.warmup();
+            
+            // Start task processor
+            this.startTaskProcessor();
+            
+            return true;
+        } catch (error) {
+            console.error('Worker pool initialization failed:', error);
+            return false;
         }
-        console.log(`Initialized ${this.workers.length} workers`);
     }
 
     /**
-     * Initializes a single worker
-     * @param {Worker} worker - The worker to initialize
-     * @param {number} id - The worker's ID
-     * @returns {Promise<void>}
+     * Create and initialize a worker
      */
-    async initializeWorker(worker, id) {
-        return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-                reject(new Error(`Worker ${id} initialization timeout`));
-            }, 5000);
+    async createWorker(id) {
+        const worker = new Worker(chrome.runtime.getURL('js/imageWorker.js'));
+        
+        // Set up error handling
+        worker.onerror = this.handleWorkerError.bind(this);
+        
+        // Initialize worker
+        await this.initializeWorker(worker, id);
+        
+        return worker;
+    }
 
-            const handleInit = (e) => {
-                if (e.data?.type === 'WORKER_READY') {
+    /**
+     * Process image with automatic retry and fallback
+     */
+    async processImage(imageData, priority = 0) {
+        const task = {
+            imageData,
+            attempts: 0,
+            startTime: Date.now()
+        };
+
+        return new Promise((resolve, reject) => {
+            this.taskQueue.add({
+                task,
+                resolve,
+                reject,
+                priority
+            });
+
+            this.processNextTask();
+        });
+    }
+
+    /**
+     * Process next task in queue
+     */
+    async processNextTask() {
+        if (this.idleWorkers.size === 0 || this.taskQueue.items.length === 0) {
+            return;
+        }
+
+        const worker = this.idleWorkers.values().next().value;
+        const task = this.taskQueue.next();
+
+        if (!task) return;
+
+        this.idleWorkers.delete(worker);
+        
+        try {
+            const result = await this.executeTask(worker, task);
+            task.resolve(result);
+            
+            // Update stats
+            this.updateStats(task);
+            
+        } catch (error) {
+            if (task.attempts < this.options.retryAttempts) {
+                task.attempts++;
+                this.taskQueue.add(task, task.priority + 1);
+            } else {
+                task.reject(error);
+                this.stats.errors++;
+            }
+        } finally {
+            this.idleWorkers.add(worker);
+            this.processNextTask();
+        }
+    }
+
+    /**
+     * Execute task with timeout and error handling
+     */
+    async executeTask(worker, task) {
+        return Promise.race([
+            new Promise((resolve, reject) => {
+                const timeoutId = setTimeout(() => {
+                    reject(new Error('Task timeout'));
+                }, this.options.taskTimeout);
+
+                worker.onmessage = (e) => {
                     clearTimeout(timeoutId);
-                    worker.removeEventListener('message', handleInit);
                     if (e.data.success) {
-                        worker.id = id;
-                        resolve();
+                        resolve(e.data.result);
                     } else {
                         reject(new Error(e.data.error));
                     }
-                }
-            };
+                };
 
-            worker.addEventListener('message', handleInit);
-            worker.postMessage({ type: 'INIT' });
-        });
+                worker.postMessage({
+                    type: 'PROCESS_IMAGE',
+                    data: task.imageData
+                });
+            }),
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Task timeout')), 
+                this.options.taskTimeout)
+            )
+        ]);
     }
 
-    //=========================================================================
-    // Task Processing Methods
-    //=========================================================================
     /**
-     * Processes an image using an available worker
-     * @param {ImageData} imageData - The image data to process
-     * @returns {Promise<ImageData>} The processed image data
+     * Warm up workers with dummy tasks
      */
-    async processImage(imageData) {
-        return new Promise((resolve, reject) => {
-            const task = {
-                imageData,
-                resolve,
-                reject,
-                timestamp: Date.now()
-            };
-
-            this.taskQueue.push(task);
-            this.processNextTask();
-        });
+    async warmup() {
+        const dummyData = new ImageData(1, 1);
+        const warmupTasks = Array(this.options.maxWorkers).fill(dummyData)
+            .map(data => this.processImage(data, -1));
+        
+        await Promise.all(warmupTasks);
     }
 
     /**
-     * Processes the next task in the queue
-     * @private
+     * Update processing statistics
      */
-    async processNextTask() {
-        if (this.taskQueue.length === 0) return;
-
-        const availableWorker = this.workers.find(w => !this.activeWorkers.has(w));
-        if (!availableWorker) return;
-
-        const task = this.taskQueue.shift();
-        if (!task) return;
-
-        try {
-            this.activeWorkers.set(availableWorker, task);
-            await this.executeTask(availableWorker, task);
-        } catch (error) {
-            this.activeWorkers.delete(availableWorker);
-            task.reject(error);
-            this.processNextTask();
-        }
+    updateStats(task) {
+        this.stats.processed++;
+        const processingTime = Date.now() - task.startTime;
+        this.stats.avgProcessingTime = 
+            (this.stats.avgProcessingTime * (this.stats.processed - 1) + processingTime) 
+            / this.stats.processed;
     }
 
-    //=========================================================================
-    // Task Execution Methods
-    //=========================================================================
     /**
-     * Executes a task on a specific worker
-     * @param {Worker} worker - The worker to use
-     * @param {Object} task - The task to execute
-     * @private
+     * Handle worker errors
      */
-    async executeTask(worker, task) {
-        const handleMessage = async (e) => {
-            if (e.data?.type === 'IMAGE_PREPARED') {
-                worker.removeEventListener('message', handleMessage);
-                this.activeWorkers.delete(worker);
-
-                if (e.data.success) {
-                    task.resolve(e.data.data);
-                } else {
-                    task.reject(new Error(e.data.error));
-                }
-
-                this.processNextTask();
-            }
-        };
-
-        worker.addEventListener('message', handleMessage);
-        worker.postMessage({
-            type: 'PREPARE_IMAGE',
-            imageData: task.imageData,
-            width: task.imageData.width,
-            height: task.imageData.height
-        });
+    handleWorkerError(error) {
+        console.error('Worker error:', error);
+        this.stats.errors++;
     }
 
-    //=========================================================================
-    // Cleanup Methods
-    //=========================================================================
     /**
-     * Terminates all workers and cleans up resources
+     * Clean up resources
      */
     terminate() {
         this.workers.forEach(worker => worker.terminate());
-        this.workers = [];
-        this.activeWorkers.clear();
-        this.taskQueue = [];
+        this.workers.clear();
+        this.idleWorkers.clear();
+        this.taskQueue = new PriorityQueue();
     }
-} 
+}
+
+// Change the class name in the file
+class WorkerPool extends EnhancedWorkerPool {
+    constructor(options = {}) {
+        super(options);
+    }
+}
+
+// Export both classes
+window.WorkerPool = WorkerPool;
+window.EnhancedWorkerPool = EnhancedWorkerPool; 

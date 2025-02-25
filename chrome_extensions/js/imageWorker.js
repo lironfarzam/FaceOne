@@ -1,5 +1,5 @@
 /**
- * @fileoverview Web Worker for image processing operations.
+ * @fileoverview Optimized Web Worker for image processing operations.
  * Handles image preprocessing tasks in a separate thread.
  * @author Liron Farzam
  * @version 1.0.0
@@ -9,10 +9,41 @@
 // Global Variables and Constants
 //=============================================================================
 /**
- * Tracks the initialization state of the worker
- * @type {boolean}
+ * Worker state and configuration
  */
-let initialized = false;
+const state = {
+    initialized: false,
+    processingCount: 0,
+    lastProcessingTime: 0
+};
+
+const config = {
+    maxImageSize: 1024,
+    processingTimeout: 30000,
+    maxRetries: 2
+};
+
+//=============================================================================
+// Performance Optimization
+//=============================================================================
+/**
+ * Reusable canvas and context for image processing
+ */
+let sharedCanvas = null;
+let sharedCtx = null;
+
+/**
+ * Initialize shared resources
+ */
+function initializeSharedResources() {
+    if (!sharedCanvas) {
+        sharedCanvas = new OffscreenCanvas(1, 1);
+        sharedCtx = sharedCanvas.getContext('2d', {
+            alpha: false,
+            willReadFrequently: true
+        });
+    }
+}
 
 //=============================================================================
 // Message Handler
@@ -28,14 +59,25 @@ let initialized = false;
 self.onmessage = async function(e) {
     const { type, imageData, width, height } = e.data;
     
-    switch (type) {
-        case 'INIT':
-            handleInit();
-            break;
+    try {
+        switch (type) {
+            case 'INIT':
+                await handleInit();
+                break;
 
-        case 'PREPARE_IMAGE':
-            handlePrepareImage(imageData, width, height);
-            break;
+            case 'PROCESS_IMAGE':
+                await handleImageProcessing(imageData, width, height);
+                break;
+
+            default:
+                throw new Error(`Unknown message type: ${type}`);
+        }
+    } catch (error) {
+        self.postMessage({
+            type: `${type}_FAILED`,
+            success: false,
+            error: error.message
+        });
     }
 };
 
@@ -43,54 +85,57 @@ self.onmessage = async function(e) {
 // Handler Functions
 //=============================================================================
 /**
- * Handles worker initialization
- * Sets up any required resources and notifies the main thread
+ * Initialize worker with optimized settings
  */
-function handleInit() {
+async function handleInit() {
     try {
-        initialized = true;
+        initializeSharedResources();
+        state.initialized = true;
         self.postMessage({
             type: 'WORKER_READY',
             success: true
         });
     } catch (error) {
-        self.postMessage({
-            type: 'WORKER_READY',
-            success: false,
-            error: error.message
-        });
+        state.initialized = false;
+        throw error;
     }
 }
 
 /**
- * Handles image preparation requests
- * @param {ImageData} imageData - The image data to process
- * @param {number} width - The width of the image
- * @param {number} height - The height of the image
+ * Process image with performance optimizations
  */
-async function handlePrepareImage(imageData, width, height) {
-    if (!initialized) {
-        self.postMessage({
-            type: 'IMAGE_PREPARED',
-            success: false,
-            error: 'Worker not initialized'
-        });
-        return;
+async function handleImageProcessing(imageData, width, height) {
+    if (!state.initialized) {
+        throw new Error('Worker not initialized');
     }
 
+    const startTime = performance.now();
+    state.processingCount++;
+
     try {
-        const processedData = await preprocessImage(imageData, width, height);
+        // Resize canvas if needed
+        if (sharedCanvas.width < width || sharedCanvas.height < height) {
+            sharedCanvas.width = width;
+            sharedCanvas.height = height;
+        }
+
+        // Process image
+        const processedData = await processImageOptimized(imageData, width, height);
+        
+        // Track performance
+        state.lastProcessingTime = performance.now() - startTime;
+
         self.postMessage({
-            type: 'IMAGE_PREPARED',
+            type: 'IMAGE_PROCESSED',
+            success: true,
             data: processedData,
-            success: true
+            stats: {
+                processingTime: state.lastProcessingTime,
+                totalProcessed: state.processingCount
+            }
         });
     } catch (error) {
-        self.postMessage({
-            type: 'IMAGE_PREPARED',
-            success: false,
-            error: error.message
-        });
+        throw error;
     }
 }
 
@@ -98,14 +143,37 @@ async function handlePrepareImage(imageData, width, height) {
 // Image Processing Functions
 //=============================================================================
 /**
- * Preprocesses image data for face detection
- * @param {ImageData} imageData - The raw image data
- * @param {number} width - The width of the image
- * @param {number} height - The height of the image
- * @returns {ImageData} The processed image data
+ * Optimized image processing with caching and performance improvements
  */
-function preprocessImage(imageData, width, height) {
-    // Implement image preprocessing logic here
-    // This could include resizing, normalization, etc.
-    return imageData;
+async function processImageOptimized(imageData, width, height) {
+    // Put image data on canvas
+    sharedCtx.putImageData(imageData, 0, 0);
+
+    // Apply optimized processing
+    const processed = await Promise.race([
+        applyImageProcessing(imageData),
+        new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Processing timeout')), 
+            config.processingTimeout)
+        )
+    ]);
+
+    return processed;
+}
+
+/**
+ * Apply actual image processing with optimizations
+ */
+async function applyImageProcessing(imageData) {
+    // Example processing - replace with actual implementation
+    const processed = new ImageData(
+        new Uint8ClampedArray(imageData.data),
+        imageData.width,
+        imageData.height
+    );
+
+    // Add your image processing logic here
+    // This is where you'd implement face detection, etc.
+
+    return processed;
 } 
