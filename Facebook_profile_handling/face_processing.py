@@ -1,3 +1,37 @@
+"""
+Face Processing Module
+======================
+
+This module provides functionality for detecting, analyzing, and clustering faces 
+in a collection of images. It's designed to identify the most frequently occurring 
+person across multiple photos.
+בך
+Key features:
+- Multi-backend face detection for improved accuracy
+- Face quality assessment to filter out low-quality detections
+- Multiple embedding models for face representation
+- DBSCAN clustering to group similar faces
+- Advanced cluster merging algorithms to consolidate identities
+- Identity verification to ensure cluster consistency
+- Visualization tools for debugging and analysis
+- Face frame extraction for the most frequent person
+
+The module is built on top of DeepFace and offers a comprehensive pipeline for 
+face processing tasks, with configurable parameters at each stage.
+
+Usage:
+    from Facebook_profile_handling.face_processing import process_images
+    
+    most_frequent_person_folder = process_images(
+        images_folder="./photos",
+        output_folder="./results",
+        face_confidence=0.4,
+        enhanced_merging=True
+    )
+
+Authors: Liron Farzam
+"""
+
 import os
 import shutil
 import cv2
@@ -9,19 +43,13 @@ import matplotlib.pyplot as plt
 import pickle
 from sklearn.cluster import DBSCAN
 from matplotlib.patches import Rectangle
-import logging
-from scipy.spatial.distance import pdist, squareform, cosine
+from scipy.spatial.distance import pdist, squareform, cosine, euclidean
+from sklearn.metrics.pairwise import euclidean_distances
 
 #################################################################
 # CONSTANTS AND CONFIGURATION
 #################################################################
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("face_processing.log"), logging.StreamHandler()],
-)
 
 # Face Detection Settings
 DETECTION_BACKENDS = ["retinaface", "mtcnn", "opencv", "ssd"]
@@ -73,12 +101,20 @@ def assess_face_quality(face_img, min_size=MIN_FACE_SIZE):
     """
     Assess the quality of a detected face using multiple heuristics.
 
+    This function evaluates face quality using several metrics:
+    1. Size - Larger faces typically have more detail
+    2. Sharpness - Blurry faces are less useful for recognition
+    3. Symmetry - As a proxy for how frontal the face is
+    4. Lighting uniformity - Even lighting improves recognition accuracy
+
+    Each metric is weighted differently in the final score calculation.
+
     Args:
         face_img (numpy.ndarray): The face image to assess
-        min_size (int): Minimum size for a high-quality face
+        min_size (int): Minimum size (in pixels) for a high-quality face
 
     Returns:
-        float: Quality score between 0 (low) and 1 (high)
+        float: Quality score between 0.0 (lowest quality) and 1.0 (highest quality)
     """
     # Initialize quality score
     quality_score = 0.0
@@ -195,9 +231,40 @@ def process_images(
     verify_identity=True,
     visualize_before_merge=True,
     extract_frames=True,
+    highlight_faces=True,
 ):
     """
     Process images to detect, validate, and cluster faces, identifying the most frequent person.
+
+    This function implements a complete pipeline for face processing:
+
+    1. Face Detection:
+       - Tries multiple detection backends for optimal results
+       - Filters faces based on confidence, size, and quality
+       - Enhances images before detection when needed
+
+    2. Face Embedding:
+       - Generates face embeddings using the specified model
+       - Can save/load embeddings to/from disk to avoid reprocessing
+
+    3. Face Clustering:
+       - Uses DBSCAN to cluster similar faces
+       - Adapts parameters based on the dataset and model
+
+    4. Cluster Refinement:
+       - Merges similar clusters using either basic or enhanced algorithm
+       - Verifies cluster identity consistency if requested
+
+    5. Result Generation:
+       - Identifies the most frequent person across all images
+       - Creates visualizations of the clusters
+       - Highlights the main person's face in the original images if requested
+
+    The function creates a structured output directory containing:
+    - detected_faces/: All detected faces from the input images
+    - most_frequent_person/: Images containing the most frequent person
+    - most_frequent_person_highlighted/: Images with the main person's face highlighted (if requested)
+    - Various visualization and analysis files
 
     Args:
         images_folder (str): Path to folder containing images to process.
@@ -216,7 +283,8 @@ def process_images(
         enhanced_merging (bool): Whether to use enhanced cluster merging algorithm.
         verify_identity (bool): Whether to perform final identity verification on clusters.
         visualize_before_merge (bool): Whether to visualize clusters before merging.
-        extract_frames (bool): Whether to extract face frames from the most frequent person's images.
+        extract_frames (bool): Whether to extract face frames (legacy parameter, use highlight_faces instead).
+        highlight_faces (bool): Whether to highlight the main person's face in the original images.
 
     Returns:
         str: Path to the folder containing images of the most frequent person.
@@ -648,12 +716,31 @@ def process_images(
         f"Saved {len(unique_sources)} images of the most frequent person to {most_frequent_folder}"
     )
 
-    # Extract face frames if requested
-    if extract_frames:
+    # Highlight faces if requested
+    if highlight_faces:
+        highlighted_folder = os.path.join(
+            output_folder, "most_frequent_person_highlighted"
+        )
+        os.makedirs(highlighted_folder, exist_ok=True)
+
+        highlight_count = highlight_main_person_faces(
+            most_frequent_folder,
+            highlighted_folder,
+            frame_color=(0, 255, 0),  # Green frame
+            frame_thickness=3,
+            model=used_model,
+            detection_backend=backends[0],  # Use the first (best) detection backend
+            min_confidence=0.8,
+        )
+
+        print(f"Highlighted faces in {highlight_count} images in {highlighted_folder}")
+
+    # Legacy face frame extraction
+    elif extract_frames:
         frames_folder = os.path.join(most_frequent_folder, "face_frames")
         os.makedirs(frames_folder, exist_ok=True)
 
-        # Extract frames
+        # Extract frames using the original function
         frame_count = extract_face_frames(
             most_frequent_folder,
             frames_folder,
@@ -918,7 +1005,7 @@ def compare_face_embeddings(
         embedding1 (numpy.ndarray): First face embedding vector
         embedding2 (numpy.ndarray): Second face embedding vector
         model_name (str): Name of the model used to generate embeddings
-        metric (str): Distance metric to use (cosine, euclidean, euclidean_l2)
+        metric (str): Distance metric to use (cosine, euclidean, euclidean_l2, l1)
 
     Returns:
         dict: Dictionary with verification result and distance
@@ -957,6 +1044,11 @@ def compare_face_embeddings(
         distance = euclidean(embedding1, embedding2) / 100  # Normalize
     elif metric == "euclidean_l2":
         distance = euclidean_distances([embedding1], [embedding2])[0][0]
+    elif metric == "l1":
+        # Manhattan/L1 distance (sum of absolute differences)
+        distance = np.sum(np.abs(embedding1 - embedding2)) / len(
+            embedding1
+        )  # Normalize by dimension
     else:
         raise ValueError(f"Unknown distance metric: {metric}")
 
@@ -981,6 +1073,19 @@ def improved_merge_similar_clusters(
 ):
     """
     Improved version of cluster merging with advanced similarity metrics.
+
+    This algorithm uses a two-phase approach:
+    1. First phase: Strict merging with a lower threshold to merge highly similar clusters
+    2. Second phase: More permissive merging to catch additional matches
+
+    The algorithm also:
+    - Uses robust center calculation to handle outliers
+    - Performs face verification for borderline cases
+    - Validates merged clusters to ensure consistency
+    - Prioritizes larger clusters during merging
+
+    This approach provides better results than the basic merging algorithm,
+    especially for datasets with variations in lighting, pose, and expression.
 
     Args:
         clusters (dict): Dictionary mapping cluster IDs to lists of face indices
@@ -1570,111 +1675,344 @@ def extract_face_frames(
     return frame_count
 
 
+def highlight_main_person_faces(
+    images_folder,
+    output_folder,
+    frame_color=(0, 255, 0),  # Green color by default
+    frame_thickness=3,
+    model="Facenet512",
+    detection_backend="retinaface",
+    min_confidence=0.9,
+):
+    """
+    Highlight the main person's face in each image with a colored frame.
+
+    Args:
+        images_folder (str): Folder containing images of the main person
+        output_folder (str): Folder to save images with highlighted faces
+        frame_color (tuple): BGR color tuple for the frame
+        frame_thickness (int): Thickness of the frame line
+        model (str): Face recognition model to use
+        detection_backend (str): Backend for face detection
+        min_confidence (float): Minimum confidence for face detection
+
+    Returns:
+        int: Number of images processed
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Get all image files in the folder
+    image_files = [
+        f
+        for f in os.listdir(images_folder)
+        if any(f.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
+    ]
+
+    if len(image_files) == 0:
+        print(f"No images found in {images_folder}")
+        return 0
+
+    # First, we need to create a reference embedding for the main person
+    # We'll use the first few images to create an average embedding
+    reference_embeddings = []
+
+    # Use up to 5 images to create reference
+    for img_file in image_files[: min(5, len(image_files))]:
+        img_path = os.path.join(images_folder, img_file)
+        try:
+            # Detect faces in the image
+            faces = DeepFace.extract_faces(
+                img_path=img_path,
+                detector_backend=detection_backend,
+                enforce_detection=False,
+                align=True,
+            )
+
+            # Get the most confident face
+            if len(faces) > 0:
+                # Sort by confidence
+                faces = sorted(faces, key=lambda x: x["confidence"], reverse=True)
+                main_face = faces[0]
+
+                if main_face["confidence"] >= min_confidence:
+                    # Save temp face for embedding
+                    temp_face_path = os.path.join(output_folder, f"temp_ref_face.jpg")
+                    cv2.imwrite(temp_face_path, main_face["face"])
+
+                    # Get embedding
+                    embedding = DeepFace.represent(
+                        img_path=temp_face_path,
+                        model_name=model,
+                        enforce_detection=False,
+                    )
+
+                    if embedding and len(embedding) > 0:
+                        reference_embeddings.append(embedding[0]["embedding"])
+
+                    # Clean up temp file
+                    if os.path.exists(temp_face_path):
+                        os.remove(temp_face_path)
+        except Exception as e:
+            print(f"Error processing reference image {img_file}: {e}")
+            continue
+
+    if len(reference_embeddings) == 0:
+        print("Could not create reference embeddings for the main person")
+        return 0
+
+    # Create average reference embedding
+    reference_embedding = np.mean(reference_embeddings, axis=0)
+
+    # Now process all images and highlight the main person's face
+    processed_count = 0
+
+    for img_file in tqdm(image_files, desc="Highlighting faces"):
+        img_path = os.path.join(images_folder, img_file)
+
+        try:
+            # Read the image
+            img = cv2.imread(img_path)
+            if img is None:
+                print(f"Could not read image: {img_path}")
+                continue
+
+            # Make a copy to draw on
+            img_with_frame = img.copy()
+
+            # Detect faces
+            faces = DeepFace.extract_faces(
+                img_path=img_path,
+                detector_backend=detection_backend,
+                enforce_detection=False,
+                align=True,
+            )
+
+            main_person_found = False
+
+            # Process each detected face
+            for face_obj in faces:
+                if face_obj["confidence"] < min_confidence:
+                    continue
+
+                # Get face area
+                facial_area = face_obj["facial_area"]
+                x, y = facial_area["x"], facial_area["y"]
+                w, h = facial_area["w"], facial_area["h"]
+
+                # Save face temporarily to get embedding
+                temp_face_path = os.path.join(
+                    output_folder, f"temp_face_{processed_count}.jpg"
+                )
+                cv2.imwrite(temp_face_path, face_obj["face"])
+
+                # Get face embedding
+                embedding = DeepFace.represent(
+                    img_path=temp_face_path,
+                    model_name=model,
+                    enforce_detection=False,
+                )
+
+                # Clean up temp file
+                if os.path.exists(temp_face_path):
+                    os.remove(temp_face_path)
+
+                if embedding and len(embedding) > 0:
+                    face_embedding = embedding[0]["embedding"]
+
+                    # Compare with reference
+                    verification = compare_face_embeddings(
+                        reference_embedding, face_embedding, model_name=model
+                    )
+
+                    # If this is the main person, draw a frame
+                    if verification["verified"]:
+                        cv2.rectangle(
+                            img_with_frame,
+                            (x, y),
+                            (x + w, y + h),
+                            frame_color,
+                            frame_thickness,
+                        )
+                        main_person_found = True
+
+            # Save the image with frames
+            if main_person_found:
+                output_path = os.path.join(output_folder, f"highlighted_{img_file}")
+                cv2.imwrite(output_path, img_with_frame)
+                processed_count += 1
+
+        except Exception as e:
+            print(f"Error processing image {img_file}: {e}")
+            continue
+
+    print(f"Highlighted main person in {processed_count} images")
+    return processed_count
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Process images to find faces and identify the most frequent person"
+        description="Process images to find faces and identify the most frequent person",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage with default settings
+  python face_processing.py --input ./my_photos --output ./results
+  
+  # Use improved merging with high-quality face detection
+  python face_processing.py --input ./photos --output ./results --face-quality 0.6 --improved-merging
+  
+  # Load previously saved embeddings to save processing time
+  python face_processing.py --input ./photos --output ./results --load-embeddings
+  
+  # Highlight faces in images and apply a strict clustering threshold
+  python face_processing.py --input ./photos --output ./results --clustering 0.35 --highlight-faces
+  
+Workflow:
+  1. Images are processed to detect faces
+  2. Face embeddings are generated using the specified model
+  3. Faces are clustered to identify similar identities
+  4. Similar clusters are merged to consolidate identities
+  5. The most frequent person is identified
+  6. Results are saved to the output directory
+        """,
     )
-    parser.add_argument(
+
+    # Input/Output Arguments
+    io_group = parser.add_argument_group("Input/Output Options")
+    io_group.add_argument(
         "--input",
         "-i",
         default="./downloaded_photos",
-        help="Input folder containing images",
+        help="Input folder containing images to process (default: ./downloaded_photos)",
     )
-    parser.add_argument(
-        "--output", "-o", default="faces_output", help="Output folder for results"
+    io_group.add_argument(
+        "--output",
+        "-o",
+        default="faces_output",
+        help="Output folder for all results including detected faces, clusters, and the most frequent person (default: faces_output)",
     )
-    parser.add_argument(
+
+    # Face Detection Arguments
+    detection_group = parser.add_argument_group("Face Detection Options")
+    detection_group.add_argument(
         "--confidence",
         "-c",
         type=float,
         default=0.3,
-        help="Face detection confidence threshold",
+        help="Face detection confidence threshold (0.0-1.0). Lower values detect more faces but may include false positives (default: 0.3)",
     )
-    parser.add_argument(
-        "--min-size", "-s", type=int, default=20, help="Minimum face size in pixels"
+    detection_group.add_argument(
+        "--min-size",
+        "-s",
+        type=int,
+        default=20,
+        help="Minimum face size in pixels. Smaller faces will be ignored (default: 20)",
     )
-    parser.add_argument(
+    detection_group.add_argument(
         "--aspect-ratio",
         "-a",
         type=float,
         default=2.0,
-        help="Maximum face aspect ratio",
+        help="Maximum face aspect ratio (width/height). Helps filter out non-face detections (default: 2.0)",
     )
-    parser.add_argument(
+    detection_group.add_argument(
+        "--face-quality",
+        type=float,
+        default=0.4,
+        help="Minimum face quality threshold (0.0-1.0). Higher values keep only better quality face images (default: 0.4)",
+    )
+
+    # Clustering Arguments
+    clustering_group = parser.add_argument_group("Clustering Options")
+    clustering_group.add_argument(
         "--clustering",
         "-t",
         type=float,
         default=0.4,
-        help="Clustering distance threshold",
+        help="Clustering distance threshold (0.0-1.0). Lower values create more clusters with stricter matching (default: 0.4)",
     )
-    parser.add_argument(
-        "--save-embeddings",
+    clustering_group.add_argument(
+        "--merge-threshold",
+        type=float,
+        default=0.5,
+        help="Threshold for merging similar clusters (0.0-1.0). Higher values result in more aggressive merging (default: 0.5)",
+    )
+    clustering_group.add_argument(
+        "--improved-merging",
         action="store_true",
-        help="Save face embeddings for future use",
+        default=True,
+        help="Use improved cluster merging algorithm with two-phase approach (default: enabled)",
     )
-    parser.add_argument(
-        "--load-embeddings",
+    clustering_group.add_argument(
+        "--basic-merging",
         action="store_true",
-        help="Try to load previously saved embeddings",
+        help="Use basic cluster merging instead of improved algorithm (overrides --improved-merging)",
     )
-    parser.add_argument(
+    clustering_group.add_argument(
+        "--verify-identity",
+        action="store_true",
+        help="Perform final identity verification on clusters to ensure consistency (default: disabled)",
+    )
+
+    # Model Selection
+    model_group = parser.add_argument_group("Model Options")
+    model_group.add_argument(
         "--model",
         choices=["Facenet512", "VGG-Face", "Facenet", "OpenFace", "DeepFace"],
         default="Facenet512",
-        help="Face embedding model to use",
+        help="Face embedding model to use. Facenet512 provides the best balance of accuracy and speed (default: Facenet512)",
     )
-    parser.add_argument(
-        "--merge-threshold",
-        type=float,
-        default=0.5,  # Increased from 0.45 to 0.5 for better merging
-        help="Threshold for merging similar clusters (higher = more merging)",
+
+    # Embedding Management
+    embed_group = parser.add_argument_group("Embedding Management")
+    embed_group.add_argument(
+        "--save-embeddings",
+        action="store_true",
+        help="Save face embeddings to disk for later reuse (default: disabled)",
     )
-    parser.add_argument(
-        "--face-quality",
-        type=float,
-        default=0.4,  # Lowered from 0.5 to 0.4 for more permissive face acceptance
-        help="Minimum face quality threshold (0-1)",
+    embed_group.add_argument(
+        "--load-embeddings",
+        action="store_true",
+        help="Try to load previously saved embeddings to skip face detection and embedding generation (default: disabled)",
     )
-    parser.add_argument(
+
+    # Visualization Options
+    viz_group = parser.add_argument_group("Visualization Options")
+    viz_group.add_argument(
         "--visualize-clusters",
         action="store_true",
-        help="Visualize clusters before merging",
+        help="Visualize clusters before merging to help debug clustering results (default: disabled)",
     )
-    parser.add_argument(
-        "--improved-merging",
-        action="store_true",
-        default=True,  # Make it true by default
-        help="Use improved cluster merging algorithm (default: enabled)",
-    )
-    parser.add_argument(
-        "--basic-merging",
-        action="store_true",
-        help="Use basic cluster merging instead of improved algorithm",
-    )
-    parser.add_argument(
-        "--verify-identity",
-        action="store_true",
-        help="Perform final identity verification on clusters",
-    )
-    parser.add_argument(
+
+    # Output Processing
+    output_group = parser.add_argument_group("Output Processing")
+    output_group.add_argument(
         "--extract-frames",
         action="store_true",
-        default=True,  # Enable by default
-        help="Extract face frames from the most frequent person's images",
+        default=False,  # Changed default to False
+        help="Extract face frames from the most frequent person's images (legacy option)",
     )
-    parser.add_argument(
-        "--no-frames",
+    output_group.add_argument(
+        "--highlight-faces",
         action="store_true",
-        default=False,  # Disable by default
-        help="Don't extract face frames",
+        default=True,  # Default to highlighting faces
+        help="Highlight the main person's face in the original images (default: enabled)",
+    )
+    output_group.add_argument(
+        "--no-highlight",
+        action="store_true",
+        default=False,
+        help="Don't highlight faces (overrides --highlight-faces)",
     )
 
     args = parser.parse_args()
 
-    # Parse the extract frames option
-    extract_frames = args.extract_frames and not args.no_frames
+    # Parse the options
+    extract_frames = args.extract_frames
+    highlight_faces = args.highlight_faces and not args.no_highlight
 
     # If basic-merging is specified, it overrides improved-merging
     use_improved_merging = not args.basic_merging  # Simplified logic
@@ -1691,8 +2029,9 @@ if __name__ == "__main__":
         models=[args.model] + ["VGG-Face", "Facenet", "OpenFace", "DeepFace"],
         merge_threshold=args.merge_threshold,
         face_quality_threshold=args.face_quality,
-        enhanced_merging=use_improved_merging,  # Use improved merging by default
+        enhanced_merging=use_improved_merging,
         verify_identity=args.verify_identity,
         visualize_before_merge=args.visualize_clusters,
-        extract_frames=args.extract_frames,
+        extract_frames=extract_frames,
+        highlight_faces=highlight_faces,
     )
