@@ -73,11 +73,11 @@ MODEL_SPECIFIC_THRESHOLDS = {
 # Merging Settings
 MERGE_THRESHOLD = 0.5  # Base threshold for merging similar clusters
 MODEL_MERGE_THRESHOLDS = {
-    "Facenet512": 0.5,  # More permissive for merging with FaceNet512
-    "VGG-Face": 0.6,
-    "Facenet": 0.5,
-    "OpenFace": 0.4,
-    "DeepFace": 0.5,
+    "Facenet512": 0.3,  # More permissive for merging with FaceNet512
+    "VGG-Face": 0.4,
+    "Facenet": 0.3,
+    "OpenFace": 0.2,
+    "DeepFace": 0.3,
 }
 MERGE_VALIDATION_FACTOR = 1.2  # Multiplier for individual face validation threshold
 PHASE1_MERGE_FACTOR = 0.9  # Stricter threshold for phase 1 (multiplier)
@@ -231,7 +231,7 @@ def process_images(
     verify_identity=True,
     visualize_before_merge=True,
     extract_frames=True,
-    highlight_faces=True,
+    highlight_faces=False,
     save_best_crops=True,  # New parameter
     max_best_crops=10,  # New parameter
 ):
@@ -735,7 +735,8 @@ def process_images(
             detection_backend=backends[0],
             prefer_profile=True,  # Prefer profile views
             enhance_quality=True,
-            crop_size=(800, 800),  # High-quality crops
+            max_size=(800, 800),  # Changed from crop_size to max_size
+            min_face_size=(30, 30),
         )
 
         print(f"Saved {crop_count} best face crops to {best_crops_folder}")
@@ -1890,7 +1891,7 @@ def save_best_face_crops(
     detection_backend="retinaface",
     prefer_profile=True,
     enhance_quality=True,
-    crop_size=(800, 800),
+    max_size=(800, 800),  # Changed from crop_size to max_size
     min_face_size=(30, 30),
 ):
     """
@@ -2207,8 +2208,18 @@ def save_best_face_crops(
                 except Exception as e:
                     print(f"Warning: Could not enhance image quality: {e}")
 
-            # Resize face
-            face_resized = cv2.resize(face_crop, crop_size)
+            # Only resize if the image is larger than max_size
+            h, w = face_crop.shape[:2]
+            if h > max_size[1] or w > max_size[0]:
+                # Calculate aspect ratio
+                aspect = w / h
+                if aspect > 1:  # wider than tall
+                    new_w = min(w, max_size[0])
+                    new_h = int(new_w / aspect)
+                else:  # taller than wide
+                    new_h = min(h, max_size[1])
+                    new_w = int(new_h * aspect)
+                face_crop = cv2.resize(face_crop, (new_w, new_h))
 
             # Save crop
             crop_type = "profile" if candidate["profile_score"] > 0.6 else "frontal"
@@ -2218,7 +2229,7 @@ def save_best_face_crops(
 
             cv2.imwrite(
                 os.path.join(output_folder, crop_filename),
-                face_resized,
+                face_crop,
                 [int(cv2.IMWRITE_JPEG_QUALITY), 95],  # High quality JPEG
             )
 
