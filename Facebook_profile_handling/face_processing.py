@@ -232,6 +232,8 @@ def process_images(
     visualize_before_merge=True,
     extract_frames=True,
     highlight_faces=True,
+    save_best_crops=True,  # New parameter
+    max_best_crops=10,  # New parameter
 ):
     """
     Process images to detect, validate, and cluster faces, identifying the most frequent person.
@@ -285,6 +287,8 @@ def process_images(
         visualize_before_merge (bool): Whether to visualize clusters before merging.
         extract_frames (bool): Whether to extract face frames (legacy parameter, use highlight_faces instead).
         highlight_faces (bool): Whether to highlight the main person's face in the original images.
+        save_best_crops (bool): Whether to save the best face crops of the main person
+        max_best_crops (int): Maximum number of best crops to save
 
     Returns:
         str: Path to the folder containing images of the most frequent person.
@@ -715,6 +719,26 @@ def process_images(
     print(
         f"Saved {len(unique_sources)} images of the most frequent person to {most_frequent_folder}"
     )
+
+    # Save best face crops if requested
+    if save_best_crops:
+        best_crops_folder = os.path.join(output_folder, "best_face_crops")
+        os.makedirs(best_crops_folder, exist_ok=True)
+
+        crop_count = save_best_face_crops(
+            most_frequent_folder,
+            best_crops_folder,
+            max_images=max_best_crops,
+            padding_factor=0.5,  # More padding for better context
+            min_confidence=0.85,
+            model=used_model,
+            detection_backend=backends[0],
+            prefer_profile=True,  # Prefer profile views
+            enhance_quality=True,
+            crop_size=(800, 800),  # High-quality crops
+        )
+
+        print(f"Saved {crop_count} best face crops to {best_crops_folder}")
 
     # Highlight faces if requested
     if highlight_faces:
@@ -1678,26 +1702,14 @@ def extract_face_frames(
 def highlight_main_person_faces(
     images_folder,
     output_folder,
-    frame_color=(0, 255, 0),  # Green color by default
+    frame_color=(0, 255, 0),
     frame_thickness=3,
     model="Facenet512",
     detection_backend="retinaface",
-    min_confidence=0.9,
+    min_confidence=0.8,  # Slightly lower threshold for better recall
 ):
     """
     Highlight the main person's face in each image with a colored frame.
-
-    Args:
-        images_folder (str): Folder containing images of the main person
-        output_folder (str): Folder to save images with highlighted faces
-        frame_color (tuple): BGR color tuple for the frame
-        frame_thickness (int): Thickness of the frame line
-        model (str): Face recognition model to use
-        detection_backend (str): Backend for face detection
-        min_confidence (float): Minimum confidence for face detection
-
-    Returns:
-        int: Number of images processed
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -1713,44 +1725,45 @@ def highlight_main_person_faces(
         print(f"No images found in {images_folder}")
         return 0
 
-    # First, we need to create a reference embedding for the main person
-    # We'll use the first few images to create an average embedding
+    # Use more images for the reference
+    num_reference_images = min(10, len(image_files))
+    print(
+        f"Using {num_reference_images} images to create reference embedding for highlighting"
+    )
+
+    # Create reference embeddings
     reference_embeddings = []
 
-    # Use up to 5 images to create reference
-    for img_file in image_files[: min(5, len(image_files))]:
+    for img_file in image_files[:num_reference_images]:
         img_path = os.path.join(images_folder, img_file)
         try:
-            # Detect faces in the image
-            faces = DeepFace.extract_faces(
-                img_path=img_path,
+            faces = safe_face_detection(
+                img_path,
                 detector_backend=detection_backend,
                 enforce_detection=False,
-                align=True,
             )
 
-            # Get the most confident face
             if len(faces) > 0:
-                # Sort by confidence
                 faces = sorted(faces, key=lambda x: x["confidence"], reverse=True)
                 main_face = faces[0]
 
                 if main_face["confidence"] >= min_confidence:
-                    # Save temp face for embedding
-                    temp_face_path = os.path.join(output_folder, f"temp_ref_face.jpg")
-                    cv2.imwrite(temp_face_path, main_face["face"])
+                    temp_face_path = os.path.join(
+                        output_folder, f"temp_ref_face_{img_file}"
+                    )
+                    face_img = ensure_valid_image(main_face["face"])
+                    cv2.imwrite(temp_face_path, face_img)
 
-                    # Get embedding
-                    embedding = DeepFace.represent(
-                        img_path=temp_face_path,
+                    embedding = safe_represent(
+                        temp_face_path,
                         model_name=model,
                         enforce_detection=False,
                     )
 
                     if embedding and len(embedding) > 0:
                         reference_embeddings.append(embedding[0]["embedding"])
+                        print(f"Added reference embedding from {img_file}")
 
-                    # Clean up temp file
                     if os.path.exists(temp_face_path):
                         os.remove(temp_face_path)
         except Exception as e:
@@ -1761,18 +1774,26 @@ def highlight_main_person_faces(
         print("Could not create reference embeddings for the main person")
         return 0
 
+    print(f"Created {len(reference_embeddings)} reference embeddings for highlighting")
+
     # Create average reference embedding
     reference_embedding = np.mean(reference_embeddings, axis=0)
 
-    # Now process all images and highlight the main person's face
+    # Process all images
     processed_count = 0
+
+    # Adjust the verification threshold to be slightly more lenient
+    model_threshold = MODEL_SPECIFIC_THRESHOLDS.get(model, 0.4)
+    verification_threshold = model_threshold * 1.2  # Increase threshold by 20%
+
+    print(f"Using verification threshold of {verification_threshold} for model {model}")
 
     for img_file in tqdm(image_files, desc="Highlighting faces"):
         img_path = os.path.join(images_folder, img_file)
 
         try:
-            # Read the image
-            img = cv2.imread(img_path)
+            # Read the image safely
+            img = safe_imread(img_path)
             if img is None:
                 print(f"Could not read image: {img_path}")
                 continue
@@ -1780,13 +1801,16 @@ def highlight_main_person_faces(
             # Make a copy to draw on
             img_with_frame = img.copy()
 
-            # Detect faces
-            faces = DeepFace.extract_faces(
-                img_path=img_path,
+            # Detect faces using our safe function
+            faces = safe_face_detection(
+                img_path,
                 detector_backend=detection_backend,
                 enforce_detection=False,
-                align=True,
             )
+
+            if not faces:
+                print(f"No faces detected in {img_file}")
+                continue
 
             main_person_found = False
 
@@ -1804,11 +1828,12 @@ def highlight_main_person_faces(
                 temp_face_path = os.path.join(
                     output_folder, f"temp_face_{processed_count}.jpg"
                 )
-                cv2.imwrite(temp_face_path, face_obj["face"])
+                face_img = ensure_valid_image(face_obj["face"])
+                cv2.imwrite(temp_face_path, face_img)
 
                 # Get face embedding
-                embedding = DeepFace.represent(
-                    img_path=temp_face_path,
+                embedding = safe_represent(
+                    temp_face_path,
                     model_name=model,
                     enforce_detection=False,
                 )
@@ -1820,13 +1845,15 @@ def highlight_main_person_faces(
                 if embedding and len(embedding) > 0:
                     face_embedding = embedding[0]["embedding"]
 
-                    # Compare with reference
-                    verification = compare_face_embeddings(
-                        reference_embedding, face_embedding, model_name=model
-                    )
+                    # Compare with reference directly using our adjusted threshold
+                    distance = 0
+                    if model in ["VGG-Face", "Facenet", "Facenet512", "DeepID"]:
+                        distance = cosine(reference_embedding, face_embedding)
+                    else:  # Euclidean distance models
+                        distance = euclidean(reference_embedding, face_embedding) / 100
 
                     # If this is the main person, draw a frame
-                    if verification["verified"]:
+                    if distance <= verification_threshold:
                         cv2.rectangle(
                             img_with_frame,
                             (x, y),
@@ -1835,6 +1862,9 @@ def highlight_main_person_faces(
                             frame_thickness,
                         )
                         main_person_found = True
+                        print(
+                            f"Found main person in {img_file} with distance {distance}"
+                        )
 
             # Save the image with frames
             if main_person_found:
@@ -1848,6 +1878,514 @@ def highlight_main_person_faces(
 
     print(f"Highlighted main person in {processed_count} images")
     return processed_count
+
+
+def save_best_face_crops(
+    images_folder,
+    output_folder,
+    max_images=10,
+    padding_factor=0.5,
+    min_confidence=0.85,
+    model="Facenet512",
+    detection_backend="retinaface",
+    prefer_profile=True,
+    enhance_quality=True,
+    crop_size=(800, 800),
+    min_face_size=(30, 30),
+):
+    """
+    Select and save the best face crops from the main person's images.
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Get all image files in the folder
+    image_files = [
+        f
+        for f in os.listdir(images_folder)
+        if any(f.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
+    ]
+
+    if len(image_files) == 0:
+        print(f"No images found in {images_folder}")
+        return 0
+
+    # Use more images for the reference embeddings to improve accuracy
+    num_reference_images = min(10, len(image_files))
+    print(f"Using {num_reference_images} images to create reference embedding")
+
+    # First create a reference embedding for the main person
+    reference_embeddings = []
+
+    # Use several images to create a robust reference
+    for img_file in image_files[:num_reference_images]:
+        img_path = os.path.join(images_folder, img_file)
+        try:
+            # Use our safe face detection function
+            faces = safe_face_detection(
+                img_path,
+                detector_backend=detection_backend,
+                enforce_detection=False,
+            )
+
+            if len(faces) > 0:
+                # Sort by confidence
+                faces = sorted(faces, key=lambda x: x["confidence"], reverse=True)
+                main_face = faces[0]
+
+                if main_face["confidence"] >= min_confidence:
+                    temp_face_path = os.path.join(
+                        output_folder, f"temp_ref_face_{img_file}"
+                    )
+                    face_img = ensure_valid_image(main_face["face"])
+                    cv2.imwrite(temp_face_path, face_img)
+
+                    embedding = safe_represent(
+                        temp_face_path,
+                        model_name=model,
+                        enforce_detection=False,
+                    )
+
+                    if embedding and len(embedding) > 0:
+                        reference_embeddings.append(embedding[0]["embedding"])
+                        print(f"Added reference embedding from {img_file}")
+                    else:
+                        print(f"Failed to get embedding for {img_file}")
+
+                    if os.path.exists(temp_face_path):
+                        os.remove(temp_face_path)
+                else:
+                    print(
+                        f"Low confidence detection in {img_file}: {main_face['confidence']}"
+                    )
+            else:
+                print(f"No faces detected in {img_file}")
+        except Exception as e:
+            print(f"Error processing reference image {img_file}: {e}")
+            continue
+
+    if len(reference_embeddings) == 0:
+        print("Could not create reference embeddings for the main person")
+        return 0
+
+    print(f"Created {len(reference_embeddings)} reference embeddings")
+
+    # Create average reference embedding
+    reference_embedding = np.mean(reference_embeddings, axis=0)
+
+    # Analyze all faces in images
+    face_candidates = []
+
+    for img_file in tqdm(image_files, desc="Analyzing faces"):
+        img_path = os.path.join(images_folder, img_file)
+
+        try:
+            # Use our safe face detection
+            faces = safe_face_detection(
+                img_path,
+                detector_backend=detection_backend,
+                enforce_detection=False,
+            )
+
+            # Count valid faces (confidence > threshold)
+            valid_faces_count = sum(
+                1 for face in faces if face["confidence"] >= min_confidence
+            )
+
+            # Bonus for single-person images
+            single_person_bonus = 1.5 if valid_faces_count == 1 else 1.0
+
+            # Process each detected face
+            for face_idx, face_obj in enumerate(faces):
+                if face_obj["confidence"] < min_confidence:
+                    continue
+
+                # Get face area
+                facial_area = face_obj["facial_area"]
+                x, y = facial_area["x"], facial_area["y"]
+                w, h = facial_area["w"], facial_area["h"]
+
+                # Skip very small faces
+                if w < min_face_size[0] or h < min_face_size[1]:
+                    continue
+
+                # Save face temporarily in proper format
+                temp_face_path = os.path.join(
+                    output_folder, f"temp_face_{face_idx}.jpg"
+                )
+                face_img = ensure_valid_image(face_obj["face"])
+                cv2.imwrite(temp_face_path, face_img)
+
+                # Get face embedding
+                embedding = None
+                try:
+                    embedding_result = safe_represent(
+                        temp_face_path,
+                        model_name=model,
+                        enforce_detection=False,
+                    )
+                    if embedding_result and len(embedding_result) > 0:
+                        embedding = embedding_result[0]["embedding"]
+                except Exception:
+                    pass
+
+                # Clean up temp file
+                if os.path.exists(temp_face_path):
+                    os.remove(temp_face_path)
+
+                # Skip if no embedding could be generated
+                if embedding is None:
+                    continue
+
+                # Verify this is the main person
+                verification = compare_face_embeddings(
+                    reference_embedding, embedding, model_name=model
+                )
+
+                if not verification["verified"]:
+                    continue
+
+                # Calculate quality score
+                quality_score = assess_face_quality(face_img)
+
+                # Check for sunglasses or face masks
+                try:
+                    # Make sure face image is in proper format
+                    face_img = ensure_valid_image(face_obj["face"])
+
+                    # Convert to grayscale safely
+                    face_gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+                    # Eye region detection
+                    h, w = face_img.shape[:2]
+                    eye_region = face_gray[int(h * 0.2) : int(h * 0.5), :]
+
+                    # Check brightness variance in eye region
+                    eye_variance = np.var(eye_region)
+
+                    # If variance is too low, eyes might be covered
+                    if eye_variance < 300:  # Threshold determined empirically
+                        continue
+
+                    # Mouth region
+                    mouth_region = face_gray[int(h * 0.6) : int(h * 0.9), :]
+                    mouth_variance = np.var(mouth_region)
+
+                    # If variance is too low, mouth might be covered
+                    if mouth_variance < 200:  # Threshold determined empirically
+                        continue
+                except Exception:
+                    # If we can't check for glasses/masks, we'll proceed anyway
+                    pass
+
+                # Calculate profile score
+                profile_score = 0.5  # Default neutral score
+
+                # Use face symmetry as a proxy for profile detection
+                try:
+                    face_img = ensure_valid_image(face_obj["face"])
+                    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+                    flipped = cv2.flip(gray, 1)
+                    similarity = cv2.matchTemplate(gray, flipped, cv2.TM_CCOEFF_NORMED)[
+                        0
+                    ][0]
+                    # Convert to 0-1 scale where 0 means symmetric (frontal) and 1 means asymmetric (profile)
+                    profile_score = 1.0 - ((similarity + 1) / 2)
+                except Exception:
+                    pass
+
+                # Calculate combined score with single person bonus
+                combined_score = quality_score * 0.5
+                if prefer_profile:
+                    # Reward profile views
+                    combined_score += profile_score * 0.3
+                else:
+                    # Reward frontal views
+                    combined_score += (1.0 - profile_score) * 0.3
+
+                # Apply single person bonus
+                combined_score *= single_person_bonus
+
+                # Store candidate
+                face_candidates.append(
+                    {
+                        "img_path": img_path,
+                        "facial_area": facial_area,
+                        "combined_score": combined_score,
+                        "quality_score": quality_score,
+                        "profile_score": profile_score,
+                        "confidence": face_obj["confidence"],
+                        "img_file": img_file,
+                        "single_person": valid_faces_count == 1,
+                    }
+                )
+
+        except Exception as e:
+            print(f"Error processing image {img_file}: {e}")
+            continue
+
+    # If no candidates were found, return
+    if not face_candidates:
+        print("No suitable face candidates found")
+        return 0
+
+    # Sort candidates by score (higher is better)
+    face_candidates.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # Select top N faces with diversity constraint (different source images)
+    selected_files = set()
+    selected_candidates = []
+
+    # First, prioritize single-person images
+    single_person_candidates = [
+        c for c in face_candidates if c.get("single_person", False)
+    ]
+
+    for candidate in single_person_candidates:
+        if candidate["img_file"] in selected_files:
+            continue
+
+        selected_candidates.append(candidate)
+        selected_files.add(candidate["img_file"])
+
+        if len(selected_candidates) >= max_images:
+            break
+
+    # Then add other candidates if needed
+    if len(selected_candidates) < max_images:
+        remaining_candidates = [
+            c for c in face_candidates if c["img_file"] not in selected_files
+        ]
+
+        for candidate in remaining_candidates:
+            selected_candidates.append(candidate)
+            selected_files.add(candidate["img_file"])
+
+            if len(selected_candidates) >= max_images:
+                break
+
+    # Crop and save selected faces
+    saved_count = 0
+
+    for i, candidate in enumerate(selected_candidates):
+        try:
+            img = safe_imread(candidate["img_path"])
+            if img is None:
+                continue
+
+            # Get face area with padding
+            facial_area = candidate["facial_area"]
+            x = max(0, facial_area["x"] - int(facial_area["w"] * padding_factor))
+            y = max(0, facial_area["y"] - int(facial_area["h"] * padding_factor))
+            w = min(
+                img.shape[1] - x,
+                facial_area["w"] + int(facial_area["w"] * padding_factor * 2),
+            )
+            h = min(
+                img.shape[0] - y,
+                facial_area["h"] + int(facial_area["h"] * padding_factor * 2),
+            )
+
+            # Extract face with padding
+            face_crop = img[y : y + h, x : x + w]
+            face_crop = ensure_valid_image(face_crop)
+
+            # Enhance quality if requested
+            if enhance_quality:
+                try:
+                    # Color correction
+                    face_crop_yuv = cv2.cvtColor(face_crop, cv2.COLOR_BGR2YUV)
+                    face_crop_yuv[:, :, 0] = cv2.equalizeHist(face_crop_yuv[:, :, 0])
+                    face_crop = cv2.cvtColor(face_crop_yuv, cv2.COLOR_YUV2BGR)
+
+                    # Slight sharpening - this can produce floating point results
+                    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+                    face_crop = cv2.filter2D(face_crop, -1, kernel)
+
+                    # Ensure 8-bit format after all processing
+                    face_crop = ensure_valid_image(face_crop)
+                except Exception as e:
+                    print(f"Warning: Could not enhance image quality: {e}")
+
+            # Resize face
+            face_resized = cv2.resize(face_crop, crop_size)
+
+            # Save crop
+            crop_type = "profile" if candidate["profile_score"] > 0.6 else "frontal"
+            persons = "single" if candidate.get("single_person", False) else "multi"
+            quality_text = f"{int(candidate['quality_score']*100)}"
+            crop_filename = f"best_face_{i+1}_{crop_type}_{persons}_q{quality_text}.jpg"
+
+            cv2.imwrite(
+                os.path.join(output_folder, crop_filename),
+                face_resized,
+                [int(cv2.IMWRITE_JPEG_QUALITY), 95],  # High quality JPEG
+            )
+
+            saved_count += 1
+
+        except Exception as e:
+            print(f"Error saving crop {i}: {e}")
+            continue
+
+    print(f"Saved {saved_count} best face crops to {output_folder}")
+    return saved_count
+
+
+# At the top of the file, add these functions
+def safe_imread(img_path):
+    """Safely read an image and ensure it's in proper 8-bit format."""
+    try:
+        img = cv2.imread(img_path)
+        if img is None:
+            return None
+
+        # Make sure image is 8-bit (uint8)
+        if img.dtype != np.uint8:
+            if img.dtype == np.float64 or img.dtype == np.float32:
+                img = (
+                    np.clip(img, 0, 1.0) * 255
+                    if img.max() <= 1.0
+                    else np.clip(img, 0, 255)
+                )
+            img = img.astype(np.uint8)
+
+        return img
+    except Exception as e:
+        print(f"Error reading image {img_path}: {e}")
+        return None
+
+
+def ensure_valid_image(img):
+    """
+    Ensure an image is in valid 8-bit format for OpenCV operations.
+
+    Args:
+        img (numpy.ndarray): Input image
+
+    Returns:
+        numpy.ndarray: Image in 8-bit format or None if invalid
+    """
+    if img is None:
+        return None
+
+    # Make sure image is 8-bit (uint8)
+    if img.dtype != np.uint8:
+        # Convert to 8-bit unsigned integer with proper scaling
+        if img.dtype == np.float64 or img.dtype == np.float32:
+            img = (
+                np.clip(img, 0, 1.0) * 255 if img.max() <= 1.0 else np.clip(img, 0, 255)
+            )
+        img = img.astype(np.uint8)
+    return img
+
+
+def safe_face_detection(
+    img_path, detector_backend="retinaface", enforce_detection=False
+):
+    """
+    Perform face detection with proper error handling and image format validation.
+
+    Args:
+        img_path (str): Path to the image
+        detector_backend (str): Face detection backend
+        enforce_detection (bool): Whether to enforce detection
+
+    Returns:
+        list: List of detected faces or empty list if error
+    """
+    try:
+        # First read and ensure proper format
+        img = safe_imread(img_path)
+        if img is None:
+            return []
+
+        # Save a temp copy in proper format
+        temp_dir = os.path.dirname(img_path)
+        temp_path = os.path.join(temp_dir, "temp_safe_detect.jpg")
+        cv2.imwrite(temp_path, img)
+
+        # Perform detection
+        try:
+            faces = DeepFace.extract_faces(
+                img_path=temp_path,
+                detector_backend=detector_backend,
+                enforce_detection=enforce_detection,
+                align=True,
+            )
+
+            # Process each face to ensure proper format
+            for face in faces:
+                if "face" in face and face["face"] is not None:
+                    face_img = face["face"]
+                    if face_img.dtype != np.uint8:
+                        if face_img.dtype == np.float64 or face_img.dtype == np.float32:
+                            face_img = (
+                                np.clip(face_img, 0, 1.0) * 255
+                                if face_img.max() <= 1.0
+                                else np.clip(face_img, 0, 255)
+                            )
+                        face["face"] = face_img.astype(np.uint8)
+        except Exception as e:
+            print(f"Face detection error: {e}")
+            faces = []
+
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        return faces
+    except Exception as e:
+        print(f"Error in face detection pipeline: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return []
+
+
+def safe_represent(img_path, model_name="Facenet512", enforce_detection=False):
+    """
+    Get face embedding with proper error handling and image format validation.
+
+    Args:
+        img_path (str): Path to the image
+        model_name (str): Name of the embedding model
+        enforce_detection (bool): Whether to enforce detection
+
+    Returns:
+        list: List of embedding dictionaries or empty list if error
+    """
+    try:
+        # First read and ensure proper format
+        img = safe_imread(img_path)
+        if img is None:
+            return []
+
+        # Save a temp copy in proper format
+        temp_dir = os.path.dirname(img_path)
+        temp_path = os.path.join(temp_dir, "temp_safe_represent.jpg")
+        cv2.imwrite(temp_path, img)
+
+        # Get embedding
+        try:
+            embedding = DeepFace.represent(
+                img_path=temp_path,
+                model_name=model_name,
+                enforce_detection=enforce_detection,
+            )
+        except Exception as e:
+            print(f"Face embedding error: {e}")
+            embedding = []
+
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        return embedding
+    except Exception as e:
+        print(f"Error in embedding pipeline: {e}")
+        if "temp_path" in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
+        return []
 
 
 if __name__ == "__main__":
@@ -2007,12 +2545,31 @@ Workflow:
         default=False,
         help="Don't highlight faces (overrides --highlight-faces)",
     )
+    output_group.add_argument(
+        "--save-best-crops",
+        action="store_true",
+        default=True,  # Default to saving best crops
+        help="Save the best face crops of the main person (default: enabled)",
+    )
+    output_group.add_argument(
+        "--no-best-crops",
+        action="store_true",
+        default=False,
+        help="Don't save best face crops (overrides --save-best-crops)",
+    )
+    output_group.add_argument(
+        "--max-crops",
+        type=int,
+        default=10,
+        help="Maximum number of best face crops to save (default: 10)",
+    )
 
     args = parser.parse_args()
 
     # Parse the options
     extract_frames = args.extract_frames
     highlight_faces = args.highlight_faces and not args.no_highlight
+    save_best_crops = args.save_best_crops and not args.no_best_crops
 
     # If basic-merging is specified, it overrides improved-merging
     use_improved_merging = not args.basic_merging  # Simplified logic
@@ -2034,4 +2591,6 @@ Workflow:
         visualize_before_merge=args.visualize_clusters,
         extract_frames=extract_frames,
         highlight_faces=highlight_faces,
+        save_best_crops=save_best_crops,
+        max_best_crops=args.max_crops,
     )
