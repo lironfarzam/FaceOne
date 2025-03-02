@@ -5,7 +5,7 @@ Face Processing Module
 This module provides functionality for detecting, analyzing, and clustering faces 
 in a collection of images. It's designed to identify the most frequently occurring 
 person across multiple photos.
-בך
+
 Key features:
 - Multi-backend face detection for improved accuracy
 - Face quality assessment to filter out low-quality detections

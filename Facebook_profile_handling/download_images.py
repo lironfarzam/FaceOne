@@ -14,7 +14,7 @@ from io import BytesIO
 
 # List of profile URLs to download photos from
 PROFILE_URLS = [
-    "https://www.facebook.com/noguznow",
+    "https://www.facebook.com/liron.farzam",
 ]
 
 PHOTO_FOLDER = "downloaded_photos"
@@ -169,6 +169,12 @@ def download_user_photos(profile_url, download_folder):
 
     # Initialize download counter
     download_count = 0
+
+    # delete the folder if it already exists
+    if os.path.exists(download_folder):
+        for file in os.listdir(download_folder):
+            os.remove(os.path.join(download_folder, file))
+        os.rmdir(download_folder)
 
     if not os.path.exists(download_folder):
         os.makedirs(download_folder)
