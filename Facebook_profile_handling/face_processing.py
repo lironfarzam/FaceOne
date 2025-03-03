@@ -45,6 +45,8 @@ from sklearn.cluster import DBSCAN
 from matplotlib.patches import Rectangle
 from scipy.spatial.distance import pdist, squareform, cosine, euclidean
 from sklearn.metrics.pairwise import euclidean_distances
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 #################################################################
 # CONSTANTS AND CONFIGURATION
@@ -213,6 +215,184 @@ def get_optimal_clustering_threshold(model_name, face_count):
     return base_threshold
 
 
+def process_single_photo(args):
+    """Process a single photo for face detection and embedding generation"""
+    (
+        img_file,
+        img_folder,
+        face_confidence,
+        face_size,
+        face_aspect_ratio,
+        backends,
+        models,
+        face_quality_threshold,
+    ) = args
+
+    img_path = os.path.join(img_folder, img_file)
+    results = {
+        "faces": [],
+        "embeddings": [],
+        "sources": [],
+        "locations": [],
+        "filenames": [],
+        "used_models": [],  # Add this to track which model was used
+    }
+
+    try:
+        # Read the image
+        img = cv2.imread(img_path)
+        if img is None:
+            print(f"Could not read image: {img_path}")
+            return results
+
+        # Enhanced face detection strategy:
+        face_objs = []
+
+        # Try each backend with enhanced image
+        for backend in backends:
+            try:
+                detected_faces = DeepFace.extract_faces(
+                    img_path=img_path,
+                    detector_backend=backend,
+                    enforce_detection=False,
+                    align=True,
+                )
+                if detected_faces and len(detected_faces) > 0:
+                    face_objs = detected_faces
+                    break
+            except Exception:
+                continue
+
+        # Process each detected face
+        for i, face_obj in enumerate(face_objs):
+            try:
+                # Check confidence score
+                if face_obj["confidence"] < face_confidence:
+                    continue
+
+                face = face_obj["face"]
+                facial_area = face_obj["facial_area"]
+
+                # Get face dimensions and validate size
+                face_width = facial_area["w"]
+                face_height = facial_area["h"]
+                min_dimension = min(face_width, face_height)
+
+                if min_dimension < face_size:
+                    continue
+
+                # Validate face aspect ratio
+                face_ar = face_width / face_height
+                if not (
+                    FACE_ASPECT_RATIO_RANGE[0] <= face_ar <= FACE_ASPECT_RATIO_RANGE[1]
+                ):
+                    continue
+
+                # Ensure face is in uint8 format
+                face = ensure_valid_image(face)
+
+                # Check face quality
+                quality_score = assess_face_quality(face, min_size=face_size)
+                if quality_score < face_quality_threshold:
+                    continue
+
+                # Resize face to standard size
+                face_resized = cv2.resize(face, STANDARD_FACE_SIZE)
+
+                # Generate face embedding
+                temp_face_path = f"temp_face_{os.getpid()}_{i}.jpg"
+                cv2.imwrite(temp_face_path, face_resized)
+
+                # Try each model until one works
+                embedding = None
+                used_model = None  # Track which model succeeded
+                for model in models:
+                    try:
+                        embedding_obj = DeepFace.represent(
+                            img_path=temp_face_path,
+                            model_name=model,
+                            enforce_detection=False,
+                        )
+                        if embedding_obj and len(embedding_obj) > 0:
+                            embedding = embedding_obj[0]["embedding"]
+                            used_model = model  # Store the successful model
+                            break
+                    except Exception:
+                        continue
+
+                # Clean up temp file
+                if os.path.exists(temp_face_path):
+                    os.remove(temp_face_path)
+
+                # Skip if no embedding could be generated
+                if embedding is None:
+                    continue
+
+                # Store results
+                results["faces"].append(face_resized)
+                results["embeddings"].append(embedding)
+                results["sources"].append(img_path)
+                results["locations"].append(facial_area)
+                results["filenames"].append(img_file)
+                results["used_models"].append(used_model)  # Store the model used
+
+            except Exception as e:
+                print(f"Error processing face {i} in {img_file}: {e}")
+                continue
+
+    except Exception as e:
+        print(f"Error processing image {img_file}: {e}")
+
+    return results
+
+
+def process_batch(args):
+    """Process a batch of images in parallel"""
+    (
+        image_batch,
+        images_folder,
+        face_confidence,
+        face_size,
+        face_aspect_ratio,
+        backends,
+        models,
+        face_quality_threshold,
+    ) = args
+
+    batch_results = {
+        "faces": [],
+        "embeddings": [],
+        "sources": [],
+        "locations": [],
+        "filenames": [],
+        "used_models": [],  # Add this field
+    }
+
+    for img_file in image_batch:
+        result = process_single_photo(
+            (
+                img_file,
+                images_folder,
+                face_confidence,
+                face_size,
+                face_aspect_ratio,
+                backends,
+                models,
+                face_quality_threshold,
+            )
+        )
+
+        # Combine results from this image
+        batch_results["faces"].extend(result["faces"])
+        batch_results["embeddings"].extend(result["embeddings"])
+        batch_results["sources"].extend(result["sources"])
+        batch_results["locations"].extend(result["locations"])
+        batch_results["filenames"].extend(result["filenames"])
+        batch_results["used_models"].extend(result["used_models"])  # Add this line
+
+    return batch_results
+
+
 def process_images(
     images_folder,
     output_folder="faces_output",
@@ -230,69 +410,11 @@ def process_images(
     enhanced_merging=True,
     verify_identity=True,
     visualize_before_merge=True,
-    extract_frames=True,
-    highlight_faces=False,
-    save_best_crops=True,  # New parameter
-    max_best_crops=10,  # New parameter
+    extract_frames=False,  # Legacy parameter
+    save_best_crops=True,
+    max_best_crops=10,
 ):
-    """
-    Process images to detect, validate, and cluster faces, identifying the most frequent person.
-
-    This function implements a complete pipeline for face processing:
-
-    1. Face Detection:
-       - Tries multiple detection backends for optimal results
-       - Filters faces based on confidence, size, and quality
-       - Enhances images before detection when needed
-
-    2. Face Embedding:
-       - Generates face embeddings using the specified model
-       - Can save/load embeddings to/from disk to avoid reprocessing
-
-    3. Face Clustering:
-       - Uses DBSCAN to cluster similar faces
-       - Adapts parameters based on the dataset and model
-
-    4. Cluster Refinement:
-       - Merges similar clusters using either basic or enhanced algorithm
-       - Verifies cluster identity consistency if requested
-
-    5. Result Generation:
-       - Identifies the most frequent person across all images
-       - Creates visualizations of the clusters
-       - Highlights the main person's face in the original images if requested
-
-    The function creates a structured output directory containing:
-    - detected_faces/: All detected faces from the input images
-    - most_frequent_person/: Images containing the most frequent person
-    - most_frequent_person_highlighted/: Images with the main person's face highlighted (if requested)
-    - Various visualization and analysis files
-
-    Args:
-        images_folder (str): Path to folder containing images to process.
-        output_folder (str): Path where all outputs will be saved.
-        face_confidence (float): Minimum confidence score (0-1) for detected faces.
-        face_size (int): Minimum size in pixels for a face to be considered valid.
-        face_aspect_ratio (float): Maximum allowed ratio between width and height for a face.
-        clustering_threshold (float): Distance threshold for DBSCAN clustering (lower = stricter).
-        min_cluster_size (int): Minimum number of faces required to form a cluster.
-        save_embeddings (bool): Whether to save face embeddings to disk for later reuse.
-        load_embeddings (bool): Whether to try loading previously saved embeddings.
-        backends (list): List of detection backends to try, in order of preference.
-        models (list): List of face embedding models to try, in order of preference.
-        merge_threshold (float): Threshold for merging clusters (higher = more merging).
-        face_quality_threshold (float): Minimum quality score for face validation.
-        enhanced_merging (bool): Whether to use enhanced cluster merging algorithm.
-        verify_identity (bool): Whether to perform final identity verification on clusters.
-        visualize_before_merge (bool): Whether to visualize clusters before merging.
-        extract_frames (bool): Whether to extract face frames (legacy parameter, use highlight_faces instead).
-        highlight_faces (bool): Whether to highlight the main person's face in the original images.
-        save_best_crops (bool): Whether to save the best face crops of the main person
-        max_best_crops (int): Maximum number of best crops to save
-
-    Returns:
-        str: Path to the folder containing images of the most frequent person.
-    """
+    """Process images in parallel batches"""
     print(f"Processing images from {images_folder}...")
 
     # Create output directories
@@ -318,6 +440,7 @@ def process_images(
             face_sources = loaded_data.get("sources", [])
             face_locations = loaded_data.get("locations", [])
             source_filenames = loaded_data.get("filenames", [])
+            used_models = loaded_data.get("used_models", [])
 
             print(f"Loaded {len(all_faces)} faces with embeddings")
 
@@ -342,221 +465,93 @@ def process_images(
 
         print(f"Found {len(image_files)} images to process")
 
-        # Lists to store face data
+        # Calculate optimal batch size based on CPU count
+        num_processes = max(1, cpu_count() - 1)  # Leave one CPU free
+        batch_size = max(
+            1, len(image_files) // (num_processes * 4)
+        )  # Smaller batches for better load balancing
+
+        # Split images into batches
+        batches = [
+            image_files[i : i + batch_size]
+            for i in range(0, len(image_files), batch_size)
+        ]
+
+        # Prepare arguments for parallel processing
+        process_args = [
+            (
+                batch,
+                images_folder,
+                face_confidence,
+                face_size,
+                face_aspect_ratio,
+                backends,
+                models,
+                face_quality_threshold,
+            )
+            for batch in batches
+        ]
+
+        print(f"Processing {len(batches)} batches using {num_processes} processes")
+
+        # Process batches in parallel
+        with Pool(num_processes) as pool:
+            batch_results = list(
+                tqdm(
+                    pool.imap(process_batch, process_args),
+                    total=len(batches),
+                    desc="Processing image batches",
+                )
+            )
+
+        # Combine all results
         all_faces = []
         all_embeddings = []
         face_sources = []
         face_locations = []
         source_filenames = []
+        used_models = []  # Add this list
 
-        # Keep track of processed files to avoid duplicates
-        processed_filenames = set()
-
-        # Process all images with progress bar
-        for img_file in tqdm(image_files, desc="Detecting faces"):
-            img_path = os.path.join(images_folder, img_file)
-
-            # Skip if this file has been processed already
-            if img_file in processed_filenames:
-                continue
-
-            processed_filenames.add(img_file)
-
-            try:
-                # Read the image
-                img = cv2.imread(img_path)
-                if img is None:
-                    print(f"Could not read image: {img_path}")
-                    continue
-
-                # Enhanced face detection strategy:
-                face_objs = []
-
-                # 1. Try enhanced image first
-                try:
-                    img_enhanced = enhance_image_for_detection(img)
-                    enhanced_path = os.path.join(output_folder, "temp_enhanced.jpg")
-                    cv2.imwrite(enhanced_path, img_enhanced)
-
-                    # Try each backend with enhanced image
-                    for backend in backends:
-                        try:
-                            detected_faces = DeepFace.extract_faces(
-                                img_path=enhanced_path,
-                                detector_backend=backend,
-                                enforce_detection=False,
-                                align=True,
-                            )
-                            if detected_faces and len(detected_faces) > 0:
-                                face_objs = detected_faces
-                                break
-                        except Exception as e:
-                            # Just continue to the next backend
-                            continue
-
-                    # Clean up temp file
-                    if os.path.exists(enhanced_path):
-                        os.remove(enhanced_path)
-                except Exception as e:
-                    # If enhanced detection fails completely, continue to original image
-                    print(f"Enhanced detection failed for {img_file}: {e}")
-
-                # 2. If enhanced detection failed, try original image
-                if len(face_objs) == 0:
-                    for backend in backends:
-                        try:
-                            detected_faces = DeepFace.extract_faces(
-                                img_path=img_path,
-                                detector_backend=backend,
-                                enforce_detection=False,
-                                align=True,
-                            )
-                            if detected_faces and len(detected_faces) > 0:
-                                face_objs = detected_faces
-                                break
-                        except Exception as e:
-                            # Just continue to the next backend
-                            continue
-
-                # Process each detected face with improved validation
-                for i, face_obj in enumerate(face_objs):
-                    try:
-                        # Check confidence score
-                        if face_obj["confidence"] < face_confidence:
-                            continue
-
-                        face = face_obj["face"]
-                        facial_area = face_obj["facial_area"]
-
-                        # Get face dimensions and validate size
-                        face_width = facial_area["w"]
-                        face_height = facial_area["h"]
-                        min_dimension = min(face_width, face_height)
-
-                        if min_dimension < face_size:
-                            continue
-
-                        # Validate face aspect ratio
-                        face_ar = face_width / face_height
-                        if not (
-                            FACE_ASPECT_RATIO_RANGE[0]
-                            <= face_ar
-                            <= FACE_ASPECT_RATIO_RANGE[1]
-                        ):
-                            continue
-
-                        # Ensure face is in uint8 format
-                        if face.dtype != np.uint8:
-                            if face.dtype == np.float64 or face.dtype == np.float32:
-                                face = (face * 255).astype(np.uint8)
-                            else:
-                                face = face.astype(np.uint8)
-
-                        # Check face quality using our improved function
-                        quality_score = assess_face_quality(face, min_size=face_size)
-                        if quality_score < face_quality_threshold:
-                            continue
-
-                        # Resize face to standard size for consistent shape
-                        face_resized = cv2.resize(face, STANDARD_FACE_SIZE)
-
-                        # Generate face embedding
-                        embedding = None
-
-                        # Save temp file for embedding generation
-                        temp_face_path = os.path.join(
-                            output_folder, f"temp_face_{i}.jpg"
-                        )
-                        cv2.imwrite(temp_face_path, face_resized)
-
-                        # Try each model until one works
-                        for model in models:
-                            try:
-                                embedding_obj = DeepFace.represent(
-                                    img_path=temp_face_path,
-                                    model_name=model,
-                                    enforce_detection=False,
-                                )
-
-                                if embedding_obj and len(embedding_obj) > 0:
-                                    embedding = embedding_obj[0]["embedding"]
-                                    used_model = model
-                                    break
-                            except Exception:
-                                continue
-
-                        # Clean up temp file
-                        os.remove(temp_face_path)
-
-                        # Skip if no embedding could be generated
-                        if embedding is None:
-                            continue
-
-                        # If all checks pass, add the face and its data
-                        all_faces.append(face_resized)
-                        all_embeddings.append(embedding)
-                        face_sources.append(img_path)
-                        source_filenames.append(img_file)
-
-                        # Save the detected face
-                        face_filename = f"{os.path.splitext(img_file)[0]}_face_{i}.jpg"
-                        cv2.imwrite(
-                            os.path.join(faces_folder, face_filename), face_resized
-                        )
-
-                        face_locations.append(facial_area)
-                    except Exception as e:
-                        print(f"Error processing face {i} in {img_file}: {e}")
-                        continue
-            except Exception as e:
-                print(f"Error processing image {img_file}: {e}")
-                continue
+        for result in batch_results:
+            all_faces.extend(result["faces"])
+            all_embeddings.extend(result["embeddings"])
+            face_sources.extend(result["sources"])
+            face_locations.extend(result["locations"])
+            source_filenames.extend(result["filenames"])
+            used_models.extend(result["used_models"])  # Add this line
 
         print(f"Detected {len(all_faces)} faces in total")
 
-        # Convert all_faces to numpy array (now should work because all faces are the same size)
-        valid_faces = []
-        for face in all_faces:
-            # Ensure all faces are properly sized
-            if face.shape[:2] != STANDARD_FACE_SIZE:
-                face = cv2.resize(face, STANDARD_FACE_SIZE)
-            valid_faces.append(face)
-
-        # Only convert embeddings to numpy array
-        embeddings_array = np.array(all_embeddings)
-
-        # Save embeddings and metadata
+        # Save embeddings if requested
         if all_embeddings and save_embeddings:
-            valid_faces = np.array(valid_faces)
-            embeddings_array = np.array(embeddings_array)
-
-            # Save embeddings and metadata
             with open(embeddings_path, "wb") as f:
                 pickle.dump(
                     {
-                        "faces": valid_faces,
-                        "embeddings": embeddings_array,
+                        "faces": np.array(all_faces),
+                        "embeddings": np.array(all_embeddings),
                         "sources": face_sources,
                         "locations": face_locations,
                         "filenames": source_filenames,
+                        "used_models": used_models,  # Add this line
                     },
                     f,
                 )
-            print(f"Saved {len(valid_faces)} face embeddings to {embeddings_path}")
+            print(f"Saved {len(all_faces)} face embeddings to {embeddings_path}")
 
     # Clustering and identification
     if len(all_faces) == 0:
         print("No valid faces found")
         return None
 
-    # Convert to numpy arrays for clustering
-    valid_faces = np.array(valid_faces)
-    embeddings_array = np.array(embeddings_array)
-    valid_face_sources = np.array(face_sources)
+    # Use the most common model for clustering
+    model_counts = Counter(used_models)
+    used_model = model_counts.most_common(1)[0][0]
+    print(f"Using {used_model} for clustering as it was the most commonly used model")
 
-    # Perform clustering with optimized parameters
-    print("Clustering faces by identity...")
-    print(f"Using {len(valid_faces)} faces with valid embeddings for clustering")
+    # Convert to numpy arrays for clustering
+    valid_faces = np.array(all_faces)
+    embeddings_array = np.array(all_embeddings)
+    valid_face_sources = np.array(face_sources)
 
     # Get optimal threshold for clustering based on model and dataset size
     optimized_threshold = get_optimal_clustering_threshold(used_model, len(valid_faces))
@@ -735,67 +730,10 @@ def process_images(
             detection_backend=backends[0],
             prefer_profile=True,  # Prefer profile views
             enhance_quality=True,
-            max_size=(800, 800),  # Changed from crop_size to max_size
-            min_face_size=(30, 30),
+            crop_size=(800, 800),  # High-quality crops
         )
 
         print(f"Saved {crop_count} best face crops to {best_crops_folder}")
-
-    # Highlight faces if requested
-    if highlight_faces:
-        highlighted_folder = os.path.join(
-            output_folder, "most_frequent_person_highlighted"
-        )
-        os.makedirs(highlighted_folder, exist_ok=True)
-
-        highlight_count = highlight_main_person_faces(
-            most_frequent_folder,
-            highlighted_folder,
-            frame_color=(0, 255, 0),  # Green frame
-            frame_thickness=3,
-            model=used_model,
-            detection_backend=backends[0],  # Use the first (best) detection backend
-            min_confidence=0.8,
-        )
-
-        print(f"Highlighted faces in {highlight_count} images in {highlighted_folder}")
-
-    # Legacy face frame extraction
-    elif extract_frames:
-        frames_folder = os.path.join(most_frequent_folder, "face_frames")
-        os.makedirs(frames_folder, exist_ok=True)
-
-        # Extract frames using the original function
-        frame_count = extract_face_frames(
-            most_frequent_folder,
-            frames_folder,
-            face_size=(400, 400),  # Larger size for higher quality
-            padding_factor=0.3,
-            enhance_quality=True,
-        )
-
-        print(f"Extracted {frame_count} face frames to {frames_folder}")
-
-    # Create a visualization of all clusters after merging
-    try:
-        # Convert list of cluster labels to dictionary format expected by visualize_clusters
-        cluster_dict = {}
-        for cluster_id, face_indices in cluster_counts.items():
-            cluster_dict[cluster_id] = face_indices
-
-        visualize_clusters(
-            cluster_dict,  # Pass a dictionary instead of a list
-            valid_faces,
-            os.path.join(output_folder, "all_clusters.jpg"),
-            identity_to_highlight=most_frequent_label,
-        )
-        print(
-            f"Saved cluster visualization to {os.path.join(output_folder, 'all_clusters.jpg')}"
-        )
-    except Exception as e:
-        print(f"Warning: Could not create cluster visualization: {e}")
-
-    print("Processing complete!")
 
     return most_frequent_folder
 
@@ -1891,7 +1829,7 @@ def save_best_face_crops(
     detection_backend="retinaface",
     prefer_profile=True,
     enhance_quality=True,
-    max_size=(800, 800),  # Changed from crop_size to max_size
+    crop_size=(800, 800),
     min_face_size=(30, 30),
 ):
     """
@@ -2208,18 +2146,8 @@ def save_best_face_crops(
                 except Exception as e:
                     print(f"Warning: Could not enhance image quality: {e}")
 
-            # Only resize if the image is larger than max_size
-            h, w = face_crop.shape[:2]
-            if h > max_size[1] or w > max_size[0]:
-                # Calculate aspect ratio
-                aspect = w / h
-                if aspect > 1:  # wider than tall
-                    new_w = min(w, max_size[0])
-                    new_h = int(new_w / aspect)
-                else:  # taller than wide
-                    new_h = min(h, max_size[1])
-                    new_w = int(new_h * aspect)
-                face_crop = cv2.resize(face_crop, (new_w, new_h))
+            # Resize face
+            face_resized = cv2.resize(face_crop, crop_size)
 
             # Save crop
             crop_type = "profile" if candidate["profile_score"] > 0.6 else "frontal"
@@ -2229,7 +2157,7 @@ def save_best_face_crops(
 
             cv2.imwrite(
                 os.path.join(output_folder, crop_filename),
-                face_crop,
+                face_resized,
                 [int(cv2.IMWRITE_JPEG_QUALITY), 95],  # High quality JPEG
             )
 
@@ -2601,7 +2529,6 @@ Workflow:
         verify_identity=args.verify_identity,
         visualize_before_merge=args.visualize_clusters,
         extract_frames=extract_frames,
-        highlight_faces=highlight_faces,
         save_best_crops=save_best_crops,
         max_best_crops=args.max_crops,
     )
