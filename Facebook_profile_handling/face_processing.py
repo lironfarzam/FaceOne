@@ -40,15 +40,12 @@ from deepface import DeepFace
 from collections import Counter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import pickle
 from sklearn.cluster import DBSCAN
-from matplotlib.patches import Rectangle
 from scipy.spatial.distance import pdist, squareform, cosine, euclidean
-from sklearn.metrics.pairwise import euclidean_distances
 from multiprocessing import Pool, cpu_count
-from functools import partial
 import mediapipe as mp
 import logging
+from typing import List, Dict, Tuple, Optional, Union, Any, Set, Callable, Sequence
 
 # Configure logging to suppress warnings
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress TensorFlow logging
@@ -70,7 +67,9 @@ EMBEDDING_MODELS = ["Facenet512", "VGG-Face", "Facenet", "OpenFace", "DeepFace"]
 FACE_CONFIDENCE_THRESHOLD = 0.4
 MIN_FACE_SIZE = 35
 FACE_ASPECT_RATIO_RANGE = (0.5, 1.8)  # Tightened range for better face filtering
+EPARTMENT_FACE_SIZE = (150, 150)
 FACE_QUALITY_THRESHOLD = 0.4
+MAX_BEST_CROPS = 5
 
 # Clustering Settings
 CLUSTERING_THRESHOLD = 0.35  # Base threshold for DBSCAN clustering
@@ -108,16 +107,25 @@ HIGHLIGHT_COLOR = (0, 255, 0)  # Green for main identity (fixed RGB format)
 #################################################################
 
 
-def assess_face_quality(face_img, min_size=MIN_FACE_SIZE):
+def assess_face_quality(face_img: np.ndarray, min_size: int = MIN_FACE_SIZE) -> float:
     """
-    Assess the quality of a detected face using multiple heuristics.
-    Returns a quality score between 0.0 (lowest) and 1.0 (highest).
+    Assess the quality of a face image based on multiple metrics.
 
-    Quality metrics:
-    - Size: Larger faces have more detail (30%)
-    - Sharpness: Clear, non-blurry faces (40%)
-    - Symmetry: How frontal the face is (20%)
-    - Lighting: Even illumination (10%)
+    This function evaluates face quality using several factors:
+    - Sharpness (using Laplacian variance)
+    - Brightness and contrast
+    - Face size relative to minimum requirements
+    - Facial symmetry and alignment
+
+    Args:
+        face_img (numpy.ndarray): The face image to assess, in BGR format
+        min_size (int): Minimum acceptable face dimension in pixels
+
+    Returns:
+        float: Quality score between 0.0 (lowest quality) and 1.0 (highest quality)
+
+    Note:
+        A score above 0.6 generally indicates a good quality face image suitable for recognition.
     """
     try:
         # Convert to grayscale if needed
@@ -162,54 +170,79 @@ def assess_face_quality(face_img, min_size=MIN_FACE_SIZE):
 
 
 def safe_face_detection(
-    img_path, detector_backend="retinaface", enforce_detection=False
-):
+    img_path: str, detector_backend: str = "retinaface", enforce_detection: bool = False
+) -> List[Dict[str, Any]]:
     """
-    Safely detect faces in an image using specified backend.
-    Includes quality assessment and proper error handling.
+    Detect faces in an image with robust error handling and format validation.
+
+    This function provides a safe wrapper around DeepFace's face detection,
+    handling various edge cases and ensuring proper image format.
+
+    Args:
+        img_path (str): Path to the image file
+        detector_backend (str): Face detection backend to use. Options include:
+                               'retinaface', 'mtcnn', 'opencv', 'ssd', 'dlib'
+        enforce_detection (bool): Whether to raise an error if no face is detected
+
+    Returns:
+        list: List of detected face dictionaries, each containing:
+            - 'face': The extracted face image
+            - 'facial_area': Dictionary with 'x', 'y', 'w', 'h' coordinates
+            - 'confidence': Detection confidence score
+        Empty list is returned if no faces are detected or an error occurs.
+
+    Raises:
+        ValueError: If enforce_detection is True and no faces are detected
     """
     try:
-        # Read image safely
+        # First read and ensure proper format
         img = safe_imread(img_path)
         if img is None:
             return []
 
-        # Detect faces
-        faces = DeepFace.extract_faces(
-            img_path=img_path,
-            detector_backend=detector_backend,
-            enforce_detection=enforce_detection,
-            align=True,
-        )
+        # Save a temp copy in proper format
+        temp_dir = os.path.dirname(img_path)
+        temp_path = os.path.join(temp_dir, "temp_safe_detect.jpg")
+        cv2.imwrite(temp_path, img)
 
-        if not faces:
-            return []
+        # Perform detection
+        try:
+            faces = DeepFace.extract_faces(
+                img_path=temp_path,
+                detector_backend=detector_backend,
+                enforce_detection=enforce_detection,
+                align=True,
+            )
 
-        # Add quality scores and filter faces
-        valid_faces = []
-        for face_obj in faces:
-            if not isinstance(face_obj, dict) or "face" not in face_obj:
-                continue
+            # Process each face to ensure proper format
+            for face in faces:
+                if "face" in face and face["face"] is not None:
+                    face_img = face["face"]
+                    if face_img.dtype != np.uint8:
+                        if face_img.dtype == np.float64 or face_img.dtype == np.float32:
+                            face_img = (
+                                np.clip(face_img, 0, 1.0) * 255
+                                if face_img.max() <= 1.0
+                                else np.clip(face_img, 0, 255)
+                            )
+                        face["face"] = face_img.astype(np.uint8)
+        except Exception as e:
+            print(f"Face detection error: {e}")
+            faces = []
 
-            # Assess quality
-            quality_score = assess_face_quality(face_obj["face"])
-            face_obj["quality_score"] = quality_score
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
-            # Add to valid faces if meets criteria
-            if (
-                face_obj.get("confidence", 0) >= FACE_CONFIDENCE_THRESHOLD
-                and quality_score >= FACE_QUALITY_THRESHOLD
-            ):
-                valid_faces.append(face_obj)
-
-        return valid_faces
-
+        return faces
     except Exception as e:
-        print(f"Error in face detection for {img_path}: {e}")
+        print(f"Error in face detection pipeline: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         return []
 
 
-def enhance_image_for_detection(img):
+def enhance_image_for_detection(img: np.ndarray) -> np.ndarray:
     """
     Enhance image quality for better face detection.
     Applies color correction, contrast enhancement and noise reduction.
@@ -250,31 +283,43 @@ def enhance_image_for_detection(img):
         return img
 
 
-def get_optimal_clustering_threshold(model_name, face_count):
+def get_optimal_clustering_threshold(model_name: str, face_count: int) -> float:
     """
-    Get the optimal clustering threshold based on the model and dataset size.
+    Determine the optimal clustering threshold based on the model and dataset size.
+
+    This function adjusts the clustering threshold based on:
+    1. The specific face embedding model being used
+    2. The number of faces in the dataset
 
     Args:
-        model_name (str): Name of the embedding model
+        model_name (str): Name of the face embedding model
         face_count (int): Number of faces in the dataset
 
     Returns:
-        float: Optimal clustering threshold
+        float: Optimal clustering threshold for DBSCAN
+
+    Note:
+        Larger datasets typically require stricter thresholds to avoid
+        incorrectly merging different identities.
     """
+    # Get base threshold for the model
     base_threshold = MODEL_SPECIFIC_THRESHOLDS.get(model_name, CLUSTERING_THRESHOLD)
 
-    # Adjust threshold based on face count
-    if face_count < 10:
-        # With few faces, be more strict to avoid false positives
-        return base_threshold * 0.9
-    elif face_count > 100:
-        # With many faces, be more permissive to handle variations
+    # Adjust based on dataset size
+    if face_count < 50:
+        # Small dataset, can be more permissive
         return base_threshold * 1.1
+    elif face_count < 200:
+        # Medium dataset, use standard threshold
+        return base_threshold
+    else:
+        # Large dataset, be more strict to avoid false merges
+        return base_threshold * 0.9
 
-    return base_threshold
 
-
-def process_single_photo(args):
+def process_single_photo(
+    args: Tuple[str, str, float, int, float, List[str], List[str], float, int]
+) -> Dict[str, Any]:
     """Process a single photo for face detection and embedding generation"""
     (
         img_file,
@@ -405,8 +450,40 @@ def process_single_photo(args):
     return results
 
 
-def process_batch(args):
-    """Process a batch of images in parallel"""
+def process_batch(
+    args: Tuple[List[str], str, float, int, float, List[str], List[str], float, int]
+) -> Dict[str, Any]:
+    """
+    Process a batch of images to detect and extract faces.
+
+    This function handles the parallel processing of image batches, detecting faces
+    and generating embeddings. It tries multiple detection backends and embedding
+    models to maximize the chance of successful face detection and representation.
+
+    Args:
+        args (dict): Dictionary containing:
+            - image_batch (list): List of image paths to process
+            - backends (list): List of face detection backends to try
+            - models (list): List of face embedding models to try
+            - min_confidence (float): Minimum confidence for face detection
+            - min_face_size (tuple): Minimum face dimensions (width, height)
+            - max_aspect_ratio (float): Maximum face aspect ratio
+            - min_quality (float): Minimum face quality score
+
+    Returns:
+        dict: Dictionary containing:
+            - faces (list): Detected face images
+            - embeddings (list): Face embedding vectors
+            - sources (list): Source image paths
+            - locations (list): Face locations as (x, y, w, h) tuples
+            - filenames (list): Source image filenames
+            - used_models (list): Models used for each face embedding
+
+    Note:
+        This function implements a fallback mechanism, trying different backends
+        and models if initial attempts fail. It also filters faces based on
+        confidence, size, aspect ratio, and quality.
+    """
     (
         image_batch,
         images_folder,
@@ -453,43 +530,67 @@ def process_batch(args):
 
 
 def process_images(
-    images_folder,
-    output_folder="faces_output",
-    face_confidence=FACE_CONFIDENCE_THRESHOLD,
-    face_size=MIN_FACE_SIZE,
-    face_aspect_ratio=FACE_ASPECT_RATIO_RANGE[1],
-    backends=DETECTION_BACKENDS,
-    models=EMBEDDING_MODELS,
-    merge_threshold=MERGE_THRESHOLD,
-    face_quality_threshold=FACE_QUALITY_THRESHOLD,
-    enhanced_merging=True,
-    verify_identity=True,
-    visualize_before_merge=True,
-    save_best_crops=True,
-    max_best_crops=10,
+    images_folder: str,
+    output_folder: str = "faces_output",
+    face_confidence: float = FACE_CONFIDENCE_THRESHOLD,
+    face_size: int = MIN_FACE_SIZE,
+    face_aspect_ratio: float = FACE_ASPECT_RATIO_RANGE[1],
+    min_cluster_size: int = 3,  # Minimum faces needed to form a cluster
+    backends: List[str] = DETECTION_BACKENDS,
+    models: List[str] = EMBEDDING_MODELS,
+    merge_threshold: float = MERGE_THRESHOLD,
+    face_quality_threshold: float = FACE_QUALITY_THRESHOLD,
+    enhanced_merging: bool = True,
+    verify_identity: bool = True,
+    visualize_before_merge: bool = True,
+    save_best_crops: bool = True,
+    max_best_crops: int = MAX_BEST_CROPS,
 ):
     """
-    Process a folder of images to detect, cluster, and analyze faces.
+    Process a folder of images to find faces, cluster them, and identify the most frequent person.
+
+    This function implements a complete pipeline for face processing:
+    1. Detects faces in all images using multiple detection backends
+    2. Generates face embeddings using specified models
+    3. Clusters similar faces using DBSCAN
+    4. Merges similar clusters to consolidate identities
+    5. Identifies the most frequent person across all images
+    6. Creates a folder with images of the most frequent person, with other faces blurred
+    7. Generates a synchronized display of faces organized by departments/clusters
+    8. Optionally saves the best quality face crops of the main person
 
     Args:
-        images_folder (str): Path to folder containing input images
-        output_folder (str): Path to save output files and visualizations
-        face_confidence (float): Minimum confidence threshold for face detection
-        face_size (int): Minimum size in pixels for detected faces
+        images_folder (str): Path to folder containing images to process
+        output_folder (str): Path where results will be saved
+        face_confidence (float): Minimum confidence threshold for face detection (0.0-1.0)
+        face_size (int): Minimum face size in pixels to consider valid
         face_aspect_ratio (float): Maximum allowed aspect ratio for faces
-        clustering_threshold (float): DBSCAN clustering distance threshold
-        backends (list): List of face detection backends to try
-        models (list): List of face embedding models to use
-        merge_threshold (float): Threshold for merging similar clusters
-        face_quality_threshold (float): Minimum quality score for faces
-        enhanced_merging (bool): Whether to use enhanced cluster merging
-        verify_identity (bool): Whether to verify identity consistency in clusters
+        min_cluster_size (int): Minimum number of faces needed to form a cluster
+        backends (list): List of face detection backends to try, in order of preference
+        models (list): List of face embedding models to try, in order of preference
+        merge_threshold (float): Threshold for merging similar clusters (0.0-1.0)
+        face_quality_threshold (float): Minimum quality score for faces (0.0-1.0)
+        enhanced_merging (bool): Whether to use enhanced cluster merging algorithm
+        verify_identity (bool): Whether to verify identity consistency within clusters
         visualize_before_merge (bool): Whether to visualize clusters before merging
-        save_best_crops (bool): Whether to save best quality face crops
-        max_best_crops (int): Maximum number of best crops to save per identity
+        save_best_crops (bool): Whether to save best quality face crops of main person
+        max_best_crops (int): Maximum number of best face crops to save
 
     Returns:
-        str: Path to folder containing most frequent person's images
+        str or None: Path to folder containing the most frequent person's images,
+                    or None if no valid faces/clusters were found
+
+    Raises:
+        ValueError: If the input folder doesn't exist or contains no valid images
+
+    Example:
+        >>> most_frequent_folder = process_images(
+        ...     images_folder="./photos",
+        ...     output_folder="./results",
+        ...     face_confidence=0.4,
+        ...     enhanced_merging=True
+        ... )
+        >>> print(f"Results saved to: {most_frequent_folder}")
     """
     print(f"Processing images from {images_folder}...")
 
@@ -817,10 +918,30 @@ def process_images(
 
 
 def visualize_clusters(
-    cluster_face_indices, valid_faces, output_path, identity_to_highlight=None
+    cluster_face_indices: Union[Dict[int, List[int]], List[int]],
+    valid_faces: np.ndarray,
+    output_path: str,
+    identity_to_highlight: Optional[int] = None,
 ):
     """
     Visualize the clustered faces with color-coded borders by cluster.
+
+    This function creates a grid visualization of all faces, grouped by cluster.
+    Each cluster is assigned a unique color, and the main identity can be highlighted.
+
+    Args:
+        cluster_face_indices (dict or list): Dictionary mapping cluster labels to face indices,
+                                           or list of cluster labels for each face
+        valid_faces (numpy.ndarray): Array of face images
+        output_path (str): Path where the visualization will be saved
+        identity_to_highlight (int, optional): Cluster label to highlight as the main identity
+
+    Returns:
+        None: The visualization is saved to the specified output path
+
+    Note:
+        This function is useful for visually inspecting clustering results
+        and verifying that similar faces are grouped together correctly.
     """
     # Convert list format to dictionary if needed
     if isinstance(cluster_face_indices, list):
@@ -902,8 +1023,32 @@ def visualize_clusters(
         plt.close()  # Fall back to closing the current figure if fig is not defined
 
 
-def create_face_collage(face_indices, all_faces, output_path, max_faces=25, title=None):
-    """Create a collage of faces"""
+def create_face_collage(
+    face_indices: List[int],
+    all_faces: np.ndarray,
+    output_path: str,
+    max_faces: int = 25,
+    title: Optional[str] = None,
+):
+    """
+    Create a collage of face images for a specific identity.
+
+    This function arranges a selection of faces from the same identity in a grid layout,
+    creating a visual representation of the person's appearance across different images.
+
+    Args:
+        face_indices (list): Indices of faces to include in the collage
+        all_faces (numpy.ndarray): Array of all face images
+        output_path (str): Path where the collage will be saved
+        max_faces (int): Maximum number of faces to include in the collage
+        title (str, optional): Title to display on the collage
+
+    Returns:
+        str: Path to the saved collage image
+
+    Note:
+        If there are more faces than max_faces, a representative sample is selected.
+    """
     # Limit the number of faces to display
     face_indices = face_indices[: min(len(face_indices), max_faces)]
 
@@ -936,17 +1081,25 @@ def create_face_collage(face_indices, all_faces, output_path, max_faces=25, titl
     plt.close(fig)
 
 
-def extract_face_with_margin(img, face_location, margin_percent=20):
+def extract_face_with_margin(
+    img: np.ndarray, face_location: Tuple[int, int, int, int], margin_percent: int = 20
+):
     """
-    Extract a face from an image with an additional margin around it.
+    Extract a face from an image with additional margin around it.
+
+    This function cuts out a face from a larger image, adding a specified
+    margin around the face to include context like hair and chin.
 
     Args:
-        img (numpy.ndarray): The source image.
-        face_location (dict): Dictionary with x, y, w, h coordinates of the face.
-        margin_percent (int): Percentage of the face dimensions to add as margin.
+        img (numpy.ndarray): Source image
+        face_location (tuple): Face location as (x, y, w, h)
+        margin_percent (int): Percentage of face dimensions to add as margin
 
     Returns:
-        numpy.ndarray: The extracted face image with margin.
+        numpy.ndarray: Extracted face image with margin
+
+    Note:
+        The function handles edge cases where the face is near the image boundary.
     """
     x, y = face_location["x"], face_location["y"]
     w, h = face_location["w"], face_location["h"]
@@ -965,17 +1118,25 @@ def extract_face_with_margin(img, face_location, margin_percent=20):
     return img[y1:y2, x1:x2]
 
 
-def analyze_face_attributes(face_path, attributes=None):
+def analyze_face_attributes(face_path: str, attributes: Optional[List[str]] = None):
     """
-    Analyze facial attributes like age, gender, emotion, etc.
+    Analyze facial attributes such as age, gender, emotion, and race.
+
+    This function uses DeepFace to detect various attributes of a face,
+    providing demographic and emotional information.
 
     Args:
-        face_path (str): Path to the face image.
+        face_path (str): Path to the face image
         attributes (list, optional): List of attributes to analyze.
-                                    Default: ["age", "gender", "emotion"]
+                                   Options: 'age', 'gender', 'emotion', 'race'
 
     Returns:
-        dict: Dictionary of detected attributes.
+        dict: Dictionary containing the analyzed attributes
+
+    Note:
+        If attributes is None, all available attributes are analyzed.
+        This function is useful for gathering demographic information about
+        the detected faces.
     """
     if attributes is None:
         attributes = ["age", "gender", "emotion"]
@@ -997,15 +1158,32 @@ def analyze_face_attributes(face_path, attributes=None):
         return {}
 
 
-def export_cluster_data(clusters, faces, sources, output_folder):
+def export_cluster_data(
+    clusters: Dict[int, List[int]],
+    faces: np.ndarray,
+    sources: List[str],
+    output_folder: str,
+):
     """
-    Export data about each cluster for further analysis.
+    Export cluster data to disk for later analysis or processing.
+
+    This function saves:
+    1. Face images for each cluster
+    2. Metadata about each cluster (source images, face locations)
+    3. A summary report of the clustering results
 
     Args:
-        clusters (dict): Dictionary mapping cluster IDs to lists of face indices.
-        faces (list): List of all face images.
-        sources (list): List of source image paths for each face.
-        output_folder (str): Folder where to save the cluster data.
+        clusters (dict): Dictionary mapping cluster labels to face indices
+        faces (numpy.ndarray): Array of face images
+        sources (list): List of source image paths for each face
+        output_folder (str): Folder where cluster data will be saved
+
+    Returns:
+        str: Path to the exported data
+
+    Note:
+        This function is useful for preserving clustering results for
+        later analysis or for transferring results between systems.
     """
     report_path = os.path.join(output_folder, "cluster_report.txt")
 
@@ -1037,10 +1215,32 @@ def export_cluster_data(clusters, faces, sources, output_folder):
 
 
 def compare_face_embeddings(
-    embedding1, embedding2, model_name="Facenet512", metric="cosine"
+    embedding1: np.ndarray,
+    embedding2: np.ndarray,
+    model_name: str = "Facenet512",
+    metric: str = "cosine",
 ):
     """
-    Compare two face embeddings directly.
+    Compare two face embeddings to determine if they represent the same person.
+
+    This function calculates the similarity between two face embeddings using
+    the specified distance metric and model-specific thresholds.
+
+    Args:
+        embedding1 (numpy.ndarray): First face embedding
+        embedding2 (numpy.ndarray): Second face embedding
+        model_name (str): Name of the face embedding model used
+        metric (str): Distance metric to use ('cosine', 'euclidean', or 'l2')
+
+    Returns:
+        tuple: (
+            float: Similarity score (higher means more similar),
+            bool: Whether the faces are likely the same person
+        )
+
+    Note:
+        Different models have different optimal thresholds for determining
+        if two faces represent the same person.
     """
     # Convert embeddings to numpy arrays if they aren't already
     if not isinstance(embedding1, np.ndarray):
@@ -1092,15 +1292,35 @@ def compare_face_embeddings(
 
 
 def improved_merge_similar_clusters(
-    clusters,
-    embeddings,
-    merge_threshold=MERGE_THRESHOLD,
-    used_model="Facenet512",
-    valid_faces=None,
+    clusters: Dict[int, List[int]],
+    embeddings: np.ndarray,
+    merge_threshold: float = MERGE_THRESHOLD,
+    used_model: str = "Facenet512",
+    valid_faces: Optional[np.ndarray] = None,
 ):
     """
-    Advanced cluster merging with improved similarity metrics and validation.
-    This is the primary cluster merging function that should be used.
+    Merge similar clusters to consolidate identities using an advanced algorithm.
+
+    This function implements a two-phase approach to merge clusters:
+    1. First phase: Merge highly similar clusters with strict criteria
+    2. Second phase: Merge remaining similar clusters with more permissive criteria
+
+    The merging is based on the distance between cluster centroids and
+    cross-validation of face similarities between clusters.
+
+    Args:
+        clusters (dict): Dictionary mapping cluster labels to face indices
+        embeddings (numpy.ndarray): Array of all face embeddings
+        merge_threshold (float): Base threshold for merging similar clusters
+        used_model (str): Face recognition model used for embeddings
+        valid_faces (numpy.ndarray, optional): Array of face images for visualization
+
+    Returns:
+        dict: Merged clusters mapping cluster labels to face indices
+
+    Note:
+        This function significantly improves clustering results by consolidating
+        fragmented identities while avoiding incorrect merges.
     """
     # Use model-specific thresholds
     if used_model in MODEL_MERGE_THRESHOLDS:
@@ -1330,18 +1550,31 @@ def improved_merge_similar_clusters(
     return validated_clusters
 
 
-def verify_cluster_identity(cluster_indices, embeddings, threshold=0.4):
+def verify_cluster_identity(
+    cluster_indices: List[int], embeddings: np.ndarray, threshold: float = 0.4
+):
     """
-    Verify that a cluster truly represents a single identity.
+    Verify the identity consistency within a cluster of face embeddings.
+
+    This function ensures that a cluster contains faces of the same person by:
+    1. Computing pairwise distances between all face embeddings in the cluster
+    2. Identifying a core set of consistent faces
+    3. Determining if the cluster as a whole represents a single identity
 
     Args:
-        cluster_indices (list): Indices of faces in the cluster
-        embeddings (numpy.ndarray): Array of face embeddings
-        threshold (float): Similarity threshold
+        cluster_indices (list): Indices of face embeddings in the cluster
+        embeddings (numpy.ndarray): Array of all face embeddings
+        threshold (float): Maximum distance threshold for identity verification
 
     Returns:
-        tuple: (is_consistent, core_indices) - Boolean indicating if cluster is consistent,
-               and indices of the core faces in the cluster
+        tuple: (
+            bool: Whether the cluster represents a consistent identity,
+            list: Indices of the core faces that form a consistent identity
+        )
+
+    Note:
+        This function is crucial for removing outliers and ensuring
+        that clusters represent a single person's identity.
     """
     if len(cluster_indices) < 3:
         return True, cluster_indices  # Too small to analyze
@@ -1378,17 +1611,31 @@ def verify_cluster_identity(cluster_indices, embeddings, threshold=0.4):
 
 
 def visualize_all_clusters(
-    clusters, faces, output_path, max_clusters=20, max_faces_per_cluster=4
+    clusters: Dict[int, List[int]],
+    faces: np.ndarray,
+    output_path: str,
+    max_clusters: int = 20,
+    max_faces_per_cluster: int = 4,
 ):
     """
-    Create a visualization of all clusters in a single image.
+    Create a visual summary of all detected face clusters.
+
+    This function generates a grid visualization showing representative faces
+    from each cluster, providing a quick overview of all detected identities.
 
     Args:
-        clusters (dict): Dictionary mapping cluster IDs to lists of face indices
-        faces (list): List of all face images
-        output_path (str): Path where to save the visualization
-        max_clusters (int): Maximum number of clusters to visualize
-        max_faces_per_cluster (int): Maximum number of faces to show per cluster
+        clusters (dict): Dictionary mapping cluster labels to face indices
+        faces (numpy.ndarray): Array of all face images
+        output_path (str): Path where the visualization will be saved
+        max_clusters (int): Maximum number of clusters to display
+        max_faces_per_cluster (int): Maximum faces to show per cluster
+
+    Returns:
+        str: Path to the saved visualization
+
+    Note:
+        This function is useful for getting a quick overview of clustering results
+        and identifying the main identities in a collection of images.
     """
     # Sort clusters by size (largest first)
     sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
@@ -1449,24 +1696,34 @@ def visualize_all_clusters(
 
 
 def extract_face_frames(
-    image_folder,
-    output_folder,
-    face_size=(224, 224),
-    padding_factor=0.3,
-    enhance_quality=True,
+    image_folder: str,
+    output_folder: str,
+    face_size: Tuple[int, int] = (224, 224),
+    padding_factor: float = 0.3,
+    enhance_quality: bool = True,
 ):
     """
-    Extract face frames from all images in a folder and save them as separate files.
+    Extract face frames from all images in a folder.
+
+    This function:
+    1. Detects all faces in the provided images
+    2. Extracts each face with consistent sizing and padding
+    3. Optionally enhances the quality of extracted faces
+    4. Saves all extracted faces to the output folder
 
     Args:
-        image_folder (str): Folder containing images
-        output_folder (str): Folder to save extracted face frames
-        face_size (tuple): Size to resize extracted faces
-        padding_factor (float): Amount of padding around the face (relative to face size)
-        enhance_quality (bool): Whether to enhance the quality of extracted faces
+        image_folder (str): Folder containing source images
+        output_folder (str): Where to save extracted face frames
+        face_size (tuple): Size to resize extracted faces (width, height)
+        padding_factor (float): Amount of padding around faces (0.0-1.0)
+        enhance_quality (bool): Whether to enhance face quality
 
     Returns:
-        int: Number of frames extracted
+        int: Number of face frames extracted
+
+    Note:
+        This function is useful for creating a dataset of face images
+        from a collection of photos for further analysis or training.
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -1562,16 +1819,37 @@ def extract_face_frames(
 
 
 def highlight_main_person_faces(
-    images_folder,
-    output_folder,
-    frame_color=(0, 255, 0),
-    frame_thickness=3,
-    model="Facenet512",
-    detection_backend="retinaface",
-    min_confidence=0.8,  # Slightly lower threshold for better recall
+    images_folder: str,
+    output_folder: str,
+    frame_color: Tuple[int, int, int] = (0, 255, 0),
+    frame_thickness: int = 3,
+    model: str = "Facenet512",
+    detection_backend: str = "retinaface",
+    min_confidence: float = 0.8,  # Slightly lower threshold for better recall
 ):
     """
-    Highlight the main person's face in each image with a colored frame.
+    Highlight the main person's faces in all images with colored frames.
+
+    This function:
+    1. Identifies the main person across all images
+    2. Draws colored frames around their faces
+    3. Saves the highlighted images to the output folder
+
+    Args:
+        images_folder (str): Folder containing source images
+        output_folder (str): Where to save highlighted images
+        frame_color (tuple): BGR color for the highlight frame
+        frame_thickness (int): Thickness of the highlight frame in pixels
+        model (str): Face recognition model to use
+        detection_backend (str): Face detection backend to use
+        min_confidence (float): Minimum confidence for face detection
+
+    Returns:
+        int: Number of images processed
+
+    Note:
+        This function is useful for visualizing which faces in each image
+        belong to the main person, especially in group photos.
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -1742,7 +2020,7 @@ def highlight_main_person_faces(
     return processed_count
 
 
-def enhance_face_crop(face_crop, preserve_skin_tone=True):
+def enhance_face_crop(face_crop: np.ndarray, preserve_skin_tone: bool = True):
     """
     Enhanced face crop processing with better quality preservation.
 
@@ -1811,6 +2089,36 @@ def enhance_face_crop(face_crop, preserve_skin_tone=True):
 def process_face_crop(args):
     """
     Process a single face crop in parallel.
+
+    This function handles the processing of an individual face crop as part of
+    the parallel processing pipeline for finding the best face crops.
+
+    Args:
+        args (tuple): Tuple containing:
+            - img_file (str): Image filename
+            - img_path (str): Full path to the image
+            - reference_embedding (numpy.ndarray): Reference face embedding
+            - min_confidence (float): Minimum confidence threshold
+            - model (str): Face embedding model to use
+            - detection_backend (str): Face detection backend to use
+            - min_face_size (tuple): Minimum face dimensions
+            - padding_factor (float): Amount of padding around face
+            - enhance_quality (bool): Whether to enhance the face crop
+
+    Returns:
+        dict or None: Dictionary containing face crop data if successful, including:
+            - crop: The face image crop
+            - similarity: Similarity score to reference
+            - quality_score: Face quality score
+            - profile_score: Profile angle score
+            - single_person: Whether this is the only face in the image
+            - size: Face size in pixels
+            - filename: Source image filename
+        None if processing failed
+
+    Note:
+        This function is designed to be used with multiprocessing.Pool
+        for parallel processing of multiple face crops.
     """
     (
         img_file,
@@ -1895,19 +2203,46 @@ def process_face_crop(args):
 
 
 def save_best_face_crops(
-    images_folder,
-    output_folder,
-    max_images=10,
-    padding_factor=0.5,
-    min_confidence=0.85,
-    model="Facenet512",
-    detection_backend="retinaface",
-    prefer_profile=True,
-    enhance_quality=True,
-    min_face_size=(30, 30),
+    images_folder: str,
+    output_folder: str,
+    max_images: int = 10,
+    padding_factor: float = 0.5,
+    min_confidence: float = 0.85,
+    model: str = "Facenet512",
+    detection_backend: str = "retinaface",
+    prefer_profile: bool = True,
+    enhance_quality: bool = True,
+    min_face_size: Tuple[int, int] = (30, 30),
 ):
     """
     Select and save the best face crops from the main person's images using parallel processing.
+
+    This function analyzes all images of the main person to select the best quality
+    face crops, considering factors such as:
+    - Face quality (sharpness, lighting)
+    - Face size
+    - Similarity to reference embeddings
+    - Variety of face angles (frontal and profile)
+
+    Args:
+        images_folder (str): Folder containing source images of the main person
+        output_folder (str): Where to save the best face crops
+        max_images (int): Maximum number of crops to save
+        padding_factor (float): Amount of padding around face (0.0-1.0)
+        min_confidence (float): Minimum detection confidence
+        model (str): Face recognition model to use
+        detection_backend (str): Face detection backend to use
+        prefer_profile (bool): Whether to include profile views in selection
+        enhance_quality (bool): Whether to enhance image quality of crops
+        min_face_size (tuple): Minimum face dimensions (width, height)
+
+    Returns:
+        int: Number of face crops saved
+
+    Note:
+        This function uses parallel processing to efficiently analyze all images.
+        The saved crops are named with descriptive filenames indicating their
+        characteristics (profile/frontal, single/multi person, quality score).
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -2019,10 +2354,25 @@ def save_best_face_crops(
     return saved_count
 
 
-def detect_profile_angle(face_img):
+def detect_profile_angle(face_img: np.ndarray):
     """
-    Estimate if an image is a profile shot based on face landmarks.
-    Returns a score between 0 (frontal) and 1 (complete profile).
+    Detect if a face image shows a profile (side) view or frontal view.
+
+    This function uses facial landmarks to determine the face angle by:
+    1. Detecting facial landmarks using MediaPipe
+    2. Analyzing the relative positions of eyes and nose
+    3. Calculating a profile score based on facial symmetry
+
+    Args:
+        face_img (numpy.ndarray): Face image to analyze
+
+    Returns:
+        float: Profile score between 0.0 (frontal) and 1.0 (complete profile)
+
+    Note:
+        A score above 0.6 generally indicates a profile view, while
+        scores below 0.4 indicate frontal views. Scores in between
+        represent partial angles.
     """
     try:
         # Convert to grayscale
@@ -2074,8 +2424,24 @@ def detect_profile_angle(face_img):
 
 
 # At the top of the file, add these functions
-def safe_imread(img_path):
-    """Safely read an image and ensure it's in proper 8-bit format."""
+def safe_imread(img_path: str):
+    """
+    Safely read an image and ensure it's in proper 8-bit format.
+
+    This function handles various edge cases and errors that can occur when
+    reading images, ensuring that the returned image is in a consistent format.
+
+    Args:
+        img_path (str): Path to the image file
+
+    Returns:
+        numpy.ndarray or None: Image in BGR format with uint8 data type,
+                              or None if the image couldn't be read
+
+    Note:
+        This function is used throughout the codebase to ensure consistent
+        image handling and prevent errors due to image format issues.
+    """
     try:
         img = cv2.imread(img_path)
         if img is None:
@@ -2097,15 +2463,22 @@ def safe_imread(img_path):
         return None
 
 
-def ensure_valid_image(img):
+def ensure_valid_image(img: np.ndarray):
     """
     Ensure an image is in valid 8-bit format for OpenCV operations.
+
+    This function converts images to a consistent format, handling various
+    data types and value ranges that might be encountered.
 
     Args:
         img (numpy.ndarray): Input image
 
     Returns:
-        numpy.ndarray: Image in 8-bit format or None if invalid
+        numpy.ndarray: Image in BGR format with uint8 data type
+
+    Note:
+        This function is particularly useful when processing images from
+        different sources that might have inconsistent formats.
     """
     if img is None:
         return None
@@ -2122,7 +2495,7 @@ def ensure_valid_image(img):
 
 
 def safe_face_detection(
-    img_path, detector_backend="retinaface", enforce_detection=False
+    img_path: str, detector_backend: str = "retinaface", enforce_detection: bool = False
 ):
     """
     Perform face detection with proper error handling and image format validation.
@@ -2183,17 +2556,30 @@ def safe_face_detection(
         return []
 
 
-def safe_represent(img_path, model_name="Facenet512", enforce_detection=False):
+def safe_represent(
+    img_path: str, model_name: str = "Facenet512", enforce_detection: bool = False
+):
     """
     Get face embedding with proper error handling and image format validation.
 
+    This function safely extracts face embeddings from an image using the specified model.
+    It includes robust error handling and ensures proper image format before processing.
+
     Args:
-        img_path (str): Path to the image
-        model_name (str): Name of the embedding model
-        enforce_detection (bool): Whether to enforce detection
+        img_path (str): Path to the image file
+        model_name (str): Name of the embedding model to use. Options include:
+                         'Facenet512', 'VGG-Face', 'Facenet', 'OpenFace', 'DeepFace'
+        enforce_detection (bool): Whether to enforce face detection (will raise error if no face found)
 
     Returns:
-        list: List of embedding dictionaries or empty list if error
+        list: List of dictionaries containing face embeddings, or empty list if error occurred.
+              Each dictionary contains:
+              - 'embedding': numpy array of face embedding vector
+              - 'facial_area': coordinates of detected face
+
+    Note:
+        This function creates a temporary file during processing which is automatically cleaned up.
+        If multiple faces are detected, embeddings for all faces will be returned.
     """
     try:
         # First read and ensure proper format
@@ -2230,31 +2616,49 @@ def safe_represent(img_path, model_name="Facenet512", enforce_detection=False):
 
 
 def blur_non_main_faces(
-    img,
-    faces,
-    reference_embedding,
-    model="Facenet512",
-    verification_threshold=0.4,
-    most_frequent_label=None,
-    all_clusters=None,
-    all_embeddings=None,
+    img: np.ndarray,
+    faces: List[Dict[str, Any]],
+    reference_embedding: np.ndarray,
+    model: str = "Facenet512",
+    verification_threshold: float = 0.4,
+    most_frequent_label: Optional[int] = None,
+    all_clusters: Optional[Dict[int, List[int]]] = None,
+    all_embeddings: Optional[np.ndarray] = None,
 ):
     """
     Blur all faces in the image except for the main person.
-    Uses multiple verification steps to ensure accurate identification.
+
+    This function identifies the main person in an image by comparing face embeddings
+    with reference embeddings, then blurs all other faces. It also assigns each face
+    to its appropriate department/cluster for synchronized display.
 
     Args:
-        img: Input image
-        faces: List of detected faces with their locations
-        reference_embedding: Embedding of the main person's face (or list of embeddings)
-        model: Face recognition model to use
-        verification_threshold: Base threshold for face verification
-        most_frequent_label: Label of the most frequent person's cluster
-        all_clusters: Dictionary of all clusters for department assignment
-        all_embeddings: Array of all face embeddings
+        img (numpy.ndarray): Input image in BGR format
+        faces (list): List of detected faces with their locations and embeddings
+        reference_embedding (numpy.ndarray or list): Embedding(s) of the main person's face
+        model (str): Face recognition model used for embedding comparison
+        verification_threshold (float): Base threshold for face verification (0.0-1.0)
+        most_frequent_label (int): Label of the most frequent person's cluster
+        all_clusters (dict): Dictionary of all clusters for department assignment
+        all_embeddings (numpy.ndarray): Array of all face embeddings
 
     Returns:
-        Image with non-main faces blurred, and list of detected face data
+        tuple: (
+            numpy.ndarray: Image with non-main faces blurred,
+            list: Detected face data for synchronized display, each containing:
+                - embedding: Face embedding vector
+                - face_img: Face image
+                - position: (x, y, w, h) coordinates
+                - quality: Face quality score
+                - distance: Distance to reference embedding
+                - is_main_person: Boolean indicating if this is the main person
+                - cluster_label: Assigned cluster/department label
+                - size: Face size in pixels
+        )
+
+    Note:
+        The function uses adaptive thresholding based on face size and quality
+        to improve accuracy of main person identification.
     """
     img_with_blur = img.copy()
     detected_faces_data = []
@@ -2403,19 +2807,33 @@ def blur_non_main_faces(
 
 
 def create_synchronized_face_display(
-    all_detected_faces, cluster_data, output_path, face_size=(150, 150)
+    all_detected_faces: List[Dict[str, Any]],
+    cluster_data: Dict[int, List[int]],
+    output_path: str,
+    face_size: Tuple[int, int] = EPARTMENT_FACE_SIZE,
 ):
     """
     Create a synchronized display of all detected faces organized by departments/clusters.
 
+    This function generates a visual display of faces grouped by their assigned departments
+    (clusters). The main person's faces are highlighted with a green frame, and faces
+    within each department are sorted by quality. Department headers clearly separate
+    the different groups.
+
     Args:
-        all_detected_faces: List of detected face data from all images
-        cluster_data: Dictionary mapping cluster labels to face indices
-        output_path: Path to save the output image
-        face_size: Size to resize each face thumbnail
+        all_detected_faces (list): List of detected face data from all images
+        cluster_data (dict): Dictionary mapping cluster labels to face indices
+        output_path (str): Path where the output image will be saved
+        face_size (tuple): Size to resize each face thumbnail (width, height)
 
     Returns:
-        Path to the saved image
+        str or None: Path to the saved image, or None if no faces to display
+
+    Note:
+        - The main person's department is displayed first and highlighted in green
+        - Each face displays its quality score for better assessment
+        - Faces are limited to MAX_FACES_PER_CLUSTER per department to avoid overwhelming displays
+        - Unclustered faces are displayed at the bottom
     """
     if not all_detected_faces:
         print("No faces to display")
@@ -2817,7 +3235,7 @@ Workflow:
     output_group.add_argument(
         "--max-crops",
         type=int,
-        default=10,
+        default=MAX_BEST_CROPS,
         help="Maximum number of best face crops to save (default: 10)",
     )
 
