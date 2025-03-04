@@ -48,6 +48,16 @@ from sklearn.metrics.pairwise import euclidean_distances
 from multiprocessing import Pool, cpu_count
 from functools import partial
 import mediapipe as mp
+import logging
+
+# Configure logging to suppress warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress TensorFlow logging
+logging.getLogger("mediapipe").setLevel(logging.ERROR)  # Suppress MediaPipe logging
+logging.getLogger("matplotlib").setLevel(logging.ERROR)  # Suppress matplotlib warnings
+logging.getLogger("PIL").setLevel(logging.ERROR)  # Suppress PIL warnings
+
+# Disable scientific notation for numpy
+np.set_printoptions(suppress=True)
 
 #################################################################
 # CONSTANTS AND CONFIGURATION
@@ -64,7 +74,6 @@ FACE_QUALITY_THRESHOLD = 0.4
 
 # Clustering Settings
 CLUSTERING_THRESHOLD = 0.4  # Base threshold for DBSCAN clustering
-MIN_CLUSTER_SIZE = 1
 MODEL_SPECIFIC_THRESHOLDS = {
     "Facenet512": 0.35,  # Optimized for FaceNet512
     "VGG-Face": 0.45,
@@ -74,13 +83,13 @@ MODEL_SPECIFIC_THRESHOLDS = {
 }
 
 # Merging Settings
-MERGE_THRESHOLD = 0.5  # Base threshold for merging similar clusters
+MERGE_THRESHOLD = 0.1  # Base threshold for merging similar clusters
 MODEL_MERGE_THRESHOLDS = {
-    "Facenet512": 0.3,  # More permissive for merging with FaceNet512
-    "VGG-Face": 0.4,
-    "Facenet": 0.3,
+    "Facenet512": 0.2,  # More permissive for merging with FaceNet512
+    "VGG-Face": 0.2,
+    "Facenet": 0.2,
     "OpenFace": 0.2,
-    "DeepFace": 0.3,
+    "DeepFace": 0.2,
 }
 MERGE_VALIDATION_FACTOR = 1.2  # Multiplier for individual face validation threshold
 PHASE1_MERGE_FACTOR = 0.9  # Stricter threshold for phase 1 (multiplier)
@@ -450,7 +459,6 @@ def process_images(
     face_confidence=FACE_CONFIDENCE_THRESHOLD,
     face_size=MIN_FACE_SIZE,
     face_aspect_ratio=FACE_ASPECT_RATIO_RANGE[1],
-    min_cluster_size=MIN_CLUSTER_SIZE,
     backends=DETECTION_BACKENDS,
     models=EMBEDDING_MODELS,
     merge_threshold=MERGE_THRESHOLD,
@@ -471,7 +479,6 @@ def process_images(
         face_size (int): Minimum size in pixels for detected faces
         face_aspect_ratio (float): Maximum allowed aspect ratio for faces
         clustering_threshold (float): DBSCAN clustering distance threshold
-        min_cluster_size (int): Minimum number of faces to form a cluster
         backends (list): List of face detection backends to try
         models (list): List of face embedding models to use
         merge_threshold (float): Threshold for merging similar clusters
@@ -582,7 +589,6 @@ def process_images(
     # Perform DBSCAN clustering
     dbscan = DBSCAN(
         eps=optimized_threshold,
-        min_samples=min_cluster_size,
         metric="cosine",
         n_jobs=-1,
     )
@@ -714,18 +720,82 @@ def process_images(
     most_frequent_folder = os.path.join(output_folder, "most_frequent_person")
     os.makedirs(most_frequent_folder, exist_ok=True)
 
-    # Copy unique images to the output folder
-    for i, source in enumerate(unique_sources):
-        shutil.copy(
-            source,
-            os.path.join(
-                most_frequent_folder, f"image_{i+1}{os.path.splitext(source)[1]}"
-            ),
+    # Copy unique images to the output folder with non-main faces blurred
+    print(f"Processing {len(unique_sources)} images with face blurring...")
+
+    # Collect all detected faces for synchronized display
+    all_detected_faces = []
+
+    for i, source in tqdm(
+        enumerate(unique_sources),
+        total=len(unique_sources),
+        desc="Blurring non-main faces",
+    ):
+        # Read the source image
+        img = safe_imread(source)
+        if img is None:
+            continue
+
+        # Detect all faces in the image
+        faces = safe_face_detection(
+            source, detector_backend=backends[0], enforce_detection=False
         )
 
+        if faces:
+            # Get multiple reference embeddings from the most frequent person's cluster
+            # Use up to 5 different faces as reference for better matching
+            num_references = min(5, len(most_frequent_face_indices))
+            reference_embeddings = [
+                embeddings_array[most_frequent_face_indices[j]]
+                for j in range(num_references)
+            ]
+
+            # Blur non-main faces and get detected face data
+            img_with_blur, detected_faces = blur_non_main_faces(
+                img,
+                faces,
+                reference_embeddings,
+                model=used_model,
+                verification_threshold=optimized_threshold
+                * 1.2,  # Slightly more permissive
+                most_frequent_label=most_frequent_label,
+                all_clusters=cluster_counts,  # Pass all clusters for department assignment
+                all_embeddings=embeddings_array,  # Pass all embeddings
+            )
+
+            # Add detected faces to collection
+            all_detected_faces.extend(detected_faces)
+
+            # Save the processed image
+            output_path = os.path.join(
+                most_frequent_folder, f"image_{i+1}{os.path.splitext(source)[1]}"
+            )
+            cv2.imwrite(output_path, img_with_blur)
+        else:
+            # If no faces detected, just copy the original image
+            shutil.copy(
+                source,
+                os.path.join(
+                    most_frequent_folder, f"image_{i+1}{os.path.splitext(source)[1]}"
+                ),
+            )
+
     print(
-        f"Saved {len(unique_sources)} images of the most frequent person to {most_frequent_folder}"
+        f"Saved {len(unique_sources)} images of the most frequent person to {most_frequent_folder} (with non-main faces blurred)"
     )
+
+    # Create synchronized face display
+    if all_detected_faces:
+        print("Creating synchronized face display by departments...")
+        synchronized_display_path = os.path.join(output_folder, "face_departments.jpg")
+
+        create_synchronized_face_display(
+            all_detected_faces,
+            cluster_counts,  # Use all clusters for display
+            synchronized_display_path,
+        )
+
+        print(f"Face departments display saved to {synchronized_display_path}")
 
     # Save best face crops if requested
     if save_best_crops:
@@ -1739,6 +1809,92 @@ def enhance_face_crop(face_crop, preserve_skin_tone=True):
         return face_crop
 
 
+def process_face_crop(args):
+    """
+    Process a single face crop in parallel.
+    """
+    (
+        img_file,
+        img_path,
+        reference_embedding,
+        min_confidence,
+        model,
+        detection_backend,
+        min_face_size,
+        padding_factor,
+        enhance_quality,
+    ) = args
+
+    try:
+        faces = safe_face_detection(
+            img_path, detector_backend=detection_backend, enforce_detection=False
+        )
+
+        if not faces:
+            return None
+
+        # Get the largest face as reference
+        largest_face = max(
+            faces, key=lambda x: x["facial_area"]["w"] * x["facial_area"]["h"]
+        )
+        if largest_face["confidence"] < min_confidence:
+            return None
+
+        # Calculate adaptive padding based on face size
+        area = largest_face["facial_area"]
+        if area["w"] < min_face_size[0] or area["h"] < min_face_size[1]:
+            return None
+
+        size_factor = min(1.0, np.sqrt((area["w"] * area["h"]) / (224 * 224)))
+        adaptive_padding = padding_factor * (1.0 + size_factor)
+
+        # Extract face with padding
+        img = safe_imread(img_path)
+        if img is None:
+            return None
+
+        x = max(0, area["x"] - int(area["w"] * adaptive_padding))
+        y = max(0, area["y"] - int(area["h"] * adaptive_padding))
+        w = min(img.shape[1] - x, area["w"] + int(area["w"] * adaptive_padding * 2))
+        h = min(img.shape[0] - y, area["h"] + int(area["h"] * adaptive_padding * 2))
+
+        face_crop = img[y : y + h, x : x + w]
+
+        # Get face embedding
+        emb = safe_represent(img_path, model_name=model)
+        if not emb:
+            return None
+
+        # Compare with reference
+        similarity = 1 - cosine(emb[0]["embedding"], reference_embedding)
+
+        # Calculate quality metrics
+        quality_score = assess_face_quality(largest_face["face"])
+
+        # Detect if it's a profile shot
+        profile_score = detect_profile_angle(face_crop)
+
+        # Check if there are other faces in the image
+        single_person = len(faces) == 1
+
+        # Enhance if requested
+        if enhance_quality:
+            face_crop = enhance_face_crop(face_crop)
+
+        return {
+            "crop": face_crop,
+            "similarity": similarity,
+            "quality_score": quality_score,
+            "profile_score": profile_score,
+            "single_person": single_person,
+            "size": area["w"] * area["h"],
+            "filename": img_file,
+        }
+    except Exception as e:
+        print(f"Error processing crop from {img_file}: {e}")
+        return None
+
+
 def save_best_face_crops(
     images_folder,
     output_folder,
@@ -1752,20 +1908,7 @@ def save_best_face_crops(
     min_face_size=(30, 30),
 ):
     """
-    Select and save the best face crops from the main person's images.
-    Uses improved face detection and enhancement techniques.
-
-    Args:
-        images_folder: Folder containing source images
-        output_folder: Where to save the crops
-        max_images: Maximum number of crops to save
-        padding_factor: Amount of padding around face (adaptive)
-        min_confidence: Minimum detection confidence
-        model: Face recognition model
-        detection_backend: Face detection backend
-        prefer_profile: Whether to include profile views
-        enhance_quality: Whether to enhance image quality
-        min_face_size: Minimum face dimensions
+    Select and save the best face crops from the main person's images using parallel processing.
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -1784,24 +1927,12 @@ def save_best_face_crops(
     # Create reference embeddings from multiple images
     print("Creating reference embeddings...")
     reference_embeddings = []
-    for img_file in image_files[: min(10, len(image_files))]:
+    for img_file in image_files[: min(30, len(image_files))]:
         img_path = os.path.join(images_folder, img_file)
         try:
-            faces = safe_face_detection(
-                img_path, detector_backend=detection_backend, enforce_detection=False
-            )
-
-            if faces:
-                # Get the largest face as reference
-                largest_face = max(
-                    faces, key=lambda x: x["facial_area"]["w"] * x["facial_area"]["h"]
-                )
-                if largest_face["confidence"] >= min_confidence:
-                    emb = safe_represent(
-                        img_path, model_name=model, enforce_detection=False
-                    )
-                    if emb:
-                        reference_embeddings.append(emb[0]["embedding"])
+            emb = safe_represent(img_path, model_name=model, enforce_detection=False)
+            if emb:
+                reference_embeddings.append(emb[0]["embedding"])
         except Exception as e:
             print(f"Warning: Could not process reference image {img_file}: {e}")
             continue
@@ -1813,84 +1944,35 @@ def save_best_face_crops(
     # Calculate average reference embedding
     reference_embedding = np.mean(reference_embeddings, axis=0)
 
-    # Process all images and collect face candidates
-    print("Detecting and evaluating faces...")
-    face_candidates = []
+    # Prepare arguments for parallel processing
+    process_args = [
+        (
+            img_file,
+            os.path.join(images_folder, img_file),
+            reference_embedding,
+            min_confidence,
+            model,
+            detection_backend,
+            min_face_size,
+            padding_factor,
+            enhance_quality,
+        )
+        for img_file in image_files
+    ]
 
-    for img_file in tqdm(image_files, desc="Processing images"):
-        img_path = os.path.join(images_folder, img_file)
-        try:
-            # Read image
-            img = safe_imread(img_path)
-            if img is None:
-                continue
+    # Process face crops in parallel
+    print("Processing face crops in parallel...")
+    with Pool(max(1, cpu_count() - 1)) as pool:
+        face_candidates = list(
+            tqdm(
+                pool.imap(process_face_crop, process_args),
+                total=len(process_args),
+                desc="Processing face crops",
+            )
+        )
 
-            # Detect faces
-            faces = safe_face_detection(img_path, detector_backend=detection_backend)
-
-            for face_obj in faces:
-                if face_obj["confidence"] < min_confidence:
-                    continue
-
-                # Get face area
-                area = face_obj["facial_area"]
-                if area["w"] < min_face_size[0] or area["h"] < min_face_size[1]:
-                    continue
-
-                # Calculate adaptive padding based on face size
-                size_factor = min(1.0, np.sqrt((area["w"] * area["h"]) / (224 * 224)))
-                adaptive_padding = padding_factor * (1.0 + size_factor)
-
-                # Extract face with padding
-                x = max(0, area["x"] - int(area["w"] * adaptive_padding))
-                y = max(0, area["y"] - int(area["h"] * adaptive_padding))
-                w = min(
-                    img.shape[1] - x, area["w"] + int(area["w"] * adaptive_padding * 2)
-                )
-                h = min(
-                    img.shape[0] - y, area["h"] + int(area["h"] * adaptive_padding * 2)
-                )
-
-                face_crop = img[y : y + h, x : x + w]
-
-                # Get face embedding
-                temp_path = os.path.join(
-                    output_folder, f"temp_crop_{len(face_candidates)}.jpg"
-                )
-                cv2.imwrite(temp_path, face_crop)
-
-                emb = safe_represent(temp_path, model_name=model)
-                os.remove(temp_path)
-
-                if not emb:
-                    continue
-
-                # Compare with reference
-                similarity = 1 - cosine(emb[0]["embedding"], reference_embedding)
-
-                # Calculate quality metrics
-                quality_score = assess_face_quality(face_obj["face"])
-
-                # Detect if it's a profile shot
-                profile_score = detect_profile_angle(face_crop)
-
-                # Check if there are other faces in the image
-                single_person = len(faces) == 1
-
-                face_candidates.append(
-                    {
-                        "crop": face_crop,
-                        "similarity": similarity,
-                        "quality_score": quality_score,
-                        "profile_score": profile_score,
-                        "single_person": single_person,
-                        "size": area["w"] * area["h"],
-                    }
-                )
-
-        except Exception as e:
-            print(f"Error processing {img_file}: {e}")
-            continue
+    # Filter out None results and sort candidates
+    face_candidates = [fc for fc in face_candidates if fc is not None]
 
     if not face_candidates:
         print("No valid face crops found")
@@ -1917,10 +1999,6 @@ def save_best_face_crops(
         try:
             face_crop = candidate["crop"]
 
-            # Enhance if requested
-            if enhance_quality:
-                face_crop = enhance_face_crop(face_crop)
-
             # Save crop with descriptive filename
             crop_type = "profile" if candidate["profile_score"] > 0.6 else "frontal"
             persons = "single" if candidate["single_person"] else "multi"
@@ -1932,7 +2010,6 @@ def save_best_face_crops(
                 face_crop,
                 [int(cv2.IMWRITE_JPEG_QUALITY), 95],
             )
-
             saved_count += 1
 
         except Exception as e:
@@ -2153,6 +2230,440 @@ def safe_represent(img_path, model_name="Facenet512", enforce_detection=False):
         return []
 
 
+def blur_non_main_faces(
+    img,
+    faces,
+    reference_embedding,
+    model="Facenet512",
+    verification_threshold=0.4,
+    most_frequent_label=None,
+    all_clusters=None,
+    all_embeddings=None,
+):
+    """
+    Blur all faces in the image except for the main person.
+    Uses multiple verification steps to ensure accurate identification.
+
+    Args:
+        img: Input image
+        faces: List of detected faces with their locations
+        reference_embedding: Embedding of the main person's face (or list of embeddings)
+        model: Face recognition model to use
+        verification_threshold: Base threshold for face verification
+        most_frequent_label: Label of the most frequent person's cluster
+        all_clusters: Dictionary of all clusters for department assignment
+        all_embeddings: Array of all face embeddings
+
+    Returns:
+        Image with non-main faces blurred, and list of detected face data
+    """
+    img_with_blur = img.copy()
+    detected_faces_data = []
+
+    # Convert reference_embedding to list if it's a single embedding
+    if not isinstance(reference_embedding, list):
+        reference_embeddings = [reference_embedding]
+    else:
+        reference_embeddings = reference_embedding
+
+    # Sort faces by size (larger faces are more likely to be the main person)
+    faces = sorted(
+        faces, key=lambda x: x["facial_area"]["w"] * x["facial_area"]["h"], reverse=True
+    )
+
+    # Keep track of which faces to blur
+    faces_to_blur = []
+
+    # First pass: identify faces with high confidence
+    for face_idx, face_obj in enumerate(faces):
+        if (
+            face_obj["confidence"] < 0.1
+        ):  # Very low confidence threshold to catch more faces
+            faces_to_blur.append(face_idx)
+            continue
+
+        # Get face area
+        facial_area = face_obj["facial_area"]
+        x, y = facial_area["x"], facial_area["y"]
+        w, h = facial_area["w"], facial_area["h"]
+
+        # Skip very small faces
+        if w < 20 or h < 20:  # Lower threshold to catch more faces
+            faces_to_blur.append(face_idx)
+            continue
+
+        # Get face embedding
+        face_img = face_obj["face"]
+        face_img = ensure_valid_image(face_img)
+
+        # Save face temporarily
+        temp_face_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), f"temp_face_blur_{x}_{y}.jpg"
+        )
+        cv2.imwrite(temp_face_path, face_img)
+
+        # Get embedding from aligned face
+        embedding = safe_represent(
+            temp_face_path, model_name=model, enforce_detection=False
+        )
+
+        # Clean up temp file
+        if os.path.exists(temp_face_path):
+            os.remove(temp_face_path)
+
+        if embedding and len(embedding) > 0:
+            face_embedding = embedding[0]["embedding"]
+
+            # Calculate minimum distance across all reference embeddings
+            min_distance = float("inf")
+            for ref_emb in reference_embeddings:
+                distance = cosine(ref_emb, face_embedding)
+                min_distance = min(min_distance, distance)
+
+            # Adaptive threshold based on face size and quality
+            size_factor = min(1.0, np.sqrt((w * h) / (224 * 224)))
+            quality_score = assess_face_quality(face_img)
+
+            # More permissive threshold for high quality, large faces
+            adaptive_threshold = verification_threshold * (
+                1.2 + 0.3 * size_factor + 0.2 * quality_score
+            )
+
+            # Determine if this is the main person
+            is_main_person = min_distance <= adaptive_threshold
+
+            # Determine cluster/department assignment
+            assigned_cluster = None
+            if is_main_person:
+                assigned_cluster = most_frequent_label
+            elif all_clusters and all_embeddings is not None:
+                # Try to assign to a department/cluster
+                best_cluster = None
+                best_distance = float("inf")
+
+                # Compare with representatives from each cluster
+                for cluster_label, face_indices in all_clusters.items():
+                    if cluster_label == most_frequent_label:
+                        continue  # Skip main person's cluster
+
+                    # Use up to 3 representatives from each cluster
+                    num_representatives = min(3, len(face_indices))
+                    for i in range(num_representatives):
+                        idx = face_indices[i]
+                        cluster_embedding = all_embeddings[idx]
+                        distance = cosine(face_embedding, cluster_embedding)
+
+                        if (
+                            distance < best_distance and distance < 0.5
+                        ):  # Threshold for assignment
+                            best_distance = distance
+                            best_cluster = cluster_label
+
+                assigned_cluster = best_cluster
+
+            # Store face data for synchronized display
+            detected_faces_data.append(
+                {
+                    "embedding": face_embedding,
+                    "face_img": face_img,
+                    "position": (x, y, w, h),
+                    "quality": quality_score,
+                    "distance": min_distance,
+                    "is_main_person": is_main_person,
+                    "cluster_label": assigned_cluster,
+                }
+            )
+
+            # If this is not the main person, mark for blurring
+            if not is_main_person:
+                faces_to_blur.append(face_idx)
+        else:
+            # If we couldn't get embeddings, blur the face
+            faces_to_blur.append(face_idx)
+
+    # Second pass: apply blurring
+    for face_idx in faces_to_blur:
+        face_obj = faces[face_idx]
+        facial_area = face_obj["facial_area"]
+        x, y = facial_area["x"], facial_area["y"]
+        w, h = facial_area["w"], facial_area["h"]
+
+        # Extract face region
+        face_region = img_with_blur[y : y + h, x : x + w]
+
+        # Apply strong Gaussian blur
+        kernel_size = max(99, min(w, h) // 2)
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        blurred = cv2.GaussianBlur(face_region, (kernel_size, kernel_size), 30)
+
+        # Replace the region with blurred version
+        img_with_blur[y : y + h, x : x + w] = blurred
+
+    return img_with_blur, detected_faces_data
+
+
+def create_synchronized_face_display(
+    all_detected_faces, cluster_data, output_path, face_size=(150, 150)
+):
+    """
+    Create a synchronized display of all detected faces organized by departments/clusters.
+
+    Args:
+        all_detected_faces: List of detected face data from all images
+        cluster_data: Dictionary mapping cluster labels to face indices
+        output_path: Path to save the output image
+        face_size: Size to resize each face thumbnail
+
+    Returns:
+        Path to the saved image
+    """
+    if not all_detected_faces:
+        print("No faces to display")
+        return None
+
+    # Group faces by cluster (department)
+    faces_by_cluster = {}
+    unclustered_faces = []
+
+    # First, process faces with assigned clusters
+    for face_data in all_detected_faces:
+        if face_data["cluster_label"] is not None:
+            if face_data["cluster_label"] not in faces_by_cluster:
+                faces_by_cluster[face_data["cluster_label"]] = []
+            faces_by_cluster[face_data["cluster_label"]].append(face_data)
+        else:
+            # Try to assign to a cluster based on similarity
+            best_cluster = None
+            best_distance = float("inf")
+
+            for cluster_label, cluster_faces in faces_by_cluster.items():
+                if cluster_faces:
+                    # Compare with all faces in the cluster
+                    for cluster_face in cluster_faces:
+                        if "embedding" in cluster_face and "embedding" in face_data:
+                            distance = cosine(
+                                cluster_face["embedding"], face_data["embedding"]
+                            )
+                            if (
+                                distance < best_distance and distance < 0.45
+                            ):  # Stricter threshold for assignment
+                                best_distance = distance
+                                best_cluster = cluster_label
+
+            if best_cluster is not None:
+                # Assign to best matching cluster
+                face_data["cluster_label"] = best_cluster
+                faces_by_cluster[best_cluster].append(face_data)
+            else:
+                # Keep as unclustered
+                unclustered_faces.append(face_data)
+
+    # Sort clusters by size (number of faces)
+    sorted_clusters = sorted(
+        faces_by_cluster.keys(), key=lambda x: len(faces_by_cluster[x]), reverse=True
+    )
+
+    # Calculate layout
+    total_faces = sum(len(faces) for faces in faces_by_cluster.values()) + len(
+        unclustered_faces
+    )
+
+    # Determine grid dimensions based on number of clusters and faces
+    num_clusters = len(faces_by_cluster)
+
+    if num_clusters == 0:
+        print("No clusters to display")
+        return None
+
+    # Estimate rows and columns for the grid
+    faces_per_row = min(10, int(np.ceil(np.sqrt(total_faces))))
+
+    # Create a blank canvas with white background
+    # First calculate total height needed
+    total_height = 0
+
+    # Add title section
+    title_height = 60
+    total_height += title_height
+
+    # Add department sections
+    for cluster in sorted_clusters:
+        cluster_faces = faces_by_cluster[cluster]
+        rows_needed = int(np.ceil(len(cluster_faces) / faces_per_row))
+        total_height += (
+            rows_needed * face_size[1] + 60
+        )  # Add space for department header
+
+    # Add space for unclustered faces if any
+    if unclustered_faces:
+        rows_needed = int(np.ceil(len(unclustered_faces) / faces_per_row))
+        total_height += rows_needed * face_size[1] + 60
+
+    # Create canvas
+    canvas_width = faces_per_row * face_size[0]
+    canvas = np.ones((total_height, canvas_width, 3), dtype=np.uint8) * 255
+
+    # Draw title
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(
+        canvas,
+        "Face Departments - Organized by Similarity",
+        (10, 40),
+        font,
+        1.0,
+        (0, 0, 0),
+        2,
+    )
+
+    # Draw faces by department (cluster)
+    y_offset = title_height
+
+    # First draw the main person's department
+    main_cluster = sorted_clusters[0] if sorted_clusters else None
+
+    for cluster_idx, cluster in enumerate(sorted_clusters):
+        cluster_faces = faces_by_cluster[cluster]
+
+        # Determine if this is the main person's cluster
+        is_main_cluster = cluster == main_cluster
+
+        # Draw department header with different styling based on importance
+        header_color = (0, 100, 0) if is_main_cluster else (0, 0, 0)
+        header_text = f"Department {cluster}" + (
+            " (Main Person)" if is_main_cluster else ""
+        )
+
+        # Draw department separator line
+        cv2.line(
+            canvas,
+            (0, y_offset + 10),
+            (canvas_width, y_offset + 10),
+            (200, 200, 200),
+            2,
+        )
+
+        # Draw department header
+        cv2.putText(
+            canvas, header_text, (10, y_offset + 40), font, 0.9, header_color, 2
+        )
+        y_offset += 60
+
+        # Sort faces within department by quality and whether they're the main person
+        cluster_faces.sort(
+            key=lambda x: (x.get("is_main_person", False), x.get("quality", 0)),
+            reverse=True,
+        )
+
+        # Draw faces in this department
+        for i, face_data in enumerate(cluster_faces):
+            face_img = face_data["face_img"]
+
+            # Resize face to standard size
+            face_resized = cv2.resize(face_img, face_size)
+
+            # Calculate position
+            row = i // faces_per_row
+            col = i % faces_per_row
+
+            x = col * face_size[0]
+            y = y_offset + row * face_size[1]
+
+            # Place face on canvas
+            try:
+                canvas[y : y + face_size[1], x : x + face_size[0]] = face_resized
+
+                # Add green frame for main person
+                if face_data.get("is_main_person", False):
+                    cv2.rectangle(
+                        canvas,
+                        (x, y),
+                        (x + face_size[0], y + face_size[1]),
+                        (0, 255, 0),
+                        3,
+                    )
+
+                # Add quality score
+                quality = int(face_data.get("quality", 0) * 100)
+                cv2.putText(
+                    canvas,
+                    f"Q:{quality}",
+                    (x + 5, y + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    2,
+                )
+
+            except Exception as e:
+                print(f"Error placing face on canvas: {e}")
+                continue
+
+        # Update y_offset for next department
+        rows_used = int(np.ceil(len(cluster_faces) / faces_per_row))
+        y_offset += rows_used * face_size[1]
+
+    # Add unclustered faces if any
+    if unclustered_faces:
+        # Draw department separator line
+        cv2.line(
+            canvas,
+            (0, y_offset + 10),
+            (canvas_width, y_offset + 10),
+            (200, 200, 200),
+            2,
+        )
+
+        cv2.putText(
+            canvas,
+            f"Unassigned Faces",
+            (10, y_offset + 40),
+            font,
+            0.9,
+            (100, 100, 100),
+            2,
+        )
+        y_offset += 60
+
+        for i, face_data in enumerate(unclustered_faces):
+            face_img = face_data["face_img"]
+
+            # Resize face to standard size
+            face_resized = cv2.resize(face_img, face_size)
+
+            # Calculate position
+            row = i // faces_per_row
+            col = i % faces_per_row
+
+            x = col * face_size[0]
+            y = y_offset + row * face_size[1]
+
+            # Place face on canvas
+            try:
+                canvas[y : y + face_size[1], x : x + face_size[0]] = face_resized
+
+                # Add quality score
+                quality = int(face_data.get("quality", 0) * 100)
+                cv2.putText(
+                    canvas,
+                    f"Q:{quality}",
+                    (x + 5, y + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    2,
+                )
+            except Exception as e:
+                print(f"Error placing unclustered face on canvas: {e}")
+                continue
+
+    # Save the result
+    cv2.imwrite(output_path, canvas)
+    print(f"Saved synchronized face display to {output_path}")
+
+    return output_path
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -2268,6 +2779,7 @@ Workflow:
     viz_group.add_argument(
         "--visualize-clusters",
         action="store_true",
+        default=True,
         help="Visualize clusters before merging to help debug clustering results (default: disabled)",
     )
 
