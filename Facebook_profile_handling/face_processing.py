@@ -67,16 +67,16 @@ np.set_printoptions(suppress=True)
 # Face Detection Settings
 DETECTION_BACKENDS = ["retinaface", "mtcnn", "opencv", "ssd"]
 EMBEDDING_MODELS = ["Facenet512", "VGG-Face", "Facenet", "OpenFace", "DeepFace"]
-FACE_CONFIDENCE_THRESHOLD = 0.3
+FACE_CONFIDENCE_THRESHOLD = 0.4
 MIN_FACE_SIZE = 35
-FACE_ASPECT_RATIO_RANGE = (0.4, 2.0)  # (min, max) aspect ratio
+FACE_ASPECT_RATIO_RANGE = (0.5, 1.8)  # Tightened range for better face filtering
 FACE_QUALITY_THRESHOLD = 0.4
 
 # Clustering Settings
-CLUSTERING_THRESHOLD = 0.4  # Base threshold for DBSCAN clustering
+CLUSTERING_THRESHOLD = 0.35  # Base threshold for DBSCAN clustering
 MODEL_SPECIFIC_THRESHOLDS = {
-    "Facenet512": 0.35,  # Optimized for FaceNet512
-    "VGG-Face": 0.45,
+    "Facenet512": 0.30,  # Optimized for FaceNet512
+    "VGG-Face": 0.40,
     "Facenet": 0.40,
     "OpenFace": 0.35,
     "DeepFace": 0.45,
@@ -85,24 +85,23 @@ MODEL_SPECIFIC_THRESHOLDS = {
 # Merging Settings
 MERGE_THRESHOLD = 0.1  # Base threshold for merging similar clusters
 MODEL_MERGE_THRESHOLDS = {
-    "Facenet512": 0.2,  # More permissive for merging with FaceNet512
+    "Facenet512": 0.18,  # More permissive for merging with FaceNet512
     "VGG-Face": 0.2,
     "Facenet": 0.2,
     "OpenFace": 0.2,
     "DeepFace": 0.2,
 }
-MERGE_VALIDATION_FACTOR = 1.2  # Multiplier for individual face validation threshold
-PHASE1_MERGE_FACTOR = 0.9  # Stricter threshold for phase 1 (multiplier)
-PHASE2_MERGE_FACTOR = 1.1  # More permissive threshold for phase 2 (multiplier)
+MERGE_VALIDATION_FACTOR = 1.1  # Multiplier for individual face validation threshold
+PHASE1_MERGE_FACTOR = 0.85  # Stricter threshold for phase 1 (multiplier)
+PHASE2_MERGE_FACTOR = 1.0  # More permissive threshold for phase 2 (multiplier)
 
 # Image Processing Settings
 IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif"]
-STANDARD_FACE_SIZE = (224, 224)  # Size to resize faces for consistent comparison
+STANDARD_FACE_SIZE = (224, 224)  # Standard size for face comparison
 
 # Visualization Settings
-MAX_CLUSTERS_TO_DISPLAY = 20
-MAX_FACES_PER_CLUSTER = 6
-HIGHLIGHT_COLOR = (0, 1, 0)  # Green for main identity
+MAX_FACES_PER_CLUSTER = 8
+HIGHLIGHT_COLOR = (0, 255, 0)  # Green for main identity (fixed RGB format)
 
 #################################################################
 # HELPER FUNCTIONS AND UTILITIES
