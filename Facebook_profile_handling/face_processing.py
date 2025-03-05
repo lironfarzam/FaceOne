@@ -44,14 +44,16 @@ from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import pdist, squareform, cosine, euclidean
 from multiprocessing import Pool, cpu_count
 import mediapipe as mp
-import logging
 from typing import List, Dict, Tuple, Optional, Union, Any, Set, Callable, Sequence
+import sys
 
-# Configure logging to suppress warnings
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress TensorFlow logging
-logging.getLogger("mediapipe").setLevel(logging.ERROR)  # Suppress MediaPipe logging
-logging.getLogger("matplotlib").setLevel(logging.ERROR)  # Suppress matplotlib warnings
-logging.getLogger("PIL").setLevel(logging.ERROR)  # Suppress PIL warnings
+# Add the parent directory to sys.path to find the utils module
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from utils import load_config
+from utils import print_red, print_green, print_blue
+
+# Configure logging to ignore warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 # Disable scientific notation for numpy
 np.set_printoptions(suppress=True)
@@ -165,7 +167,7 @@ def assess_face_quality(face_img: np.ndarray, min_size: int = MIN_FACE_SIZE) -> 
         return max(0.0, min(1.0, quality_score))
 
     except Exception as e:
-        print(f"Error assessing face quality: {e}")
+        print_red(f"Error assessing face quality: {e}")
         return 0.0
 
 
@@ -227,7 +229,7 @@ def safe_face_detection(
                             )
                         face["face"] = face_img.astype(np.uint8)
         except Exception as e:
-            print(f"Face detection error: {e}")
+            print_red(f"Face detection error: {e}")
             faces = []
 
         # Clean up temp file
@@ -236,7 +238,7 @@ def safe_face_detection(
 
         return faces
     except Exception as e:
-        print(f"Error in face detection pipeline: {e}")
+        print_red(f"Error in face detection pipeline: {e}")
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return []
@@ -279,7 +281,7 @@ def enhance_image_for_detection(img: np.ndarray) -> np.ndarray:
         return enhanced
 
     except Exception as e:
-        print(f"Error enhancing image: {e}")
+        print_red(f"Error enhancing image: {e}")
         return img
 
 
@@ -346,7 +348,7 @@ def process_single_photo(
         # Read the image
         img = cv2.imread(img_path)
         if img is None:
-            print(f"Could not read image: {img_path}")
+            print_red(f"Could not read image: {img_path}")
             return results
 
         # Enhanced face detection strategy:
@@ -441,11 +443,11 @@ def process_single_photo(
                 results["used_models"].append(used_model)  # Store the model used
 
             except Exception as e:
-                print(f"Error processing face {i} in {img_file}: {e}")
+                print_red(f"Error processing face {i} in {img_file}: {e}")
                 continue
 
     except Exception as e:
-        print(f"Error processing image {img_file}: {e}")
+        print_red(f"Error processing image {img_file}: {e}")
 
     return results
 
@@ -606,7 +608,7 @@ def process_images(
         if any(f.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
     ]
 
-    print(f"Found {len(image_files)} images to process")
+    print_blue(f"Found {len(image_files)} images to process")
 
     # Calculate optimal batch size based on CPU count
     num_processes = max(1, cpu_count() - 1)  # Leave one CPU free
@@ -662,12 +664,12 @@ def process_images(
         source_filenames.extend(result["filenames"])
         used_models.extend(result["used_models"])  # Add this line
 
-    print(f"Detected {len(all_faces)} faces in total")
+    print_blue(f"Detected {len(all_faces)} faces in total")
 
     # Clustering and identification
     # Clustering and identification
     if len(all_faces) == 0:
-        print("No valid faces found")
+        print_red("No valid faces found")
         return None
 
     # Use the most common model for clustering
@@ -715,7 +717,7 @@ def process_images(
         if not os.path.exists(pre_merge_dir):
             os.makedirs(pre_merge_dir)
 
-        print("Visualizing clusters before merging...")
+        print_blue("Visualizing clusters before merging...")
 
         # Create dictionary for visualization
         pre_merge_dict = {}
@@ -729,7 +731,7 @@ def process_images(
                 valid_faces,
                 os.path.join(pre_merge_dir, "all_clusters_pre_merge.jpg"),
             )
-            print(
+            print_green(
                 f"Saved pre-merge visualization to {os.path.join(pre_merge_dir, 'all_clusters_pre_merge.jpg')}"
             )
 
@@ -745,7 +747,7 @@ def process_images(
                         title=f"Cluster {label}: {len(face_indices)} faces",
                     )
         except Exception as e:
-            print(f"Warning: Could not create pre-merge visualization: {e}")
+            print_red(f"Warning: Could not create pre-merge visualization: {e}")
 
     # Perform cluster merging with improved algorithm
     print("Performing cluster refinement to merge related identities...")
@@ -798,14 +800,14 @@ def process_images(
     cluster_sizes = {label: len(indices) for label, indices in cluster_counts.items()}
 
     if not cluster_sizes:
-        print("No valid clusters found")
+        print_red("No valid clusters found")
         return None
 
     # Get the most frequent person
     most_frequent_label = max(cluster_sizes, key=cluster_sizes.get)
     most_frequent_count = cluster_sizes[most_frequent_label]
 
-    print(f"Most frequent person appears {most_frequent_count} times")
+    print_green(f"Most frequent person appears {most_frequent_count} times")
 
     # Get the face indices for the most frequent person
     most_frequent_face_indices = cluster_counts[most_frequent_label]
@@ -814,14 +816,16 @@ def process_images(
     most_frequent_sources = [valid_face_sources[i] for i in most_frequent_face_indices]
     unique_sources = set(most_frequent_sources)
 
-    print(f"Found {len(unique_sources)} unique images with the most frequent person")
+    print_green(
+        f"Found {len(unique_sources)} unique images with the most frequent person"
+    )
 
     # Create a folder for the most frequent person's images
     most_frequent_folder = os.path.join(output_folder, "most_frequent_person")
     os.makedirs(most_frequent_folder, exist_ok=True)
 
     # Copy unique images to the output folder with non-main faces blurred
-    print(f"Processing {len(unique_sources)} images with face blurring...")
+    print_blue(f"Processing {len(unique_sources)} images with face blurring...")
 
     # Collect all detected faces for synchronized display
     all_detected_faces = []
@@ -880,13 +884,13 @@ def process_images(
                 ),
             )
 
-    print(
+    print_green(
         f"Saved {len(unique_sources)} images of the most frequent person to {most_frequent_folder} (with non-main faces blurred)"
     )
 
     # Create synchronized face display
     if all_detected_faces:
-        print("Creating synchronized face display by departments...")
+        print_blue("Creating synchronized face display by departments...")
         synchronized_display_path = os.path.join(output_folder, "face_departments.jpg")
 
         create_synchronized_face_display(
@@ -895,7 +899,7 @@ def process_images(
             synchronized_display_path,
         )
 
-        print(f"Face departments display saved to {synchronized_display_path}")
+        print_green(f"Face departments display saved to {synchronized_display_path}")
 
     # Save best face crops if requested
     if save_best_crops:
@@ -912,6 +916,16 @@ def process_images(
             detection_backend=backends[0],
             prefer_profile=True,  # Prefer profile views
             enhance_quality=True,
+        )
+
+        # copy the best face crops images to the folder in config["input_source_folder"]
+        for file in os.listdir(best_crops_folder):
+            shutil.copy(
+                os.path.join(best_crops_folder, file),
+                os.path.join(config["input_source_folder"], file),
+            )
+        print_green(
+            f"Best face crops saved to {os.path.join(config['input_source_folder'])}"
         )
 
     return most_frequent_folder
@@ -955,7 +969,7 @@ def visualize_clusters(
 
     # Skip if no clusters
     if not cluster_face_indices:
-        print("No clusters to visualize")
+        print_red("No clusters to visualize")
         return
 
     # Calculate total faces and grid size
@@ -1154,7 +1168,7 @@ def analyze_face_attributes(face_path: str, attributes: Optional[List[str]] = No
             return result[0]
         return result
     except Exception as e:
-        print(f"Error analyzing face attributes: {e}")
+        print_red(f"Error analyzing face attributes: {e}")
         return {}
 
 
@@ -1211,7 +1225,7 @@ def export_cluster_data(
 
         f.write("\nEnd of Report\n")
 
-    print(f"Cluster report saved to {report_path}")
+    print_green(f"Cluster report saved to {report_path}")
 
 
 def compare_face_embeddings(
@@ -1647,7 +1661,7 @@ def visualize_all_clusters(
     n_clusters = len(sorted_clusters)
 
     if n_clusters == 0:
-        print("No clusters to visualize")
+        print_red("No clusters to visualize")
         return
 
     # Create figure with subplots for each cluster
@@ -1692,7 +1706,7 @@ def visualize_all_clusters(
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    print(f"Saved cluster visualization to {output_path}")
+    print_green(f"Saved cluster visualization to {output_path}")
 
 
 def extract_face_frames(
@@ -1745,10 +1759,10 @@ def extract_face_frames(
             # Read the image
             img = cv2.imread(img_path)
             if img is None:
-                print(f"Could not read image: {img_path}")
+                print_red(f"Could not read image: {img_path}")
                 continue
 
-            # Detect faces with high confidence threshold
+            # Detect faces with ahigh confidence threshold
             for backend in DETECTION_BACKENDS:
                 try:
                     detected_faces = DeepFace.extract_faces(
@@ -1813,7 +1827,7 @@ def extract_face_frames(
                 frame_count += 1
 
         except Exception as e:
-            print(f"Error processing image for frames: {img_file} - {e}")
+            print_red(f"Error processing image for frames: {img_file} - {e}")
 
     return frame_count
 
@@ -1862,12 +1876,12 @@ def highlight_main_person_faces(
     ]
 
     if len(image_files) == 0:
-        print(f"No images found in {images_folder}")
+        print_red(f"No images found in {images_folder}")
         return 0
 
     # Use more images for the reference
     num_reference_images = min(10, len(image_files))
-    print(
+    print_blue(
         f"Using {num_reference_images} images to create reference embedding for highlighting"
     )
 
@@ -1907,14 +1921,16 @@ def highlight_main_person_faces(
                     if os.path.exists(temp_face_path):
                         os.remove(temp_face_path)
         except Exception as e:
-            print(f"Error processing reference image {img_file}: {e}")
+            print_red(f"Error processing reference image {img_file}: {e}")
             continue
 
     if len(reference_embeddings) == 0:
-        print("Could not create reference embeddings for the main person")
+        print_red("Could not create reference embeddings for the main person")
         return 0
 
-    print(f"Created {len(reference_embeddings)} reference embeddings for highlighting")
+    print_green(
+        f"Created {len(reference_embeddings)} reference embeddings for highlighting"
+    )
 
     # Create average reference embedding
     reference_embedding = np.mean(reference_embeddings, axis=0)
@@ -1926,7 +1942,9 @@ def highlight_main_person_faces(
     model_threshold = MODEL_SPECIFIC_THRESHOLDS.get(model, 0.4)
     verification_threshold = model_threshold * 1.2  # Increase threshold by 20%
 
-    print(f"Using verification threshold of {verification_threshold} for model {model}")
+    print_blue(
+        f"Using verification threshold of {verification_threshold} for model {model}"
+    )
 
     for img_file in tqdm(image_files, desc="Highlighting faces"):
         img_path = os.path.join(images_folder, img_file)
@@ -1935,7 +1953,7 @@ def highlight_main_person_faces(
             # Read the image safely
             img = safe_imread(img_path)
             if img is None:
-                print(f"Could not read image: {img_path}")
+                print_red(f"Could not read image: {img_path}")
                 continue
 
             # Make a copy to draw on
@@ -1949,7 +1967,7 @@ def highlight_main_person_faces(
             )
 
             if not faces:
-                print(f"No faces detected in {img_file}")
+                print_red(f"No faces detected in {img_file}")
                 continue
 
             main_person_found = False
@@ -2013,10 +2031,10 @@ def highlight_main_person_faces(
                 processed_count += 1
 
         except Exception as e:
-            print(f"Error processing image {img_file}: {e}")
+            print_red(f"Error processing image {img_file}: {e}")
             continue
 
-    print(f"Highlighted main person in {processed_count} images")
+    print_green(f"Highlighted main person in {processed_count} images")
     return processed_count
 
 
@@ -2082,7 +2100,7 @@ def enhance_face_crop(face_crop: np.ndarray, preserve_skin_tone: bool = True):
         return enhanced_bgr
 
     except Exception as e:
-        print(f"Warning: Enhancement failed, returning original image: {e}")
+        print_red(f"Warning: Enhancement failed, returning original image: {e}")
         return face_crop
 
 
@@ -2198,7 +2216,7 @@ def process_face_crop(args):
             "filename": img_file,
         }
     except Exception as e:
-        print(f"Error processing crop from {img_file}: {e}")
+        print_red(f"Error processing crop from {img_file}: {e}")
         return None
 
 
@@ -2255,11 +2273,11 @@ def save_best_face_crops(
     ]
 
     if not image_files:
-        print(f"No images found in {images_folder}")
+        print_red(f"No images found in {images_folder}")
         return 0
 
     # Create reference embeddings from multiple images
-    print("Creating reference embeddings...")
+    print_blue("Creating reference embeddings...")
     reference_embeddings = []
     for img_file in image_files[: min(30, len(image_files))]:
         img_path = os.path.join(images_folder, img_file)
@@ -2272,7 +2290,7 @@ def save_best_face_crops(
             continue
 
     if not reference_embeddings:
-        print("Could not create reference embeddings")
+        print_red("Could not create reference embeddings")
         return 0
 
     # Calculate average reference embedding
@@ -2295,7 +2313,7 @@ def save_best_face_crops(
     ]
 
     # Process face crops in parallel
-    print("Processing face crops in parallel...")
+    print_blue("Processing face crops in parallel...")
     with Pool(max(1, cpu_count() - 1)) as pool:
         face_candidates = list(
             tqdm(
@@ -2309,7 +2327,7 @@ def save_best_face_crops(
     face_candidates = [fc for fc in face_candidates if fc is not None]
 
     if not face_candidates:
-        print("No valid face crops found")
+        print_red("No valid face crops found")
         return 0
 
     # Sort candidates by multiple criteria
@@ -2347,10 +2365,10 @@ def save_best_face_crops(
             saved_count += 1
 
         except Exception as e:
-            print(f"Error saving crop {i}: {e}")
+            print_red(f"Error saving crop {i}: {e}")
             continue
 
-    print(f"Saved {saved_count} best face crops to {output_folder}")
+    print_green(f"Saved {saved_count} best face crops to {output_folder}")
     return saved_count
 
 
@@ -2459,7 +2477,7 @@ def safe_imread(img_path: str):
 
         return img
     except Exception as e:
-        print(f"Error reading image {img_path}: {e}")
+        print_red(f"Error reading image {img_path}: {e}")
         return None
 
 
@@ -2541,7 +2559,7 @@ def safe_face_detection(
                             )
                         face["face"] = face_img.astype(np.uint8)
         except Exception as e:
-            print(f"Face detection error: {e}")
+            print_red(f"Face detection error: {e}")
             faces = []
 
         # Clean up temp file
@@ -2550,7 +2568,7 @@ def safe_face_detection(
 
         return faces
     except Exception as e:
-        print(f"Error in face detection pipeline: {e}")
+        print_red(f"Error in face detection pipeline: {e}")
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return []
@@ -2600,7 +2618,7 @@ def safe_represent(
                 enforce_detection=enforce_detection,
             )
         except Exception as e:
-            print(f"Face embedding error: {e}")
+            print_red(f"Face embedding error: {e}")
             embedding = []
 
         # Clean up temp file
@@ -2609,7 +2627,7 @@ def safe_represent(
 
         return embedding
     except Exception as e:
-        print(f"Error in embedding pipeline: {e}")
+        print_red(f"Error in embedding pipeline: {e}")
         if "temp_path" in locals() and os.path.exists(temp_path):
             os.remove(temp_path)
         return []
@@ -3013,7 +3031,7 @@ def create_synchronized_face_display(
                 )
 
             except Exception as e:
-                print(f"Error placing face on canvas: {e}")
+                print_red(f"Error placing face on canvas: {e}")
                 continue
 
         # Update y_offset for next department
@@ -3071,17 +3089,19 @@ def create_synchronized_face_display(
                     2,
                 )
             except Exception as e:
-                print(f"Error placing unclustered face on canvas: {e}")
+                print_red(f"Error placing unclustered face on canvas: {e}")
                 continue
 
     # Save the result
     cv2.imwrite(output_path, canvas)
-    print(f"Saved synchronized face display to {output_path}")
+    print_green(f"Saved synchronized face display to {output_path}")
 
     return output_path
 
 
 if __name__ == "__main__":
+
+    config = load_config()
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -3116,13 +3136,13 @@ Workflow:
     io_group.add_argument(
         "--input",
         "-i",
-        default="./downloaded_photos",
+        default=config["download_photo_folder"],
         help="Input folder containing images to process (default: ./downloaded_photos)",
     )
     io_group.add_argument(
         "--output",
         "-o",
-        default="faces_output",
+        default=config["facebook_output_folder"],
         help="Output folder for all results including detected faces, clusters, and the most frequent person (default: faces_output)",
     )
 

@@ -1,4 +1,16 @@
 {
+
+  "1.download_images": "- - - - -",
+  "profile_url":"https://www.facebook.com/liron.farzam",
+  "download_photo_folder": "./downloaded_photos",
+  "-": "- - - - -",
+
+  "2.face_processing": "- - - - -",
+  "facebook_output_folder": "./facebook_output",
+
+
+
+
   "num_of_workers": 8,
   "show_3d_plot": false,
   "create_new_data": false,

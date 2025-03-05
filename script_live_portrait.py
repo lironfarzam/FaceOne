@@ -1,21 +1,9 @@
 import os
 import subprocess
-import json
 import cv2
 
-
-def load_config(config_path: str = "0-FaceOne/config.json") -> dict:
-    """Load configuration from JSON file.
-
-    Args:
-        config_path (str, optional): Path to the configuration file. Defaults to "config.json".
-
-    Returns:
-        dict: Configuration dictionary.
-    """
-
-    with open(config_path, "r") as f:
-        return json.load(f)
+from utils import load_config
+from utils import print_green, print_red, print_blue
 
 
 def generate_video_with_liveportrait(
@@ -53,9 +41,9 @@ def generate_video_with_liveportrait(
 
     try:
         subprocess.run(command, check=True)
-        print(f"Generated video saved to {output_file}")
+        print_green(f"Generated video saved to {output_file}")
     except subprocess.CalledProcessError as e:
-        print(f"Error during video generation: {e}")
+        print_red(f"Error during video generation: {e}")
 
 
 def process_folders(input_folder: str, video_folder: str, output_folder: str) -> None:
@@ -121,7 +109,7 @@ def extract_frames_from_video(
         frame_index += 1
 
     cap.release()
-    print(f"Frames saved for video: {video_path}")
+    print_green(f"Frames saved for video: {video_path}")
 
 
 def process_output_videos(

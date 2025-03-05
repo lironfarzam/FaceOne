@@ -1,23 +1,44 @@
-print("Start: Download images from Facebook profiles")
+"""
+Download images from Facebook profiles
+====================================
+
+This module provides functionality to download images from Facebook profiles.
+
+Usage:
+    from Facebook_profile_handling.download_images import download_user_photos
+
+    download_user_photos(profile_url="https://www.facebook.com/liron.farzam", download_folder="./photos")
+
+The `download_user_photos` function takes a Facebook profile URL and a download folder path as input.
+
+Authors: Liron Farzam
+"""
+
+import json
 import os
 import time
+from typing import List
+from xml.etree.ElementTree import SubElement
 import requests
-import re
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
 from PIL import Image
 from io import BytesIO
+import sys
+
+# Add the parent directory to sys.path to find the utils module
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from utils import load_config
+from utils import print_red, print_green, print_blue
+
+print_blue("Start: Download images from Facebook profiles")
+
+config = load_config()
 
 # List of profile URLs to download photos from
-PROFILE_URLS = [
-    "https://www.facebook.com/liron.farzam",
-]
-
-PHOTO_FOLDER = "downloaded_photos"
+PROFILE_URLS = [config["profile_url"]]
+DOWNLOAD_PHOTO_FOLDER = config["download_photo_folder"]
 
 # Photo section URLs to visit
 PHOTO_URLS = [
@@ -30,12 +51,19 @@ processed_links = set()
 
 
 # Function to scroll down the page to load more images
-def scroll_down(driver, scroll_pause_time=2):
+def scroll_down(driver: webdriver.Chrome, scroll_pause_time: int = 1) -> None:
+    """Scroll down the page to load more images
+
+    Args:
+        driver (webdriver.Chrome): The Chrome driver instance
+        scroll_pause_time (int, optional): The time to pause between scrolls. Defaults to 2.
+    """
+
     # Get scroll height
     last_height = driver.execute_script("return document.body.scrollHeight")
 
     # Number of scrolls (adjust as needed)
-    scrolls = 3
+    scrolls = 5
 
     for i in range(scrolls):
         # Scroll down to bottom
@@ -53,8 +81,15 @@ def scroll_down(driver, scroll_pause_time=2):
 
 
 # Function to check if image is visible and of good size
-def is_visual_image(img):
-    """Check if an image element is likely a visual image (not icon/spacer)"""
+def is_visual_image(img: SubElement) -> bool:
+    """Check if an image element is likely a visual image (not icon/spacer)
+
+    Args:
+        img (SubElement): The image element to check
+
+    Returns:
+        bool: True if the image is likely a visual image, False otherwise
+    """
     try:
         # Check if image is displayed
         if not img.is_displayed():
@@ -84,10 +119,16 @@ def is_visual_image(img):
 
 
 # Function to extract visually displayed images
-def extract_image_links(driver):
-    """Extract links of visually displayed images from the page"""
-    all_imgs = driver.find_elements(By.TAG_NAME, "img")
+def extract_image_links(driver: webdriver.Chrome) -> List[str]:
+    """Extract links of visually displayed images from the page
 
+    Args:
+        driver (webdriver.Chrome): The Chrome driver instance
+
+    Returns:
+        List[str]: A list of image links
+    """
+    all_imgs = driver.find_elements(By.TAG_NAME, "img")
     # Filter images based on visual properties
     visual_imgs = [img for img in all_imgs if is_visual_image(img)]
     print(
@@ -109,8 +150,15 @@ def extract_image_links(driver):
 
 
 # Function to verify image quality
-def is_valid_photo(image_data):
-    """Check if the downloaded image data is likely a photo (not an icon)"""
+def is_valid_photo(image_data: bytes) -> bool:
+    """Check if the downloaded image data is likely a photo (not an icon)
+
+    Args:
+        image_data (bytes): The image data to check
+
+    Returns:
+        bool: True if the image is likely a photo, False otherwise
+    """
     try:
         # Minimum file size (15KB) - adjust as needed
         if len(image_data) < 15 * 1024:
@@ -127,8 +175,16 @@ def is_valid_photo(image_data):
 
 
 # Function to download a single image
-def download_image(link, download_folder):
-    """Download a single image from the given link"""
+def download_image(link: str, download_folder: str) -> bool:
+    """Download a single image from the given link
+
+    Args:
+        link (str): The link to the image to download
+        download_folder (str): The folder to save the image to
+
+    Returns:
+        bool: True if the image was downloaded successfully, False otherwise
+    """
     try:
         response = requests.get(link)
         if response.status_code == 200:
@@ -152,18 +208,24 @@ def download_image(link, download_folder):
 
             with open(filename, "wb") as f:
                 f.write(response.content)
-            print("Photo downloaded: ", filename)
+            print_green(f"Photo downloaded: {filename}")
             return True
         else:
-            print("Photo not downloaded (status code error): ", link)
+            print_red(f"Photo not downloaded (status code error): {link}")
             return False
     except Exception as e:
-        print(f"Error downloading image {link}: {e}")
+        print_red(f"Error downloading image {link}: {e}")
         return False
 
 
 # Function to download images from a user's profile
-def download_user_photos(profile_url, download_folder):
+def download_user_photos(profile_url: str, download_folder: str) -> None:
+    """Download images from a user's profile
+
+    Args:
+        profile_url (str): The URL of the user's profile
+        download_folder (str): The folder to save the images to
+    """
     global processed_links
     processed_links.clear()  # Reset processed links for each profile
 
@@ -197,7 +259,7 @@ def download_user_photos(profile_url, download_folder):
         for photo_url in PHOTO_URLS:
             section_url = profile_url + photo_url
             driver.get(section_url)
-            time.sleep(5)  # Wait for the profile to load
+            time.sleep(15)  # Wait for the profile to load
             print("Profile section loaded: ", section_url)
 
             # Scroll down to load more images
@@ -214,8 +276,12 @@ def download_user_photos(profile_url, download_folder):
                     download_count += 1
                 processed_links.add(link)  # Mark as processed
 
-        print(f"Total photos downloaded: {download_count}")
-        print(f"Total links processed: {len(processed_links)}")
+        print_green(f"Total photos downloaded trying to download: {download_count}")
+        print_green(f"Total photos downloaded: {len(os.listdir(download_folder))}")
+        print_green(f"Total links processed: {len(processed_links)}")
+        print_green(
+            f"Percentage of photos downloaded: {download_count/len(processed_links) * 100}%"
+        )
 
     finally:
         driver.quit()
@@ -223,6 +289,4 @@ def download_user_photos(profile_url, download_folder):
 
 # Example usage for multiple profiles
 for profile_url in PROFILE_URLS:
-    download_user_photos(
-        profile_url, PHOTO_FOLDER
-    )  # Replace with the actual profile link
+    download_user_photos(profile_url, DOWNLOAD_PHOTO_FOLDER)
