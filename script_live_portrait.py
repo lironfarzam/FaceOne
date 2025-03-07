@@ -2,8 +2,8 @@ import os
 import subprocess
 import cv2
 
-from utils import load_config
-from utils import print_green, print_red, print_blue
+from cool_utils import load_config
+from cool_utils import print_green, print_red, print_blue
 
 
 def generate_video_with_liveportrait(
@@ -140,6 +140,21 @@ if __name__ == "__main__":
     # Setup environment if CPU usage is required
     if config.get("use_cpu", False):
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+    print_blue("Starting Live Portrait Generator")
+    print("input_source_folder: ", config["input_source_folder"])
+    print("input_video_folder: ", config["input_video_folder"])
+    print("output_video_folder: ", config["output_video_folder"])
+    print("positives_folder: ", config["positives_folder"])
+    print("anchors_folder: ", config["anchors_folder"])
+    print("use_cpu: ", config["use_cpu"])
+
+    # folder = config["input_source_folder"]
+    # for image_path in os.listdir(folder):
+    #     print("image_path: ", image_path)
+    #     cv2.imshow("image", cv2.imread(os.path.join(folder, image_path)))
+    #     cv2.waitKey(0)
+    #     cv2.destroyAllWindows()
 
     # Process folders for video generation
     process_folders(

@@ -49,8 +49,8 @@ import sys
 
 # Add the parent directory to sys.path to find the utils module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from utils import load_config
-from utils import print_red, print_green, print_blue
+from cool_utils import load_config
+from cool_utils import print_red, print_green, print_blue
 
 # Configure logging to ignore warnings
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"

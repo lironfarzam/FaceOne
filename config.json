@@ -1,15 +1,25 @@
 {
 
-  "1.download_images": "- - - - -",
+  "1.download_images": "- - - - - - - - - - - - - - - - - - - - - - - - - - ",
   "profile_url":"https://www.facebook.com/liron.farzam",
   "download_photo_folder": "./downloaded_photos",
-  "-": "- - - - -",
+  "-": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ",
 
-  "2.face_processing": "- - - - -",
+  "2.face_processing": "- - - - - - - - - - - - - - - - - - - - - - - - - - ",
   "facebook_output_folder": "./facebook_output",
+  "--": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -",
 
-
-
+  "3.live_portrait": "- - - - - - - - - - - - - - - - - - - - - - - - - - - ",
+  "input_source_folder": "./Live_portrait/NN_LiveProtrait/Source_Images/",
+  "input_video_folder": "./Live_portrait/NN_LiveProtrait/Source_Video/",
+  "output_video_folder": "./Live_portrait/NN_LiveProtrait/Output/",
+  "use_cpu": true,
+  "frame_interval": 5,
+  "animation_region": "all",
+  "audio_priority": "driving",
+  "do_pasteback": true,
+  "do_crop": true,
+  "---": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -",
 
   "num_of_workers": 8,
   "show_3d_plot": false,
@@ -21,10 +31,6 @@
   "path_for_positives_embeddings": "./model/positive_embeddings.json",
   "chrome_extension_embeddings_path": "./chrome_extensions/models/embeddings/positive_embeddings.json",
   "run_on_gpu": true,
-  "input_source_folder": "./Live_portrait/NN_LiveProtrait/Source_Images/",
-  "input_video_folder": "./Live_portrait/NN_LiveProtrait/Source_Video/",
-  "output_video_folder": "./Live_portrait/NN_LiveProtrait/Output/",
-  "use_cpu": true,
   "fallback_env_var": "PYTORCH_ENABLE_MPS_FALLBACK=1",
   "positives_folder": "./imgs/positives/",
   "anchors_folder": "./imgs/anchors/",
