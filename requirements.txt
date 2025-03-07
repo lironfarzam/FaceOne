@@ -1,0 +1,21 @@
+# requirements.txt
+
+# install all the requirements
+# pip install -r requirements.txt
+
+# requirements for the project:
+selenium
+opencv-python
+numpy
+deepface
+tqdm
+matplotlib
+scikit-learn
+scipy
+mediapipe
+pillow
+requests
+
+tensorflow
+tensorflowjs
+
