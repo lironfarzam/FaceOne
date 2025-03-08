@@ -10,6 +10,8 @@ Welcome to the Live Portrait Generator! This tool brings your still photos to li
 - **Use Any Driving Video**: The movements can come from any video with a face
 - **Extract Frames**: Automatically save frames from generated videos for further use
 - **Customize Settings**: Control various aspects of the animation through the config file
+- **Parallel Processing**: Generate multiple videos simultaneously for faster results
+- **GPU Acceleration**: Utilize NVIDIA, AMD, or Apple Silicon GPUs for faster processing
 
 ### Quick Start
 
@@ -17,6 +19,115 @@ Welcome to the Live Portrait Generator! This tool brings your still photos to li
 2. Place your driving videos in the `NN_LiveProtrait/Source_Video/` folder
 3. Run the script: `python live_portrait_generator.py`
 4. Find your animated videos in the `NN_LiveProtrait/Output/` folder
+
+### GPU Support
+
+The Live Portrait Generator now includes comprehensive GPU support for faster processing:
+
+- **Automatic Detection**: Automatically detects and uses available GPU hardware
+- **Multiple GPU Types**: Supports NVIDIA (CUDA), AMD (ROCm), and Apple Silicon (MPS) GPUs
+- **Half Precision**: Uses FP16 (half precision) for faster GPU processing when available
+- **Memory Management**: Configurable GPU memory usage to prevent out-of-memory errors
+- **Fallback Options**: Gracefully falls back to CPU when GPU is unavailable or disabled
+
+To control GPU usage:
+
+```
+# Force CPU usage (even if GPU is available)
+python live_portrait_generator.py --cpu
+
+# Force GPU usage (will still fall back to CPU if no GPU is available)
+python live_portrait_generator.py --gpu
+```
+
+Configure GPU behavior in your config.json:
+
+```json
+{
+  "force_cpu": false,           // Set to true to force CPU usage
+  "enable_mps": true,           // Enable Apple Silicon GPU support
+  "use_half_precision": true,   // Use FP16 for faster GPU processing
+  "cuda_memory_fraction": 0.8,  // Limit GPU memory usage to 80%
+  ...
+}
+```
+
+### Parallel Processing
+
+The Live Portrait Generator now supports parallel processing to significantly speed up video generation:
+
+- **Multiple Workers**: Automatically uses all available CPU cores for maximum performance
+- **Configurable**: Set the number of parallel workers in the config file or command line
+- **Progress Tracking**: Shows real-time progress for all parallel operations
+- **Error Handling**: Continues processing even if some combinations fail
+
+To specify the number of workers manually:
+
+```
+python live_portrait_generator.py --workers 8
+```
+
+Or set it in your config.json:
+
+```json
+{
+  "num_of_workers": 8,
+  ...
+}
+```
+
+### Progress Tracking
+
+The Live Portrait Generator uses Rich's progress tracking to provide beautiful, informative progress bars during processing. These progress bars show:
+
+- Current operation description
+- Percentage complete
+- Visual progress indicator
+- Estimated time remaining
+- Processing speed
+
+This makes it easy to monitor long-running operations like video generation and frame extraction.
+
+#### Rich's `track` vs `tqdm`
+
+This project uses Rich's `track` function instead of the more common `tqdm` for progress tracking. Key differences include:
+
+- **Visual Appeal**: Rich provides more visually appealing progress bars with better colors and formatting
+- **Information Density**: Rich progress bars show more detailed information about the ongoing process
+- **Terminal Integration**: Rich handles terminal resizing and different terminal types better
+- **Consistency**: All progress indicators in the project now have the same look and feel
+
+The `track` function is used as a direct replacement for `tqdm`, making it easy to integrate into existing code:
+
+```python
+# Before: Using tqdm
+for item in tqdm(items, desc="Processing items"):
+    process_item(item)
+
+# After: Using Rich's track
+for item in track(items, description="Processing items"):
+    process_item(item)
+```
+
+## Command Line Arguments
+
+The Live Portrait Generator supports the following command line arguments:
+
+```
+python live_portrait_generator.py [--config CONFIG] [--workers WORKERS] [--cpu] [--gpu]
+
+Options:
+  --config CONFIG    Path to config file
+  --workers WORKERS  Number of parallel workers
+  --cpu              Force CPU usage
+  --gpu              Force GPU usage
+```
+
+For backward compatibility, you can also use positional arguments:
+
+```
+python live_portrait_generator.py config.json 8
+```
 
 ## Technical Details
 

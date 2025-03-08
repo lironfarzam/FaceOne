@@ -38,7 +38,7 @@ import cv2
 import numpy as np
 from deepface import DeepFace
 from collections import Counter
-from tqdm import tqdm
+from rich.progress import track
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import pdist, squareform, cosine, euclidean
@@ -71,7 +71,7 @@ MIN_FACE_SIZE = 35
 FACE_ASPECT_RATIO_RANGE = (0.5, 1.8)  # Tightened range for better face filtering
 EPARTMENT_FACE_SIZE = (150, 150)
 FACE_QUALITY_THRESHOLD = 0.4
-MAX_BEST_CROPS = 5
+MAX_BEST_CROPS = 3
 
 # Clustering Settings
 CLUSTERING_THRESHOLD = 0.35  # Base threshold for DBSCAN clustering
@@ -641,10 +641,10 @@ def process_images(
     # Process batches in parallel
     with Pool(num_processes) as pool:
         batch_results = list(
-            tqdm(
+            track(
                 pool.imap(process_batch, process_args),
                 total=len(batches),
-                desc="Processing image batches",
+                description="Processing image batches",
             )
         )
 
@@ -830,10 +830,10 @@ def process_images(
     # Collect all detected faces for synchronized display
     all_detected_faces = []
 
-    for i, source in tqdm(
+    for i, source in track(
         enumerate(unique_sources),
         total=len(unique_sources),
-        desc="Blurring non-main faces",
+        description="Blurring non-main faces",
     ):
         # Read the source image
         img = safe_imread(source)
@@ -1752,7 +1752,7 @@ def extract_face_frames(
     frame_count = 0
 
     # Process each image
-    for img_file in tqdm(image_files, desc="Extracting face frames"):
+    for img_file in track(image_files, description="Extracting face frames"):
         img_path = os.path.join(image_folder, img_file)
 
         try:
@@ -1946,7 +1946,7 @@ def highlight_main_person_faces(
         f"Using verification threshold of {verification_threshold} for model {model}"
     )
 
-    for img_file in tqdm(image_files, desc="Highlighting faces"):
+    for img_file in track(image_files, description="Highlighting faces"):
         img_path = os.path.join(images_folder, img_file)
 
         try:
@@ -2316,10 +2316,10 @@ def save_best_face_crops(
     print_blue("Processing face crops in parallel...")
     with Pool(max(1, cpu_count() - 1)) as pool:
         face_candidates = list(
-            tqdm(
+            track(
                 pool.imap(process_face_crop, process_args),
                 total=len(process_args),
-                desc="Processing face crops",
+                description="Processing face crops",
             )
         )
 
@@ -2618,7 +2618,7 @@ def safe_represent(
                 enforce_detection=enforce_detection,
             )
         except Exception as e:
-            print_red(f"Face embedding error: {e}")
+            # print_red(f"Face embedding error: {e}")
             embedding = []
 
         # Clean up temp file

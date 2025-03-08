@@ -15,6 +15,7 @@ scipy
 mediapipe
 pillow
 requests
+rich
 
 tensorflow
 tensorflowjs

@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ProcessPoolExecutor
 
 import threading
-from tqdm import tqdm
+from rich.progress import track
 import tensorflowjs as tfjs
 
 # # Option 1: Force CPU usage
@@ -262,10 +262,10 @@ def load_images_and_compute_embeddings_parallel() -> dict:
                 for image_name in image_files
             ]
 
-            for future in tqdm(
-                as_completed(futures),
+            for future in track(
+                futures,
                 total=total_images,
-                desc=f"Processing {label} images",
+                description=f"Processing {label} images",
                 unit="image",
             ):
                 try:
