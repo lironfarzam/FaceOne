@@ -21,6 +21,7 @@
   "do_crop": true,
   "---": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -",
 
+  "4.create_face_model": "- - - - - - - - - - - - - - - - - - - - - - - - - ",
   "num_of_workers": 8,
   "show_3d_plot": false,
   "create_new_data": false,
