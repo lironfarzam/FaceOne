@@ -29,3 +29,6 @@ xxx/
 
 *model/*/*/*
 *models/*/*/*
+
+# Exception rule for create_face_model directory
+!create_face_model/
