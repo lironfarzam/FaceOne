@@ -1,192 +1,70 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>FaceOne Settings</title>
+    <title>FaceOne</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
-            width: 320px;
-            padding: 15px;
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            width: 300px;
+            padding: 10px;
             margin: 0;
         }
         
-        .section {
-            margin-bottom: 15px;
-            padding: 15px;
-            background: #f5f5f5;
-            border-radius: 8px;
-        }
-        
-        .section-title {
-            font-size: 14px;
-            font-weight: bold;
-            margin-bottom: 12px;
-            color: #333;
+        .container {
             display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .section-title i {
-            font-size: 16px;
-            color: #666;
-        }
-        
-        .mode-selector {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            flex-direction: column;
             gap: 10px;
-            margin-bottom: 15px;
-            position: relative;
         }
         
-        .mode-button {
-            padding: 15px 8px;
-            border: 2px solid #e0e0e0;
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+        }
+        
+        .logo img {
+            width: 24px;
+            height: 24px;
+            margin-right: 8px;
+        }
+        
+        .logo h1 {
+            font-size: 18px;
+            margin: 0;
+            color: #333;
+        }
+        
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px;
+            background-color: #f7f7f7;
             border-radius: 8px;
-            background: white;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 8px;
-            position: relative;
-            overflow: hidden;
         }
         
-        .mode-button i {
-            font-size: 24px;
-            color: #666;
-            transition: all 0.3s ease;
-        }
-        
-        .mode-button.active {
-            border-color: #2E7D32;
-            background: linear-gradient(145deg, #2E7D32, #43A047);
-            color: white;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(46, 125, 50, 0.2);
-        }
-        
-        .mode-button.active::after {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(45deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
-            pointer-events: none;
-        }
-        
-        .mode-button.active i {
-            color: white;
-            transform: scale(1.1);
-        }
-        
-        .mode-button:not(.active) {
-            opacity: 0.7;
-        }
-        
-        .mode-button:not(.active):hover {
-            opacity: 1;
-            border-color: #4CAF50;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(76, 175, 80, 0.1);
-        }
-        
-        .mode-button:not(.active):hover i {
-            color: #4CAF50;
-        }
-        
-        /* Update section style to better frame the mode selector */
-        .section:first-child {
-            background: linear-gradient(to bottom, #fafafa, #f5f5f5);
-            border: 1px solid #e0e0e0;
-        }
-        
-        /* Add active mode indicator */
-        .mode-button.active::before {
-            content: '✓';
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            font-size: 14px;
-            color: #A5D6A7;
-            background: rgba(0,0,0,0.2);
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .setting-row {
-            display: flex;
-            align-items: center;
-            margin-bottom: 12px;
-            padding: 8px;
-            background: white;
-            border-radius: 6px;
-            transition: opacity 0.3s;
-        }
-        
-        .setting-row.disabled {
-            opacity: 0.5;
-            pointer-events: none;
-        }
-        
-        .setting-label {
-            flex: 1;
-            font-size: 13px;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .setting-description {
-            font-size: 11px;
-            color: #666;
-            margin-top: 2px;
-        }
-        
-        .slider-container {
-            margin-top: 15px;
-            background: white;
-            padding: 12px;
-            border-radius: 6px;
-        }
-        
-        .slider {
-            width: 100%;
-            margin: 10px 0;
-        }
-        
-        .slider-value {
-            text-align: center;
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }
-        
-        .switch {
+        .toggle {
             position: relative;
             display: inline-block;
-            width: 40px;
-            height: 20px;
-            margin-left: 10px;
+            width: 44px;
+            height: 24px;
         }
         
-        .switch input {
+        .toggle input {
             opacity: 0;
             width: 0;
             height: 0;
         }
         
-        .slider-toggle {
+        .slider {
             position: absolute;
             cursor: pointer;
             top: 0;
@@ -195,159 +73,161 @@
             bottom: 0;
             background-color: #ccc;
             transition: .4s;
-            border-radius: 20px;
+            border-radius: 24px;
         }
         
-        .slider-toggle:before {
+        .slider:before {
             position: absolute;
             content: "";
-            height: 16px;
-            width: 16px;
-            left: 2px;
-            bottom: 2px;
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
             background-color: white;
             transition: .4s;
             border-radius: 50%;
         }
         
-        input:checked + .slider-toggle {
-            background-color: #4CAF50;
+        input:checked + .slider {
+            background-color: #2196F3;
         }
         
-        input:checked + .slider-toggle:before {
+        input:checked + .slider:before {
             transform: translateX(20px);
         }
         
-        .action-button {
-            width: 100%;
+        .status {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        
+        .warning {
+            background-color: #fff8e1;
+            color: #f57f17;
+        }
+        
+        .card {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 8px;
             padding: 12px;
-            background: #4CAF50;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            font-size: 16px;
+            margin-top: 0;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        
+        .btn {
+            padding: 8px 12px;
+            background-color: #2196F3;
             color: white;
             border: none;
-            border-radius: 6px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
+            transition: background-color 0.3s;
+        }
+        
+        .btn:hover {
+            background-color: #0b7dda;
+        }
+        
+        .btn-warning {
+            background-color: #ff9800;
+        }
+        
+        .btn-warning:hover {
+            background-color: #e68900;
+        }
+        
+        .btn-danger {
+            background-color: #f44336;
+        }
+        
+        .btn-danger:hover {
+            background-color: #d32f2f;
+        }
+
+        .refresh-loop-warning {
+            background-color: #ffebee;
+            border-left: 4px solid #f44336;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .reset-container {
             display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            transition: all 0.2s;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 15px;
+            border-top: 1px solid #eee;
+            padding-top: 15px;
         }
         
-        .action-button:hover {
-            background: #45a049;
-            transform: translateY(-1px);
-        }
-        
-        .action-button:active {
-            background: #3d8b40;
-            transform: translateY(0);
-        }
-        
-        .action-button:disabled {
-            background: #cccccc;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .status-indicator {
-            margin-top: 10px;
-            text-align: center;
-            font-size: 12px;
-            color: #666;
-            min-height: 15px;
-            transition: all 0.3s;
-            opacity: 0;
-            transform: translateY(-5px);
-        }
-        
-        .status-indicator.show {
-            opacity: 1;
-            transform: translateY(0);
-        }
-        
-        /* Icons */
-        .material-icons {
-            font-family: 'Material Icons';
-            font-size: 20px;
+        .reset-container h3 {
+            margin: 0;
+            font-size: 15px;
         }
     </style>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
 <body>
-    <div class="section">
-        <div class="section-title">
-            <i class="material-icons">tune</i>
-            Choose Mode
-        </div>
-        <div class="mode-selector">
-            <button id="faceDetectionMode" class="mode-button active">
-                <i class="material-icons">face</i>
-                Face Detection
-            </button>
-            <button id="blurMode" class="mode-button">
-                <i class="material-icons">blur_on</i>
-                Blur Mode
-            </button>
-        </div>
-    </div>
-
-    <div class="section">
-        <div class="section-title">
-            <i class="material-icons">settings</i>
-            Settings
-        </div>
-        <div class="setting-row" data-mode="both">
-            <div class="setting-label">
-                <span>Auto Process Images</span>
-                <span class="setting-description">Process images automatically as they appear</span>
+    <div class="container">
+        <div class="header">
+            <div class="logo">
+                <img src="icons/icon48.png" alt="FaceOne">
+                <h1>FaceOne</h1>
             </div>
-            <label class="switch">
-                <input type="checkbox" id="autoProcessImages">
-                <span class="slider-toggle"></span>
+        </div>
+        
+        <div id="refreshLoopAlert" class="refresh-loop-warning" style="display: none;">
+            <strong>Extension Disabled!</strong>
+            <p>The extension has been disabled due to a refresh loop detection. Click the button below to reset and re-enable it.</p>
+            <button id="resetRefreshLoopBtn" class="btn btn-danger">Reset Refresh Loop & Re-enable</button>
+        </div>
+        
+        <div class="toggle-container">
+            <span>Enable FaceOne</span>
+            <label class="toggle">
+                <input type="checkbox" id="enableToggle" checked>
+                <span class="slider"></span>
             </label>
         </div>
         
-        <div class="setting-row" data-mode="face_detection">
-            <div class="setting-label">
-                <span>Show Labels</span>
-                <span class="setting-description">Display detection results and similarity scores</span>
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div class="card">
+            <h2>Processing Settings</h2>
+            <div class="setting">
+                <label for="minSizeSlider">Minimum Image Size:</label>
+                <input type="range" id="minSizeSlider" min="20" max="200" value="40">
+                <span id="minSizeValue">40px</span>
             </div>
-            <label class="switch">
-                <input type="checkbox" id="addLabel">
-                <span class="slider-toggle"></span>
-            </label>
         </div>
         
-        <div class="setting-row" data-mode="face_detection">
-            <div class="setting-label">
-                <span>Show Face Frames</span>
-                <span class="setting-description">Display colored frames around detected faces</span>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="frameFaceDetected">
-                <span class="slider-toggle"></span>
-            </label>
-        </div>
-        
-        <div class="slider-container" data-mode="both">
-            <div class="setting-label">
-                <span>Confidence Threshold</span>
-                <span class="setting-description">Minimum similarity percentage to consider a match</span>
-            </div>
-            <input type="range" id="confidenceThreshold" class="slider" min="0" max="100" step="1">
-            <div class="slider-value" id="confidenceValue">70%</div>
+        <div class="reset-container">
+            <h3>Troubleshooting</h3>
+            <button id="resetSettingsBtn" class="btn">Reset Settings</button>
+            <button id="clearCacheBtn" class="btn">Clear Cache</button>
         </div>
     </div>
-
-    <div class="section">
-        <button id="reprocessButton" class="action-button">
-            <i class="material-icons">refresh</i>
-            Reprocess All Images
-        </button>
-        <div id="statusIndicator" class="status-indicator"></div>
-    </div>
-
+    
     <script src="popup.js"></script>
 </body>
 </html> 

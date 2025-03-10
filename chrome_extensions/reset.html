@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FaceOne Reset</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .warning {
+            background-color: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+    </style>
+</head>
+<body>
+    <h1>FaceOne Extension Reset</h1>
+    
+    <div class="card">
+        <h2>Reset Refresh Loop Detection</h2>
+        <p>If the extension is disabled due to refresh loop detection, use this button to reset it:</p>
+        <div class="warning">
+            <strong>Note:</strong> Only use this if the extension is showing "Detected refresh loop, disabling extension initialization" or similar messages.
+        </div>
+        <button id="resetRefreshLoop">Reset Refresh Loop Detection</button>
+        <div id="refreshLoopStatus" class="status" style="display: none;"></div>
+    </div>
+    
+    <div class="card">
+        <h2>Reset Extension Settings</h2>
+        <p>If you want to reset all extension settings to default values:</p>
+        <button id="resetSettings">Reset All Settings</button>
+        <div id="settingsStatus" class="status" style="display: none;"></div>
+    </div>
+    
+    <script>
+        // Handle refresh loop reset
+        document.getElementById('resetRefreshLoop').addEventListener('click', function() {
+            try {
+                // Clear session storage
+                sessionStorage.removeItem('faceone_page_refresh');
+                
+                // Clear local storage keys
+                localStorage.removeItem('faceone_disabled_until');
+                localStorage.removeItem('faceone_permanently_disabled');
+                localStorage.removeItem('faceone_permanent_disable');
+                
+                // Show success message
+                const status = document.getElementById('refreshLoopStatus');
+                status.textContent = 'Refresh loop detection reset successfully! Please reload any Facebook pages for the changes to take effect.';
+                status.className = 'status success';
+                status.style.display = 'block';
+            } catch (error) {
+                // Show error message
+                const status = document.getElementById('refreshLoopStatus');
+                status.textContent = 'Error resetting refresh loop detection: ' + error.message;
+                status.className = 'status error';
+                status.style.display = 'block';
+            }
+        });
+        
+        // Handle settings reset
+        document.getElementById('resetSettings').addEventListener('click', function() {
+            try {
+                // Clear all extension settings
+                chrome.storage.sync.clear(function() {
+                    // Show success message
+                    const status = document.getElementById('settingsStatus');
+                    status.textContent = 'All extension settings reset to defaults! Please reload any Facebook pages for the changes to take effect.';
+                    status.className = 'status success';
+                    status.style.display = 'block';
+                });
+            } catch (error) {
+                // Show error message
+                const status = document.getElementById('settingsStatus');
+                status.textContent = 'Error resetting settings: ' + error.message;
+                status.className = 'status error';
+                status.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html> 

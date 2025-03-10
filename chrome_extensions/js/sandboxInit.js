@@ -1,3 +1,5 @@
+console.log('#### STARTING SANDBOX_INIT.JS ####');
+
 /**
  * @fileoverview TensorFlow initialization and model management
  */

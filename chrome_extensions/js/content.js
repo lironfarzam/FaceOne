@@ -1,3 +1,207 @@
+// Constants for refresh loop detection
+const PAGE_REFRESH_KEY = 'faceone_page_refresh';
+const MAX_REFRESHES = 15; // Increased from 10 to 15 for higher tolerance
+const REFRESH_COOLDOWN = 180000; // 3 minutes in milliseconds (increased from 2 minutes)
+
+// Sandbox constants
+const SANDBOX_CREATION_TIMEOUT = 60000; // 60 seconds timeout for sandbox creation
+
+// Add a flag to indicate if the refresh loop has been cleared
+let refreshLoopCleared = false;
+
+// Define processingQueue before it's used
+const processingQueue = {
+    queue: [],
+    paused: false,
+    
+    pause() {
+        this.paused = true;
+        console.log('Processing queue paused');
+    },
+    
+    resume() {
+        this.paused = false;
+        console.log('Processing queue resumed');
+        
+        // If we have items in the queue, start processing
+        if (this.queue.length > 0) {
+            this.process();
+        }
+    },
+    
+    add(element, priority = false) {
+        if (!element) return;
+        
+        // Skip if already in queue
+        if (this.queue.some(item => item.element === element)) {
+            return;
+        }
+        
+        // Add to queue with priority flag
+        const item = { element, priority };
+        
+        if (priority) {
+            this.queue.unshift(item); // Add to front if priority
+        } else {
+            this.queue.push(item); // Add to end otherwise
+        }
+        
+        // Start processing if not paused
+        if (!this.paused) {
+            this.process();
+        }
+    },
+    
+    async process() {
+        // Skip if paused or already processing
+        if (this.paused || state.isProcessing) return;
+        
+        // Skip if queue is empty
+        if (this.queue.length === 0) return;
+        
+        // Set processing flag
+        state.isProcessing = true;
+        
+        try {
+            // Get next item from queue
+            const item = this.queue.shift();
+            
+            // Process the item
+            await handleVisibleElement(item.element);
+        } catch (error) {
+            console.error('Error processing queue item:', error);
+        } finally {
+            // Reset processing flag
+            state.isProcessing = false;
+            
+            // Continue processing if items remain and not paused
+            if (this.queue.length > 0 && !this.paused) {
+                // Use setTimeout to avoid blocking the main thread
+                setTimeout(() => this.process(), 10);
+            }
+        }
+    }
+};
+
+// Simple version of resetRefreshLoop that only clears storage and doesn't depend on variables
+function clearRefreshLoopFlags() {
+    try {
+        // Clear session storage refresh counter
+        sessionStorage.removeItem(PAGE_REFRESH_KEY);
+        
+        // Clear all disable flags
+        localStorage.removeItem('faceone_disabled_until');
+        localStorage.removeItem('faceone_permanently_disabled');
+        localStorage.removeItem('faceone_permanent_disable'); // Old key for backward compatibility
+        
+        console.log('[FaceOne] Cleared refresh loop flags on startup');
+        refreshLoopCleared = true;
+    } catch (e) {
+        console.warn('[FaceOne] Error clearing refresh loop flags:', e);
+    }
+}
+
+// Clear refresh loop flags on startup
+clearRefreshLoopFlags();
+
+// Initialize sandboxManager
+let sandboxManager = null;
+
+// Main entry point
+(function() {
+    console.log('#### STARTING CONTENT.JS ####');
+
+    // Check if we're in a frame
+    if (window !== window.top) {
+        console.log('Running in iframe, skipping initialization');
+        return;
+    }
+
+    // Check if extension is disabled due to refresh loop
+    if (isExtensionDisabled()) {
+        console.log('[FaceOne] Extension is disabled due to refresh loop detection, skipping initialization');
+        return;
+    }
+
+    // Start initialization
+    startInitialization();
+    
+    // Listen for page visibility changes
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            console.log('Page hidden, pausing processing');
+            processingQueue.pause();
+        } else {
+            console.log('Page visible, resuming processing');
+            processingQueue.resume();
+        }
+    });
+
+    // Initialize when document is ready
+    async function startInitialization() {
+        try {
+            // Check if models directory exists
+            const modelsExist = await checkDirectoryExists('models');
+            if (!modelsExist) {
+                console.error('Models directory not found. Extension initialization aborted.');
+                return;
+            }
+            
+            // Initialize the extension
+            await initialize();
+        } catch (error) {
+            console.error('Error during initialization:', error);
+        }
+    }
+
+    // Handle document readiness
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startInitialization);
+    } else {
+        startInitialization();
+    }
+
+    // Safe check for extension disabled status - can be called anywhere
+    function isExtensionDisabled() {
+        try {
+            const now = Date.now();
+            
+            // Check if the extension is temporarily disabled
+            const disabledUntil = localStorage.getItem('faceone_disabled_until');
+            if (disabledUntil && parseInt(disabledUntil) > now) {
+                const remainingTime = Math.ceil((parseInt(disabledUntil) - now) / 60000);
+                console.log(`[FaceOne] Extension temporarily disabled. Re-enabling in ${remainingTime} minutes.`);
+                return true;
+            }
+            
+            // Check if the extension is permanently disabled
+            if (localStorage.getItem('faceone_permanently_disabled') === 'true') {
+                console.log('[FaceOne] Extension permanently disabled due to severe refresh loop.');
+                return true;
+            }
+            
+            return false;
+        } catch (e) {
+            console.warn('[FaceOne] Error checking disabled status:', e);
+            return false; // Assume not disabled on error
+        }
+    }
+
+    // Add this to the main entry point function to check disabled status early
+    if (isExtensionDisabled()) {
+        console.log('Extension is disabled, skipping initialization');
+        return;
+    }
+})();
+
+// Global initialization variables
+let isInitializing = false;
+let initializationComplete = false;
+let initializationAttempts = 0;
+const MAX_INIT_ATTEMPTS = 3;
+const INIT_COOLDOWN_PERIOD = 60000; // 1 minute cooldown between attempts
+let lastInitAttempt = 0;
+
 /**
  * @fileoverview Content script for FaceOne Chrome extension.
  * Provides real-time face detection and embedding generation for web images.
@@ -21,13 +225,20 @@
 
 /** @type {State} */
 const state = {
-    modelsLoaded: false,
+    faceApiLoaded: false,
+    faceApiLoading: false,
+    faceApiError: null,
     faceNetLoaded: false,
+    faceNetLoading: false,
+    faceNetError: null,
+    myModelLoaded: false,
+    myModelLoading: false,
+    myModelError: null,
+    modelsLoaded: false,
     modelLoadAttempts: 0,
     MAX_LOAD_ATTEMPTS: 3,
     isProcessing: false,
-    processingQueue: [],
-    maxParallelProcessing: 3
+    processingQueue: []
 };
 
 //=============================================================================
@@ -49,7 +260,15 @@ let flagShowFrameonImage = {
     autoProcessImages: true,
     minimumImageSize: 100,
     confidenceThreshold: 70,
-    processingMode: 'face_detection'
+    processingMode: 'face_detection', // 'face_detection' or 'blur_mode'
+    maxImagesPerPage: 100, // Limit number of images processed per page
+    progressiveProcessing: true, // Process large images in multiple passes
+    memoryManagement: {
+        enabled: true,
+        maxTensors: 1000,
+        maxBytes: 200 * 1024 * 1024, // 200MB
+        cleanupInterval: 60000 // 1 minute
+    }
 };
 
 //=============================================================================
@@ -145,128 +364,236 @@ async function compareWithPositiveEmbeddings(faceEmbedding) {
 // Model Management
 //=============================================================================
 
-let sandboxFrame = null;
-let faceNetModel = null;
+// Compatibility layer for transitioning from sandboxFrame to sandboxManager
+let sandboxFrame = null; // Keep for backward compatibility
 
-/**
- * Creates sandbox iframe for TensorFlow operations and waits for it to be ready
- */
-async function createSandboxFrame(timeout) {
-    if (sandboxFrame && sandboxFrame.contentWindow) return;
-
-    // Cleanup any existing frame
-    if (sandboxFrame) {
-        try {
-            document.body.removeChild(sandboxFrame);
-        } catch (e) {
-            console.warn('Error removing existing sandbox frame:', e);
-        }
-        sandboxFrame = null;
+// Helper function to ensure we're using sandboxManager
+function ensureSandboxManager() {
+    // If we already have a valid sandboxManager, return it
+    if (sandboxManager && sandboxManager.iframe) {
+        console.log('[FaceOne] Using existing sandbox manager');
+        return sandboxManager;
     }
+    
+    console.log('[FaceOne] Creating new SandboxManager instance');
+    
+    // If we have a sandboxFrame but no sandboxManager, create one
+    if (sandboxFrame && (!sandboxManager || !sandboxManager.iframe)) {
+        console.log('[FaceOne] Creating sandboxManager from existing sandboxFrame');
+        sandboxManager = new SandboxManager();
+        sandboxManager.iframe = sandboxFrame;
+        sandboxManager.isReady = true;
+    } else if (!sandboxManager) {
+        // Create a new sandbox manager if none exists
+        console.log('[FaceOne] Creating brand new SandboxManager');
+        sandboxManager = new SandboxManager();
+    }
+    
+    // If we have a sandboxManager but no sandboxFrame, update the reference
+    if (sandboxManager && sandboxManager.iframe && !sandboxFrame) {
+        console.log('[FaceOne] Updating sandboxFrame reference from sandboxManager');
+        sandboxFrame = sandboxManager.iframe;
+    }
+    
+    return sandboxManager;
+}
 
-    return new Promise((resolve, reject) => {
+// Add a debug logging function at the top of the file
+function debugLog(message, data = null) {
+    const timestamp = new Date().toISOString().split('T')[1].split('.')[0]; // HH:MM:SS format
+    const prefix = `[FaceOne ${timestamp}]`;
+    
+    if (data) {
+        console.log(`${prefix} ${message}`, data);
+    } else {
+        console.log(`${prefix} ${message}`);
+    }
+}
+
+// Add more detailed logging to createSandboxFrame
+async function createSandboxFrame(timeout) {
+    debugLog('Creating sandbox frame with timeout:', timeout);
+    
+    if (sandboxManager && sandboxManager.isReady) {
+        debugLog('Sandbox manager already exists and is ready');
+        return sandboxManager.iframe;
+    }
+    
+    try {
+        debugLog('Ensuring sandbox manager exists');
+        ensureSandboxManager();
+        
+        // Check if the sandbox.html file can be accessed
+        const sandboxUrl = chrome.runtime.getURL('sandbox.html');
+        debugLog('Verifying sandbox URL:', sandboxUrl);
+        
         try {
-            console.log('Creating new sandbox frame...');
-            sandboxFrame = document.createElement('iframe');
-            sandboxFrame.src = chrome.runtime.getURL('sandbox.html');
-            sandboxFrame.style.display = 'none';
+            const response = await fetch(sandboxUrl, { 
+                method: 'HEAD',
+                cache: 'no-cache' // Try without caching
+            });
             
-            let frameLoadTimeout;
-            let tfInitTimeout;
+            if (!response.ok) {
+                throw new Error(`Sandbox HTML file not accessible. Status: ${response.status}`);
+            }
             
-            const cleanup = () => {
-                clearTimeout(frameLoadTimeout);
-                clearTimeout(tfInitTimeout);
-                sandboxFrame.removeEventListener('load', handleLoad);
-                sandboxFrame.removeEventListener('error', handleError);
-                window.removeEventListener('message', handleTfInit);
-            };
-            
-            const handleTfInit = (event) => {
-                if (event.data && event.data.type === 'TF_INITIALIZED') {
-                    cleanup();
-                    if (event.data.success) {
-                        console.log('TensorFlow initialized successfully:', event.data.info);
-                        resolve();
-                    } else {
-                        console.error('TF initialization failed:', event.data.error, 'Status:', event.data.status);
-                        reject(new Error('TF initialization failed: ' + event.data.error));
-                    }
-                }
-            };
-            
-            const handleLoad = () => {
-                console.log('Sandbox frame loaded, waiting for TF initialization...');
-                window.addEventListener('message', handleTfInit);
-                
-                tfInitTimeout = setTimeout(() => {
-                    cleanup();
-                    reject(new Error('TF initialization timeout'));
-                }, timeout);
-            };
-            
-            const handleError = (error) => {
-                cleanup();
-                reject(new Error('Sandbox frame failed to load: ' + error.message));
-            };
-            
-            sandboxFrame.addEventListener('load', handleLoad);
-            sandboxFrame.addEventListener('error', handleError);
-            
-            frameLoadTimeout = setTimeout(() => {
-                cleanup();
-                reject(new Error('Sandbox frame load timeout'));
-            }, 10000);
-            
-            document.body.appendChild(sandboxFrame);
-            
+            debugLog('Sandbox HTML file is accessible');
         } catch (error) {
-            reject(new Error('Failed to create sandbox frame: ' + error.message));
+            debugLog('Error accessing sandbox HTML file:', error);
+            throw new Error(`Failed to access sandbox.html: ${error.message}`);
         }
-    });
+        
+        debugLog('Initializing sandbox manager');
+        await sandboxManager.initialize();
+        
+        debugLog('Waiting for sandbox to be ready');
+        await sandboxManager.waitForReady();
+        
+        debugLog('Sandbox frame created successfully');
+        return sandboxManager.iframe;
+    } catch (error) {
+        debugLog('Error creating sandbox frame:', error);
+        throw error;
+    }
 }
 
 /**
- * Loads the FaceNet model in sandbox
+ * Load FaceNet model
  */
 async function loadFaceNetModel() {
-    if (modelStatus.faceNet.loaded) {
+    if (state.faceNetLoaded) {
+        console.log("FaceNet model already loaded");
         return;
     }
 
-    const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
-    return new Promise((resolve, reject) => {
-        const handleMessage = (event) => {
-            if (event.data.type === 'MODEL_LOADED' && event.data.modelName === 'faceNet') {
-                window.removeEventListener('message', handleMessage);
-                if (event.data.success) {
-                    if (event.data.modelInfo && event.data.modelInfo.warmedUp) {
-                        modelStatus.faceNet.loaded = true;
-                        state.faceNetLoaded = true;
-                        console.log('FaceNet model loaded and warmed up successfully');
-                        resolve();
-                    } else {
-                        reject(new Error('FaceNet model loaded but not warmed up'));
-                    }
+    if (state.faceNetLoading) {
+        console.log("FaceNet model already loading");
+        return;
+    }
+
+    state.faceNetLoading = true;
+    state.faceNetError = null;
+
+    try {
+        // Ensure TensorFlow is ready
+        try {
+            await ensureTensorFlowReady();
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] TensorFlow ready for FaceNet model loading");
+        } catch (error) {
+            console.error("[FaceOne " + new Date().toLocaleTimeString() + "] TensorFlow not ready, cannot load FaceNet model:", error);
+            throw new Error("TensorFlow not ready for FaceNet model: " + error.message);
+        }
+        
+        // Ensure sandbox is ready
+        if (!sandboxManager || !sandboxManager.isReady) {
+            console.error("[FaceOne " + new Date().toLocaleTimeString() + "] Sandbox not ready for FaceNet model loading");
+            throw new Error("Sandbox not ready for FaceNet model loading");
+        }
+        
+        console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading FaceNet model...");
+        
+        // Define model paths to try
+        const modelPaths = [
+            'models/FaceNet/Facenet512_tfjs_graph_model/model.json',
+            'models/FaceNet/model.json',
+            'models/facenet/model.json'
+        ];
+        
+        // Verify each model path exists before trying to load it
+        for (const modelPath of modelPaths) {
+            const fullPath = chrome.runtime.getURL(modelPath);
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Checking if model exists at: ${fullPath}`);
+            
+            try {
+                const response = await fetch(fullPath, { 
+                    method: 'HEAD',
+                    cache: 'no-cache' // Try without caching
+                });
+                
+                if (response.ok) {
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Model file verified at: ${fullPath}`);
                 } else {
-                    reject(new Error(event.data.error || 'FaceNet model loading failed'));
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Model file not found at: ${fullPath}, status: ${response.status}`);
+                    continue; // Skip to next path
                 }
+            } catch (error) {
+                console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Error checking model at ${fullPath}: ${error.message}`);
+                continue; // Skip to next path
             }
-        };
+            
+            // Try to load the model
+            try {
+                console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Attempting to load FaceNet model from: ${fullPath}`);
+                
+                // Send load model command to sandbox with longer timeout
+                const response = await sandboxManager.sendMessage({
+                    type: 'LOAD_MODEL',
+                    modelPath: fullPath,
+                    timeout: 120000 // Increase timeout to 120 seconds for model loading
+                });
+                
+                if (!response || !response.success) {
+                    console.error(`[FaceOne ${new Date().toLocaleTimeString()}] Failed to load model: ${response?.error || "Unknown error"}`);
+                    continue; // Skip to next path
+                }
+                
+                console.log(`[FaceOne ${new Date().toLocaleTimeString()}] FaceNet model loaded successfully from: ${modelPath}`);
+                state.faceNetLoaded = true;
+                return true;
+            } catch (error) {
+                console.error(`[FaceOne ${new Date().toLocaleTimeString()}] Error loading FaceNet model from ${modelPath}:`, error);
+            }
+        }
         
-        window.addEventListener('message', handleMessage);
-        sandboxFrame.contentWindow.postMessage({
-            type: 'LOAD_MODEL',
-            modelName: 'faceNet',
-            modelPath: modelPath,
-            waitForWarmup: true
-        }, '*');
-        
-        setTimeout(() => {
-            window.removeEventListener('message', handleMessage);
-            reject(new Error('FaceNet model load timeout'));
+        // If we get here, no model was loaded successfully
+        throw new Error("Failed to load FaceNet model from any path");
+    } catch (error) {
+        console.error("[FaceOne " + new Date().toLocaleTimeString() + "] Error loading FaceNet model:", error);
+        state.faceNetError = error;
+        throw error;
+    } finally {
+        state.faceNetLoading = false;
+    }
+}
+
+/**
+ * Verify that the model is ready by performing a test operation
+ */
+async function verifyModelReady() {
+    console.log('Verifying model is ready...');
+    
+    // Create a small test image
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 160;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    
+    // Fill with a simple pattern
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, 160, 160);
+    ctx.fillStyle = 'black';
+    ctx.fillRect(60, 60, 40, 40); // Simple "face" pattern
+    
+    // Get image data
+    const imageData = ctx.getImageData(0, 0, 160, 160);
+    
+    // Try to generate an embedding
+    try {
+        const result = await sandboxManager.sendMessage({
+            type: 'GENERATE_EMBEDDING',
+            imageData: imageData.data
         }, 30000);
-    });
+        
+        if (!result.success) {
+            throw new Error(`Test embedding generation failed: ${result.error}`);
+        }
+        
+        console.log('Model verification successful');
+        return true;
+    } catch (error) {
+        console.error('Model verification failed:', error);
+        throw new Error('Model verification failed: ' + error.message);
+    }
 }
 
 // Add loading lock
@@ -295,750 +622,1137 @@ const FACE_API_DETECTION_OPTIONS = {
 };
 
 /**
- * Loads all required models with retry mechanism
+ * Load FaceAPI models
  */
 async function loadFaceApiModels() {
-    // Check if models are already loaded
-    if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded && modelStatus.myModel.loaded) {
+    if (state.faceApiLoaded) {
+        console.log("FaceAPI models already loaded");
         return;
     }
 
-    // Ensure TensorFlow is ready before proceeding
-    await ensureTensorFlowReady();
-
-    // Prevent concurrent loading attempts
-    if (isLoadingModels) {
-        console.log('Model loading already in progress, waiting...');
-        let waitStart = Date.now();
-        while (isLoadingModels && (Date.now() - waitStart) < 30000) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded && modelStatus.myModel.loaded) {
-            return;
-        }
-        if (isLoadingModels) {
-            throw new Error('Model loading timeout while waiting');
-        }
+    if (state.faceApiLoading) {
+        console.log("FaceAPI models already loading");
+        return;
     }
 
-    isLoadingModels = true;
-    
+    state.faceApiLoading = true;
+    state.faceApiError = null;
+
     try {
-        // Ensure extension context is available
-        if (!chrome.runtime || !chrome.runtime.id) {
-            await initializeExtensionContext();
-        }
-        
-        state.modelLoadAttempts++;
-        
-        // Create and wait for sandbox frame with dynamic timeout
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            console.log('Creating sandbox frame...');
-            await createSandboxFrame(state.modelLoadAttempts);
-            // Reduced wait time but still ensure frame is ready
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-        
-        // Verify sandbox frame is properly initialized
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            throw new Error('Sandbox frame not properly initialized');
-        }
-        
-        // Load both models
-        if (!modelStatus.faceApi.loaded && !modelStatus.faceApi.loading) {
-            console.log('Loading FaceAPI models...');
-            modelStatus.faceApi.loading = true;
-            modelStatus.faceApi.error = null;
-            
-            try {
-                const modelPath = chrome.runtime.getURL('models/FaceAPI');
-                await retryModelLoad(async () => {
-                    try {
-                        // Load both models in parallel with correct subdirectory paths
-                        await Promise.all([
-                            faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`),
-                            faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`)
-                        ]);
-                        modelStatus.faceApi.loaded = true;
-                        console.log('FaceAPI models loaded successfully');
-                        return true;
-                    } catch (error) {
-                        console.error('FaceAPI load attempt failed:', error);
-                        return false;
-                    }
-                }, 3, 1000);
-            } catch (error) {
-                modelStatus.faceApi.error = error;
-                console.error('Failed to load FaceAPI models:', error);
-                throw error;
-            } finally {
-                modelStatus.faceApi.loading = false;
-            }
-        }
-        
-        // Load FaceNet model if not already loaded
-        if (!modelStatus.faceNet.loaded && !modelStatus.faceNet.loading) {
-            console.log('Loading FaceNet model...');
-            await loadFaceNetModel();
+        // First, ensure TensorFlow is ready
+        try {
+            await ensureTensorFlowReady();
+            console.log("TensorFlow ready for FaceAPI models");
+        } catch (error) {
+            console.error("[FaceOne " + new Date().toLocaleTimeString() + "] TensorFlow not ready, continuing with FaceAPI models:", error);
         }
 
-        // Load similarity model if not already loaded
-        if (!modelStatus.myModel.loaded && !modelStatus.myModel.loading) {
-            console.log('Loading similarity model...');
-            modelStatus.myModel.loading = true;
-            modelStatus.myModel.error = null;
+        console.log("Loading FaceAPI models...");
+        
+        // Get the base URL for the extension
+        const baseUrl = chrome.runtime.getURL('');
+        console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Extension base URL:", baseUrl);
+        
+        // Debug: print absolute URL for model directories to verify paths
+        console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Absolute URL for models/FaceAPI:", chrome.runtime.getURL('models/FaceAPI'));
+        console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Absolute URL for models/FaceAPI/ssd_mobilenetv1:", chrome.runtime.getURL('models/FaceAPI/ssd_mobilenetv1'));
+        
+        // Try to load directly from the known location of models with explicit paths
+        try {
+            // First verify the model files exist
+            const ssdModelPath = 'models/FaceAPI/ssd_mobilenetv1/ssd_mobilenetv1_model-weights_manifest.json';
+            const landmarkModelPath = 'models/face_landmark_68_model-weights_manifest.json';
+            const recognitionModelPath = 'models/face_recognition_model-weights_manifest.json';
             
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Checking model paths directly...");
+            
+            // Check SSD model
+            const ssdUrl = chrome.runtime.getURL(ssdModelPath);
             try {
-                const modelPath = chrome.runtime.getURL('models/myModel/tfjs_graph_model/model.json');
-                await new Promise((resolve, reject) => {
-                    const handleMessage = (event) => {
-                        if (event.data.type === 'MODEL_LOADED' && event.data.modelName === 'myModel') {
-                            window.removeEventListener('message', handleMessage);
-                            if (event.data.success) {
-                                console.log('Similarity model loaded successfully');
-                                modelStatus.myModel.loaded = true;
-                                resolve();
-                            } else {
-                                reject(new Error(event.data.error || 'Similarity model loading failed'));
-                            }
-                        }
-                    };
-                    
-                    window.addEventListener('message', handleMessage);
-                    console.log('Sending load request for similarity model...');
-                    sandboxFrame.contentWindow.postMessage({
-                        type: 'LOAD_MODEL',
-                        modelName: 'myModel',
-                        modelPath: modelPath,
-                        waitForWarmup: true
-                    }, '*');
-                    
-                    setTimeout(() => {
-                        window.removeEventListener('message', handleMessage);
-                        reject(new Error('Similarity model load timeout'));
-                    }, 45000);
-                });
+                const ssdResponse = await fetch(ssdUrl, { method: 'HEAD' });
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] SSD model check:", ssdResponse.ok ? "OK" : "Not found");
+            } catch (e) {
+                console.error("[FaceOne " + new Date().toLocaleTimeString() + "] SSD model not found:", e);
+            }
+            
+            // Check landmark model
+            const landmarkUrl = chrome.runtime.getURL(landmarkModelPath);
+            try {
+                const landmarkResponse = await fetch(landmarkUrl, { method: 'HEAD' });
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Landmark model check:", landmarkResponse.ok ? "OK" : "Not found");
+            } catch (e) {
+                console.error("[FaceOne " + new Date().toLocaleTimeString() + "] Landmark model not found:", e);
+            }
+            
+            // Check recognition model
+            const recognitionUrl = chrome.runtime.getURL(recognitionModelPath);
+            try {
+                const recognitionResponse = await fetch(recognitionUrl, { method: 'HEAD' });
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Recognition model check:", recognitionResponse.ok ? "OK" : "Not found");
+            } catch (e) {
+                console.error("[FaceOne " + new Date().toLocaleTimeString() + "] Recognition model not found:", e);
+            }
+            
+            // Now try loading models using direct URIs with models folder
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading models directly...");
+            
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading ssdMobilenetv1...");
+            await faceapi.nets.ssdMobilenetv1.loadFromUri('models');
+            
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading faceLandmark68Net...");
+            await faceapi.nets.faceLandmark68Net.loadFromUri('models');
+            
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading faceRecognitionNet...");
+            await faceapi.nets.faceRecognitionNet.loadFromUri('models');
+            
+            console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Successfully loaded models directly");
+            state.faceApiLoaded = true;
+            state.faceApiLoading = false;
+            return;
+        } catch (directError) {
+            console.error("[FaceOne " + new Date().toLocaleTimeString() + "] Failed to load models directly:", directError);
+        }
+        
+        // If direct loading failed, try the original approach with multiple paths
+        // Define model paths to try
+        const modelPaths = [
+            'models/FaceAPI',
+            'models',
+            'models/face-api',
+            'models/faceapi',
+            'face-api/models',
+            'faceapi/models',
+            '' // Root directory
+        ];
+        
+        // Try each path until one works
+        let loaded = false;
+        let lastError = null;
+        
+        for (const path of modelPaths) {
+            try {
+                const modelUrl = chrome.runtime.getURL(path);
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Trying model path:", modelUrl);
                 
-                console.log('Similarity model loaded and warmed up successfully');
+                // Try to load the models with crossOrigin set to anonymous
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading ssdMobilenetv1 from:", modelUrl);
+                await faceapi.nets.ssdMobilenetv1.loadFromUri(modelUrl);
+                
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading faceLandmark68Net from:", modelUrl);
+                await faceapi.nets.faceLandmark68Net.loadFromUri(modelUrl);
+                
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Loading faceRecognitionNet from:", modelUrl);
+                await faceapi.nets.faceRecognitionNet.loadFromUri(modelUrl);
+                
+                console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Successfully loaded models from:", path);
+                loaded = true;
+                break;
             } catch (error) {
-                modelStatus.myModel.error = error;
-                console.error('Failed to load similarity model:', error);
-                throw error;
-            } finally {
-                modelStatus.myModel.loading = false;
+                console.error("[FaceOne " + new Date().toLocaleTimeString() + "] Failed to load models from " + path + ":", error);
+                lastError = error;
             }
         }
         
-        // Final verification of all models
-        if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
-            const errors = [];
-            if (!modelStatus.faceApi.loaded) errors.push('FaceAPI');
-            if (!modelStatus.faceNet.loaded) errors.push('FaceNet');
-            if (!modelStatus.myModel.loaded) errors.push('Similarity');
-            throw new Error(`Models not loaded: ${errors.join(', ')}`);
+        if (!loaded) {
+            throw lastError || new Error("Failed to load models from any path");
         }
         
-        // Set state after all models are confirmed loaded
-        state.modelsLoaded = true;
-        console.log('All models loaded successfully');
-        
-        // Automatically start processing existing images
-        if (flagShowFrameonImage.autoProcessImages) {
-            console.log('Starting automatic image processing...');
-            await processExistingImages();
-            // Start observing for new images
-            observeElements();
-        }
-        
+        state.faceApiLoaded = true;
+        state.faceApiLoading = false;
+        console.log("FaceAPI models loaded successfully");
     } catch (error) {
-        console.error('Error loading models:', error);
-        
-        // Cleanup and retry
-        if (error.message.includes('Extension context') || 
-            error.message.includes('Sandbox frame') ||
-            error.message.includes('Model verification failed')) {
-            
-            if (sandboxFrame) {
-                try {
-                    document.body.removeChild(sandboxFrame);
-                } catch (e) {
-                    console.warn('Error removing sandbox frame:', e);
-                }
-                sandboxFrame = null;
-            }
-            
-            clearModelStatus();
-            
-            if (state.modelLoadAttempts < state.MAX_LOAD_ATTEMPTS) {
-                console.log(`Retrying model load (attempt ${state.modelLoadAttempts}/${state.MAX_LOAD_ATTEMPTS})`);
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                isLoadingModels = false;
-                return loadFaceApiModels();
-            }
-        }
+        state.faceApiLoading = false;
+        state.faceApiError = error;
+        console.error("Error loading models:", error);
         throw error;
-    } finally {
-        isLoadingModels = false;
     }
 }
 
 //=============================================================================
-// Image Processing
+// 4. Sandbox Management
 //=============================================================================
-
-// Replace image tracking with simplified system
-const imageTracker = {
-    images: new Map(), // Map<string, ImageInfo>
-    maxSize: 1000,
-    cleanupInterval: 60000, // Cleanup every minute
-    // maxAge: 5 * 60 * 1000, // Keep items for 5 minutes
-    maxAge: 1 * 10 * 1000, // Keep items for 10 seconds
-
-    
-    constructor() {
-        setInterval(() => this.cleanup(), this.cleanupInterval);
-    },
-    
-    cleanup() {
-        const now = Date.now();
-        for (const [src, info] of this.images) {
-            if (now - info.timestamp > this.maxAge) {
-                this.images.delete(src);
-            }
-        }
-    },
-    
-    add(src, info = {}) {
-        if (this.images.size >= this.maxSize) {
-            // Remove oldest entry
-            const oldestKey = Array.from(this.images.keys())[0];
-            this.images.delete(oldestKey);
-        }
-        
-        this.images.set(src, {
-            isProcessed: false,
-            shouldDisplay: true, // Default to true until we process faces
-            hasSimilarFaces: false,
-            timestamp: Date.now(),
-            ...info
-        });
-    },
-    
-    markProcessed(src, shouldDisplay, hasSimilarFaces = false) {
-        const info = this.images.get(src) || {};
-        const newInfo = {
-            ...info,
-            isProcessed: true,
-            shouldDisplay: shouldDisplay,
-            hasSimilarFaces: hasSimilarFaces,
-            timestamp: Date.now(),
-            processingComplete: true // Add flag to indicate complete processing
-        };
-        this.images.set(src, newInfo);
-        
-        // Log processing completion
-        console.log(`Image processing complete: ${src}`, newInfo);
-    },
-    
-    shouldProcess(src) {
-        const info = this.images.get(src);
-        return !info || !info.isProcessed;
-    },
-    
-    shouldDisplay(src) {
-        const info = this.images.get(src);
-        return info ? info.shouldDisplay : true;
-    },
-    
-    has(src) {
-        return this.images.has(src);
-    },
-    
-    clear() {
-        this.images.clear();
-    }
-};
 
 /**
- * Checks if an element is valid for processing
- * @param {Element} element - The element to validate
- * @returns {boolean} True if the element is valid for processing
+ * Enhanced sandbox manager with health monitoring and recovery
  */
-function isValidElement(element) {
-    // Check if element exists
-    if (!element) return false;
-
-    // Handle all possible image types
-    const isImg = element.tagName === 'IMG';
-    const isSvgImage = element.tagName.toLowerCase() === 'image';
-    const hasSvgImage = element.querySelector && element.querySelector('image[xlink\\:href]');
-    const hasBackgroundImage = window.getComputedStyle(element).backgroundImage !== 'none';
-
-    if (!isImg && !isSvgImage && !hasSvgImage && !hasBackgroundImage) return false;
-
-    // Get the source URL
-    let src;
-    if (isImg) {
-        src = element.src;
-    } else if (isSvgImage || hasSvgImage) {
-        const imageElement = isSvgImage ? element : element.querySelector('image');
-        src = imageElement?.getAttribute('xlink:href') || 
-              imageElement?.getAttribute('href') ||
-              imageElement?.getAttribute('src');
-    } else if (hasBackgroundImage) {
-        src = window.getComputedStyle(element).backgroundImage.slice(4, -1).replace(/["']/g, "");
+class SandboxManager {
+    constructor() {
+        debugLog('Creating new SandboxManager instance');
+        this.iframe = null;
+        this.isReady = false;
+        this.pendingRequests = new Map();
+        this.lastActivity = Date.now();
+        this.healthCheckInterval = null;
+        this.readyResolve = null;
+        this.readyReject = null;
     }
 
-    if (!src || src.startsWith('data:') || src.includes('emoji')) return false;
-
-    // Remove size validation - we'll handle any size
-    const isHidden = element.offsetParent === null || 
-                    window.getComputedStyle(element).display === 'none' ||
-                    window.getComputedStyle(element).visibility === 'hidden';
-    const isProcessed = element.closest('.face-detection-wrapper');
-    
-    return !isHidden && !isProcessed;
-}
-
-// Add cross-origin image handling function
-async function createProxyImage(originalImg) {
-    return new Promise((resolve, reject) => {
-        const createBlobUrl = async (url) => {
-            try {
-                const response = await fetch(url, { mode: 'cors' });
-                const blob = await response.blob();
-                return URL.createObjectURL(blob);
-            } catch (error) {
-                console.warn('Failed to create blob URL:', error);
-                return null;
-            }
-        };
-
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-
-        img.onload = () => {
-            resolve(img);
-        };
-
-        img.onerror = async () => {
-            try {
-                const src = originalImg.tagName === 'IMG' ? 
-                    originalImg.src : 
-                    originalImg.getAttribute('xlink:href');
-                
-                const blobUrl = await createBlobUrl(src);
-                if (blobUrl) {
-                    img.src = blobUrl;
-                } else {
-                    reject(new Error('Failed to load image'));
+    async initialize() {
+        debugLog('Initializing SandboxManager');
+        
+        if (this.iframe) {
+            debugLog('SandboxManager already has an iframe, destroying it first');
+            this.destroy();
+        }
+        
+        debugLog('Creating sandbox iframe');
+        this.iframe = document.createElement('iframe');
+        this.iframe.id = 'faceone-sandbox';
+        this.iframe.style.display = 'none';
+        
+        // Ensure proper sandbox attributes
+        this.iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+        
+        // Create a promise that will be resolved when the sandbox is ready
+        const readyPromise = new Promise((resolve, reject) => {
+            this.readyResolve = resolve;
+            this.readyReject = reject;
+            
+            // Set a timeout for sandbox initialization
+            setTimeout(() => {
+                if (!this.isReady) {
+                    const error = new Error('Sandbox initialization timed out');
+                    debugLog('Sandbox initialization timed out');
+                    reject(error);
                 }
+            }, 30000); // 30 second timeout
+        });
+        
+        // Add load event listener to debug iframe loading issues
+        this.iframe.addEventListener('load', () => {
+            debugLog('Sandbox iframe loaded');
+        });
+        
+        this.iframe.addEventListener('error', (error) => {
+            debugLog('Error loading sandbox iframe:', error);
+            if (this.readyReject) {
+                this.readyReject(new Error('Failed to load sandbox iframe'));
+            }
+        });
+        
+        // Set the src after adding event listeners
+        const sandboxUrl = chrome.runtime.getURL('sandbox.html');
+        debugLog('Setting sandbox iframe src to:', sandboxUrl);
+        this.iframe.src = sandboxUrl;
+        
+        // Add to document
+        document.body.appendChild(this.iframe);
+        
+        // Set up message listener
+        debugLog('Setting up message listener');
+        window.addEventListener('message', this.handleMessage.bind(this));
+        
+        // Wait for sandbox to be ready
+        debugLog('Waiting for sandbox to be ready');
+        try {
+            await readyPromise;
+            debugLog('Sandbox is ready');
+        } catch (error) {
+            debugLog('Error waiting for sandbox to be ready:', error);
+            throw error;
+        }
+        
+        // Start health check
+        debugLog('Starting health check');
+        this.startHealthCheck();
+        
+        debugLog('SandboxManager initialization complete');
+    }
+    
+    async restart() {
+        debugLog('Attempting to restart sandbox');
+        
+        if (this.isRestarting) {
+            debugLog('Restart already in progress, skipping');
+            return;
+        }
+        
+        this.isRestarting = true;
+        this.restartAttempts++;
+        
+        try {
+            debugLog(`Sandbox restart attempt ${this.restartAttempts}/${this.MAX_RESTART_ATTEMPTS}`);
+            
+            // Stop health check
+            if (this.healthCheckInterval) {
+                debugLog('Stopping health check interval');
+                clearInterval(this.healthCheckInterval);
+                this.healthCheckInterval = null;
+            }
+            
+            // Destroy existing iframe
+            debugLog('Destroying existing iframe');
+            this.destroy();
+            
+            // Wait a moment before creating a new one
+            debugLog('Waiting before creating new iframe');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Create new iframe
+            debugLog('Creating new iframe');
+            this.iframe = document.createElement('iframe');
+            this.iframe.id = 'faceone-sandbox';
+            this.iframe.style.display = 'none';
+            this.iframe.sandbox = 'allow-scripts allow-same-origin';
+            this.iframe.src = chrome.runtime.getURL('sandbox.html');
+            
+            // Add to document
+            document.body.appendChild(this.iframe);
+            
+            // Wait for sandbox to be ready
+            debugLog('Waiting for sandbox to be ready');
+            await this.waitForReady();
+            
+            // Reinitialize TensorFlow
+            debugLog('Reinitializing TensorFlow');
+            await this.sendMessage({ type: 'INIT' }, 30000);
+            
+            // Restart health check
+            debugLog('Restarting health check');
+            this.startHealthCheck();
+            
+            debugLog('Sandbox restart completed successfully');
+            this.isRestarting = false;
+            return true;
+        } catch (error) {
+            debugLog('Error during sandbox restart:', error);
+            
+            // If we've reached max attempts, give up
+            if (this.restartAttempts >= this.MAX_RESTART_ATTEMPTS) {
+                debugLog('Max restart attempts reached, giving up');
+                this.isRestarting = false;
+                throw new Error(`Failed to restart sandbox after ${this.MAX_RESTART_ATTEMPTS} attempts: ${error.message}`);
+            }
+            
+            // Otherwise, try again
+            debugLog('Trying restart again');
+            this.isRestarting = false;
+            return this.restart();
+        }
+    }
+    
+    async checkHealth() {
+        // Skip if health check is already in progress
+        if (this.healthCheckInProgress) {
+            debugLog('Health check already in progress, skipping');
+            return;
+        }
+        
+        // Skip if we checked recently (within last 10 seconds)
+        const now = Date.now();
+        if (now - this.lastHealthCheck < 10000) {
+            debugLog('Health check performed recently, skipping');
+            return;
+        }
+        
+        this.healthCheckInProgress = true;
+        this.lastHealthCheck = now;
+        
+        debugLog('Performing sandbox health check...');
+        
+        try {
+            if (!this.iframe || !this.iframe.contentWindow) {
+                debugLog('Sandbox iframe not available, restarting');
+                await this.restart();
+                this.healthCheckInProgress = false;
+                return;
+            }
+            
+            const response = await this.sendMessage({ type: 'HEALTH_CHECK' }, 10000);
+            debugLog('Health check response:', response);
+            
+            if (response.status !== 'ok') {
+                debugLog('Health check failed, restarting sandbox');
+                await this.restart();
+            } else {
+                debugLog('Health check passed');
+            }
+        } catch (error) {
+            debugLog('Health check error:', error);
+            
+            // If we get a timeout or other error, restart the sandbox
+            try {
+                debugLog('Restarting sandbox due to health check error');
+                await this.restart();
+            } catch (restartError) {
+                debugLog('Failed to restart sandbox:', restartError);
+            }
+        } finally {
+            this.healthCheckInProgress = false;
+        }
+    }
+
+    async waitForReady() {
+        debugLog('Waiting for sandbox to be ready...');
+        
+        // Already ready
+        if (this.isReady) {
+            debugLog('Sandbox already ready');
+            return;
+        }
+        
+        // If we don't have an iframe, we can't wait for it to be ready
+        if (!this.iframe) {
+            debugLog('No iframe available, cannot wait for ready');
+            throw new Error('No iframe available');
+        }
+        
+        // Create a new promise that will be resolved when the sandbox is ready
+        const readyPromise = new Promise((resolve, reject) => {
+            debugLog('Setting up ready promise');
+            
+            // Ensure any existing readyResolve/readyReject are cleared
+            this.readyResolve = resolve;
+            this.readyReject = reject;
+            
+            // Set up a timeout
+            const timeout = setTimeout(() => {
+                debugLog('Sandbox ready timeout exceeded');
+                reject(new Error('Timeout waiting for sandbox to be ready'));
+            }, 30000); // 30 second timeout
+            
+            // Set up a one-time event listener for the ready message
+            const readyHandler = (event) => {
+                if (event.source === this.iframe.contentWindow && 
+                    event.data && 
+                    event.data.type === 'READY') {
+                    
+                    debugLog('Received READY message from sandbox');
+                    clearTimeout(timeout);
+                    window.removeEventListener('message', readyHandler);
+                    this.isReady = true;
+                    resolve();
+                }
+            };
+            
+            // Add the event listener
+            window.addEventListener('message', readyHandler);
+            
+            // Send a ping to check if the sandbox is already ready
+            if (this.iframe.contentWindow) {
+                debugLog('Sending ping to sandbox');
+                try {
+                    this.iframe.contentWindow.postMessage({ type: 'PING' }, '*');
+                } catch (error) {
+                    debugLog('Error sending ping to sandbox:', error);
+                    // Don't reject here, the timeout will handle it
+                }
+            }
+        });
+        
+        // Wait for the promise to resolve or reject
+        await readyPromise;
+        debugLog('Sandbox is now ready');
+    }
+
+    startHealthCheck() {
+        // Clear any existing interval first
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+        }
+        
+        // Set up health check interval (less frequent)
+        this.healthCheckInterval = setInterval(() => {
+            this.checkHealth();
+        }, 300000); // Check every 5 minutes instead of every 30 seconds
+    }
+
+    async loadModels() {
+        // Implementation depends on your model loading logic
+        // This is a placeholder
+        const faceNetModelPath = chrome.runtime.getURL('models/FaceNet/model.json');
+        await this.sendMessage({ 
+            type: 'LOAD_MODEL',
+            modelPath: faceNetModelPath
+        });
+    }
+
+    /**
+     * Send a message to the sandbox and wait for a response
+     * @param {Object} message - The message to send
+     * @param {number} timeout - Timeout in milliseconds
+     * @returns {Promise<Object>} - The response from the sandbox
+     */
+    sendMessage(message, timeout = 30000) {
+        // Initialize pendingRequests if it doesn't exist
+        if (!this.pendingRequests) {
+            this.pendingRequests = new Map();
+        }
+        
+        // Update last activity timestamp
+        this.lastActivity = Date.now();
+        
+        return new Promise((resolve, reject) => {
+            try {
+                // Check if sandbox is ready
+                if (!this.iframe || !this.iframe.contentWindow) {
+                    return reject(new Error('Sandbox frame not ready'));
+                }
+                
+                // Generate a unique ID for this request
+                const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                
+                // Add request ID to message
+                const messageWithId = {
+                    ...message,
+                    requestId
+                };
+                
+                // Set up timeout
+                const timeoutId = setTimeout(() => {
+                    // Remove from pending requests
+                    if (this.pendingRequests.has(requestId)) {
+                        this.pendingRequests.delete(requestId);
+                    }
+                    
+                    // Reject with timeout error
+                    reject(new Error(`Sandbox request timeout for ${message.type}`));
+                }, timeout);
+                
+                // Store in pending requests
+                this.pendingRequests.set(requestId, {
+                    resolve,
+                    reject,
+                    timeoutId,
+                    message: messageWithId,
+                    timestamp: Date.now()
+                });
+                
+                // Send message to sandbox
+                this.iframe.contentWindow.postMessage(messageWithId, '*');
+                
+                // Log message sent
+                console.log(`[SandboxManager] Sent message: ${message.type} (ID: ${requestId})`);
             } catch (error) {
+                console.error('[SandboxManager] Error sending message:', error);
                 reject(error);
             }
-        };
+        });
+    }
 
-        // First try loading directly with crossOrigin
-        if (originalImg.tagName === 'IMG') {
-            img.src = originalImg.src;
-        } else {
-            img.src = originalImg.getAttribute('xlink:href');
+    /**
+     * Handle messages from the sandbox
+     * @param {MessageEvent} event - The message event
+     */
+    handleMessage(event) {
+        try {
+            // Ensure event.data exists
+            if (!event.data) {
+                return;
+            }
+            
+            const data = event.data;
+            
+            // Update last activity timestamp
+            this.lastActivity = Date.now();
+            
+            // Handle ready message from sandbox
+            if (data.type === 'SANDBOX_READY' || data.type === 'READY') {
+                console.log('[SandboxManager] Sandbox reported ready');
+                this.isReady = true;
+                
+                // Resolve the ready promise if it exists
+                if (this.readyResolve) {
+                    this.readyResolve();
+                    this.readyResolve = null;
+                    this.readyReject = null;
+                }
+                return;
+            }
+            
+            // Handle response messages - Support both RESPONSE and other message types like TF_STATUS
+            if (data.requestId || (data.type && data.type.includes('_RESPONSE')) || data.type === 'TF_STATUS') {
+                // Initialize pendingRequests if it doesn't exist
+                if (!this.pendingRequests) {
+                    this.pendingRequests = new Map();
+                }
+                
+                // Find the pending request by requestId or infer from response type
+                let requestId = data.requestId;
+                
+                // If no requestId but it's a response to a known request type
+                if (!requestId && data.type) {
+                    // Try to find a pending request with a matching request type
+                    for (const [id, req] of this.pendingRequests.entries()) {
+                        if (req.message && req.message.type && 
+                            data.type === req.message.type + '_RESPONSE' || 
+                            (req.message.type === 'GET_TF_STATUS' && data.type === 'TF_STATUS')) {
+                            requestId = id;
+                            break;
+                        }
+                    }
+                }
+                
+                // Find the pending request
+                const request = requestId ? this.pendingRequests.get(requestId) : null;
+                
+                if (request) {
+                    // Clear the timeout
+                    if (request.timeoutId) {
+                        clearTimeout(request.timeoutId);
+                    }
+                    
+                    // Remove from pending requests
+                    this.pendingRequests.delete(requestId);
+                    
+                    // Resolve or reject based on response
+                    if (data.success === true || data.type === 'TF_STATUS' || data.type === 'HEALTH_CHECK_RESPONSE') {
+                        request.resolve(data);
+                    } else {
+                        // If the response has an error property, use it
+                        const errorMessage = data.error || 'Unknown error in sandbox response';
+                        request.reject(new Error(errorMessage));
+                    }
+                } else if (data.requestId) {
+                    console.warn(`[SandboxManager] Received response for unknown request: ${data.requestId}`);
+                }
+                return;
+            }
+            
+            // Handle other message types
+            console.log(`[SandboxManager] Received message: ${data.type}`);
+        } catch (error) {
+            console.error('[SandboxManager] Error handling message:', error);
         }
+    }
+
+    destroy() {
+        // Clear interval
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+        }
+
+        // Clear all pending requests
+        this.pendingRequests.forEach(request => {
+            clearTimeout(request.timeoutId);
+            request.reject(new Error('Sandbox destroyed'));
+        });
+        this.pendingRequests.clear();
+
+        // Remove iframe
+        if (this.iframe) {
+            document.body.removeChild(this.iframe);
+            this.iframe = null;
+        }
+
+        this.isReady = false;
+    }
+}
+
+// Initialize the sandboxManager if it doesn't exist yet
+if (!sandboxManager) {
+    sandboxManager = new SandboxManager();
+}
+
+//=============================================================================
+// 5. Image Processing
+//=============================================================================
+
+/**
+ * Process an image with memory-aware scheduling and progressive processing
+ * @param {HTMLImageElement} img - The image to process
+ * @returns {Promise<void>}
+ */
+async function processImage(img) {
+    // Skip if already processed or processing
+    if (img.dataset.processed === 'true' || img.dataset.processing === 'true') {
+        return;
+    }
+    
+    // Skip if image is too small
+    if (img.width < flagShowFrameonImage.minimumImageSize || 
+        img.height < flagShowFrameonImage.minimumImageSize) {
+        img.dataset.processed = 'true';
+        img.dataset.reason = 'too_small';
+        return;
+    }
+    
+    // Mark as processing
+    img.dataset.processing = 'true';
+    
+    try {
+        // Use progressive processing for large images
+        if (flagShowFrameonImage.progressiveProcessing && 
+            Math.max(img.width, img.height) > 1024) {
+            await processImageProgressively(img);
+        } else {
+            await processImageStandard(img);
+        }
+        
+        // Increment processed images counter
+        incrementProcessedImagesCount();
+        
+        // Mark as processed
+        img.dataset.processed = 'true';
+        img.dataset.processing = 'false';
+        
+        // Apply visual indicator if enabled
+        if (flagShowFrameonImage.frameProsessedImage) {
+            addProcessedFrame(img);
+        }
+    } catch (error) {
+        console.error(`Error processing image (${img.src.slice(0, 50)}...):`, error);
+        img.dataset.processing = 'false';
+        img.dataset.error = error.message;
+    }
+}
+
+/**
+ * Process an image progressively (low-res first, then high-res)
+ * @param {HTMLImageElement} img - The image to process
+ * @returns {Promise<void>}
+ */
+async function processImageProgressively(img) {
+    // First pass: low resolution for quick results
+    const maxDimension = Math.max(img.width, img.height);
+    const scale = 512 / maxDimension;
+    
+    // Get scaled image data
+    const lowResData = await getScaledImageData(img, scale);
+    
+    // Detect faces at low resolution
+    const lowResDetections = await detectFaces(lowResData);
+    
+    // Show preliminary results if faces found
+    if (lowResDetections.length > 0) {
+        visualizeResults(img, lowResDetections, { preliminary: true });
+    }
+    
+    // Second pass: full resolution for accuracy (only if faces detected)
+    if (lowResDetections.length > 0) {
+        const fullResData = await getImageData(img);
+        const fullResDetections = await detectFaces(fullResData);
+        
+        // Update with final results
+        visualizeResults(img, fullResDetections, { preliminary: false });
+        
+        // Apply actions based on mode
+        if (flagShowFrameonImage.processingMode === 'blur_mode') {
+            applyBlurToFaces(img, fullResDetections);
+        }
+    }
+}
+
+/**
+ * Process an image using standard approach
+ * @param {HTMLImageElement} img - The image to process
+ * @returns {Promise<void>}
+ */
+async function processImageStandard(img) {
+    // Get image data
+    const imageData = await getImageData(img);
+    
+    // Detect faces
+    const detections = await detectFaces(imageData);
+    
+    // Visualize results
+    visualizeResults(img, detections, { preliminary: false });
+    
+    // Apply actions based on mode
+    if (flagShowFrameonImage.processingMode === 'blur_mode') {
+        applyBlurToFaces(img, detections);
+    }
+}
+
+/**
+ * Get image data at a specific scale
+ * @param {HTMLImageElement} img - The image to process
+ * @param {number} scale - Scale factor (0-1)
+ * @returns {ImageData} Scaled image data
+ */
+async function getScaledImageData(img, scale) {
+    const canvas = document.createElement('canvas');
+    // Set willReadFrequently to true for better performance with multiple readbacks
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    
+    // Set canvas dimensions to scaled size
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    
+    // Draw image at scaled size
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    
+    // Get image data
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/**
+ * Detect faces in an image using the sandbox
+ * @param {ImageData} imageData - The image data to process
+ * @returns {Promise<Array>} Array of face detections
+ */
+async function detectFaces(imageData) {
+    try {
+        // Check if sandbox is ready
+        if (!sandboxManager.isReady) {
+            await sandboxManager.initialize();
+        }
+        
+        // Send message to sandbox for face detection
+        const response = await sandboxManager.sendMessage({
+            type: 'DETECT_FACES',
+            imageData: imageData
+        });
+        
+        if (!response.success) {
+            throw new Error(response.error || 'Face detection failed');
+        }
+        
+        return response.detections;
+    } catch (error) {
+        console.error('Face detection error:', error);
+        throw error;
+    }
+}
+
+/**
+ * Generate embedding for a face
+ * @param {ImageData} faceData - The face image data
+ * @returns {Promise<Array>} Face embedding vector
+ */
+async function generateEmbedding(faceData) {
+    try {
+        // Check if sandbox is ready
+        if (!sandboxManager.isReady) {
+            await sandboxManager.initialize();
+        }
+        
+        // Send message to sandbox for embedding generation
+        const response = await sandboxManager.sendMessage({
+            type: 'GENERATE_EMBEDDING',
+            imageData: faceData
+        });
+        
+        if (!response.success) {
+            throw new Error(response.error || 'Embedding generation failed');
+        }
+        
+        return response.embedding;
+    } catch (error) {
+        console.error('Embedding generation error:', error);
+        throw error;
+    }
+}
+
+//=============================================================================
+// 6. Initialization
+//=============================================================================
+
+/**
+ * Load user settings from chrome.storage
+ * @returns {Promise<Object>} The loaded settings
+ */
+async function loadSettings() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get({
+      // Default settings
+      enabled: true,
+      threshold: 0.6,
+      mode: 'highlight',
+      blurIntensity: 10,
+      showLabels: true,
+      processAll: false,
+      maxImagesPerPage: 50,
+      progressiveProcessing: true,
+      memoryManagement: true
+    }, (settings) => {
+      state.settings = settings;
+      console.log('Settings loaded:', settings);
+      resolve(settings);
+    });
+  });
+}
+
+// Function to check if models are in the root directory
+async function checkModelsInRootDirectory() {
+    console.log("Checking if models are in the root directory...");
+    
+    // List of model files that might be in the root directory
+    const modelFiles = [
+        'face_recognition_model-weights_manifest.json',
+        'face_landmark_68_model-weights_manifest.json',
+        'ssd_mobilenetv1_model-weights_manifest.json'
+    ];
+    
+    // Check if any of these files exist in the root directory
+    let foundInRoot = false;
+    for (const file of modelFiles) {
+        try {
+            const fileUrl = chrome.runtime.getURL(file);
+            const response = await fetch(fileUrl, { method: 'HEAD' });
+            if (response.ok) {
+                console.log(`Found model file in root directory: ${file}`);
+                foundInRoot = true;
+            }
+        } catch (error) {
+            // Continue to next file
+        }
+    }
+    
+    if (foundInRoot) {
+        console.warn("Models found in root directory. Please move them to the 'models' directory for better organization.");
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Initialize the extension
+ */
+async function initialize() {
+    // Check if already initialized or initializing
+    if (initializationComplete) {
+        console.log("FaceOne extension already initialized");
+        return;
+    }
+
+    if (isInitializing) {
+        console.log("FaceOne extension already initializing");
+        return;
+    }
+
+    // Check for refresh loop
+    if (checkRefreshLoop()) {
+        console.error("Detected refresh loop, disabling extension initialization");
+        return;
+    }
+
+    // Set initialization flags
+    debugLog("Setting initialization flags");
+    isInitializing = true;
+    initializationError = null;
+    initializationComplete = false;
+
+    try {
+        // Load settings
+        debugLog("Loading settings");
+        await loadSettings();
+
+        // Create sandbox frame
+        debugLog("Creating sandbox frame");
+        try {
+            await createSandboxFrame(60000); // Increase timeout to 60 seconds
+            debugLog("Sandbox frame created successfully");
+        } catch (error) {
+            // If sandbox creation fails, try again once more
+            debugLog("Error creating sandbox frame:", error);
+            debugLog("Retrying sandbox frame creation...");
+            await createSandboxFrame(90000); // Even longer timeout on retry
+        }
+
+        // Load FaceAPI models
+        debugLog("Loading FaceAPI models");
+        try {
+            await loadFaceApiModels();
+        } catch (error) {
+            debugLog("Error loading FaceAPI models:", error);
+            
+            // Try recovery method
+            debugLog("Attempting model loading recovery...");
+            try {
+                await recoverModelLoading();
+                debugLog("Model loading recovery successful");
+            } catch (recoveryError) {
+                debugLog("Model loading recovery failed:", recoveryError);
+                throw new Error(`Failed to load models: ${error.message}. Recovery also failed: ${recoveryError.message}`);
+            }
+        }
+        
+        // Continue with the rest of initialization...
+        // Load FaceNet model
+        debugLog("Loading FaceNet model");
+        try {
+            await loadFaceNetModel();
+        } catch (error) {
+            debugLog("Error loading FaceNet model:", error);
+            console.log("Model status at error:", getModelLoadingStatus());
+            // Continue anyway since we can still use FaceAPI models
+            debugLog("Continuing without FaceNet model");
+        }
+        
+        // Start processing existing images
+        processExistingImages();
+        
+        // Start observing for new images
+        observeElements();
+        
+        // Start document observer
+        startDocumentObserver();
+        
+        // Set up periodic resource verification (every 5 minutes instead of every minute)
+        setInterval(verifyResources, 5 * 60 * 1000);
+        
+        // Mark initialization as complete
+        initializationComplete = true;
+        debugLog("FaceOne extension initialized successfully");
+        
+        // Reset initialization flags
+        isInitializing = false;
+        
+        return true;
+    } catch (error) {
+        console.error("Initialization error:", error);
+        
+        // Set initialization error
+        initializationError = error;
+        
+        // Show notification
+        showNotification(`Initialization error: ${error.message}`);
+        
+        // Reset initialization flags
+        isInitializing = false;
+        
+        // Throw the error up
+        throw error;
+    }
+}
+
+/**
+ * Process existing images on the page
+ */
+function processExistingImages() {
+    const images = document.querySelectorAll('img:not([data-processed]):not([data-processing])');
+    
+    // Limit number of images to process
+    const imagesToProcess = Array.from(images).slice(0, flagShowFrameonImage.maxImagesPerPage);
+    
+    console.log(`Processing ${imagesToProcess.length} existing images...`);
+    
+    // Process images with a small delay between each to avoid freezing the page
+    imagesToProcess.forEach((img, index) => {
+        setTimeout(() => {
+            if (img.complete && img.naturalWidth > 0) {
+                processImage(img).catch(console.error);
+            } else {
+                img.onload = () => processImage(img).catch(console.error);
+            }
+        }, index * 100); // 100ms delay between each image
     });
 }
 
-function roundToMultipleOf32(num) {
-    return Math.ceil(num / 32) * 32;
+/**
+ * Show a notification to the user
+ * @param {string} message - The message to display
+ */
+function showNotification(message) {
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 15px 20px;
+        border-radius: 5px;
+        z-index: 10000;
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        max-width: 300px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    `;
+    notification.textContent = message;
+    
+    // Add to document
+    document.body.appendChild(notification);
+    
+    // Remove after 5 seconds
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transition = 'opacity 0.5s';
+        setTimeout(() => {
+            document.body.removeChild(notification);
+        }, 500);
+    }, 5000);
 }
 
-// Add new function to handle tiny image processing
-async function processTinyImage(img) {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    
-    // Calculate dimensions that are multiples of 32
-    const minSize = 32; // Minimum size required by TinyFaceDetector
-    const scaleFactor = Math.max(2, Math.ceil(32 / Math.min(img.width, img.height)));
-    const targetWidth = roundToMultipleOf32(img.width * scaleFactor);
-    const targetHeight = roundToMultipleOf32(img.height * scaleFactor);
-    
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    
-    // Use better upscaling algorithm
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-    
-    return {
-        canvas,
-        scaleFactor: {
-            x: targetWidth / img.width,
-            y: targetHeight / img.height
-        }
-    };
-}
-
-function selectFaceDetectionModel(img) {
-    const width = img.width || img.naturalWidth;
-    const height = img.height || img.naturalHeight;
-    const minDimension = Math.min(width, height);
-    const maxDimension = Math.max(width, height);
-    
-    // Skip images smaller than minimum size
-    if (minDimension < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
-        throw new Error(`Image too small for face detection (${width}x${height}). Minimum size required: ${MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE}px`);
-    }
-
-    // For small images, use tinyFaceDetector with optimized settings
-    if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
-        const inputSize = roundToMultipleOf32(Math.max(32, minDimension));
-        return {
-            model: 'tinyFaceDetector',
-            options: new faceapi.TinyFaceDetectorOptions({
-                ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
-                inputSize: inputSize,
-                scoreThreshold: 0.01,  // More lenient threshold for small images
-                minFaceSize: Math.max(16, Math.floor(minDimension * 0.3)), // Smaller minimum face size
-                scaleFactor: 0.5  // More granular scale steps
-            })
-        };
-    }
-
-    // For large images, use ssdMobilenetv1
-    if (minDimension >= MODEL_SELECTION_THRESHOLDS.LARGE_IMAGE) {
-        return {
-            model: 'ssdMobilenetv1',
-            options: new faceapi.SsdMobilenetv1Options({
-                ...FACE_API_DETECTION_OPTIONS.ssdMobilenetv1,
-                inputSize: roundToMultipleOf32(Math.min(640, minDimension))
-            })
-        };
-    }
-
-    // For medium-sized images, choose based on aspect ratio and image quality
-    const aspectRatio = width / height;
-    const isSquarish = aspectRatio > 0.7 && aspectRatio < 1.3;
-
-    // Prefer ssdMobilenetv1 for well-proportioned medium images
-    if (isSquarish && minDimension >= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE * 1.5) {
-        return {
-            model: 'ssdMobilenetv1',
-            options: new faceapi.SsdMobilenetv1Options({
-                ...FACE_API_DETECTION_OPTIONS.ssdMobilenetv1,
-                inputSize: roundToMultipleOf32(Math.min(640, minDimension))
-            })
-        };
-    }
-
-    // Default to tinyFaceDetector for other cases with adaptive input size
-    return {
-        model: 'tinyFaceDetector',
-        options: new faceapi.TinyFaceDetectorOptions({
-            ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
-            inputSize: roundToMultipleOf32(Math.max(32, minDimension)),
-            minFaceSize: Math.max(16, Math.floor(minDimension * 0.15))
-        })
-    };
-}
-
-// Update normalizeImageRotation to work without requiring EXIF
-async function normalizeImageRotation(img) {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    
-    // Set dimensions
-    canvas.width = img.width || img.naturalWidth;
-    canvas.height = img.height || img.naturalHeight;
-    
-    // Basic draw without rotation
-    try {
-        ctx.drawImage(img, 0, 0);
-        
-        // Try to detect rotation by analyzing the image content
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const shouldRotate = detectImageRotation(imageData);
-        
-        if (shouldRotate) {
-            // Create new canvas with swapped dimensions
-            const rotatedCanvas = document.createElement('canvas');
-            const rotatedCtx = rotatedCanvas.getContext('2d');
-            rotatedCanvas.width = canvas.height;
-            rotatedCanvas.height = canvas.width;
-            
-            // Rotate 90 degrees clockwise
-            rotatedCtx.translate(rotatedCanvas.width/2, rotatedCanvas.height/2);
-            rotatedCtx.rotate(Math.PI/2);
-            rotatedCtx.drawImage(canvas, -canvas.width/2, -canvas.height/2);
-            
-            return rotatedCanvas;
-        }
-        
-        return canvas;
-    } catch (error) {
-        console.error('Error in image rotation:', error);
-        return canvas; // Return original canvas if rotation fails
-    }
-}
-
-// Add helper function to detect if image needs rotation
-function detectImageRotation(imageData) {
-    // Simple heuristic: check if height is significantly larger than width
-    // This assumes portrait photos are more likely to need rotation
-    const aspectRatio = imageData.width / imageData.height;
-    return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
-}
-
-// Add helper function to detect Facebook profile images
-function isFacebookProfileImage(element) {
-    // Check if element is within Facebook's profile picture container
-    return element.closest('[data-visualcompletion="media-vc-image"]') !== null ||
-           element.closest('[data-type="profile_picture"]') !== null ||
-           element.closest('.profile-photo-container') !== null;
-}
-
-// Update the detectFacesWithFaceApi function to use the helper
-async function detectFacesWithFaceApi(img) {
-    const wrapper = createWrapper(img);
-    const processingKey = `processing_${Date.now()}`;
-    wrapper.setAttribute('data-processing-key', processingKey);
-    
-    try {
-        await Promise.all([
-            ensureModelsLoaded(),
-            loadPositiveEmbeddings()
-        ]);
-        
-        const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
-        
-        if (flagShowFrameonImage.addLabel) {
-            addLoadingIndicator(wrapper);
-        }
-
-        let proxyImg;
-        try {
-            proxyImg = await createProxyImage(img);
-            proxyImg = await normalizeImageRotation(proxyImg);
-        } catch (error) {
-            console.warn('Image normalization failed, proceeding with original:', error);
-            proxyImg = img; // Fall back to original image
-        }
-
-        // Create scaled version of the image if needed
-        const scaledCanvas = await createScaledImage(proxyImg);
-        const scaleFactor = scaledCanvas.scaleFactor || 1;
-
-        // Try multiple angles if initial detection fails
-        let detections = [];
-        // Expanded angles array to handle more orientations
-        const angles = [0, -15, 15, -30, 30, -45, 45, 90, -90]; 
-        
-        for (const angle of angles) {
-            if (detections.length === 0) {
-                const rotatedCanvas = await rotateImage(scaledCanvas, angle);
-                const { model, options } = selectFaceDetectionModel(rotatedCanvas);
-                
-                try {
-                    const angleDetections = await (model === 'ssdMobilenetv1' 
-                        ? faceapi.detectAllFaces(rotatedCanvas, options)
-                        : faceapi.detectAllFaces(rotatedCanvas, options));
-                    
-                    if (angleDetections.length > 0) {
-                        detections = adjustDetectionCoordinates(angleDetections, angle, rotatedCanvas);
-                        console.log(`Found faces at ${angle} degrees rotation`);
-                        break;
-                    }
-                } catch (error) {
-                    console.warn(`Detection failed at ${angle} degrees:`, error);
-                    continue;
-                }
-            }
-        }
-
-        // Scale back detections if we upscaled
-        if (scaleFactor !== 1) {
-            detections = detections.map(detection => ({
-                ...detection,
-                box: {
-                    x: detection.box.x / scaleFactor,
-                    y: detection.box.y / scaleFactor,
-                    width: detection.box.width / scaleFactor,
-                    height: detection.box.height / scaleFactor
-                }
-            }));
-        }
-
-        const faceEmbeddings = [];
-        for (const detection of detections) {
-            const faceCanvas = await extractFaceRegion(proxyImg, detection);
-            try {
-                const embedding = await generateEmbedding(faceCanvas);
-                const comparison = await compareWithPositiveEmbeddings(embedding);
-                
-                faceEmbeddings.push({
-                    embedding,
-                    detection,
-                    similarity: comparison.maxSimilarity,
-                    matchIndex: comparison.matchIndex
-                });
-                
-                console.log(`Face detected with similarity score: ${(comparison.maxSimilarity * 100).toFixed(2)}%`);
-            } catch (error) {
-                console.error('Embedding generation error:', error);
-            }
-        }
-
-        // Store embeddings and comparison results
-        if (faceEmbeddings.length > 0) {
-            imageTracker.add(src, {
-                embeddings: faceEmbeddings,
-                timestamp: Date.now()
-            });
-
-            // Handle different processing modes
-            if (flagShowFrameonImage.processingMode === 'face_detection') {
-                // Face detection mode: show frames and labels
-                updateVisualizationWithSimilarity(wrapper, img, faceEmbeddings);
-            } else if (flagShowFrameonImage.processingMode === 'blur') {
-                // Blur mode: blur faces that match the criteria
-                const shouldBlur = faceEmbeddings.some(face => 
-                    face.similarity >= flagShowFrameonImage.confidenceThreshold / 100
-                );
-                
-                if (shouldBlur) {
-                    // Apply blur effect to the image
-                    img.style.filter = 'blur(10px)';
-                    if (flagShowFrameonImage.addLabel) {
-                        addResultIndicator(wrapper, 'Image blurred - Similar faces detected');
-                    }
-                } else {
-                    img.style.filter = 'none';
-                    if (flagShowFrameonImage.addLabel) {
-                        addResultIndicator(wrapper, 'No matching faces detected');
-                    }
-                }
-            }
-        } else {
-            // Clear any existing visualizations
-            const existingCanvas = wrapper.querySelector('.face-detection-canvas');
-            const processingIndicator = wrapper.querySelector('.processing-indicator');
-            if (existingCanvas) existingCanvas.remove();
-            if (processingIndicator) processingIndicator.remove();
-
-            if (flagShowFrameonImage.addLabel) {
-                addResultIndicator(wrapper, `No faces detected (${scaledCanvas.width}x${scaledCanvas.height})`);
-            }
-            
-            // Ensure no blur is applied when no faces are detected
-            if (flagShowFrameonImage.processingMode === 'blur') {
-                img.style.filter = 'none';
-            }
-        }
-        
-        // Mark image as processed
-        imageTracker.markProcessed(src, true);
-        
-        // Verify wrapper still exists and matches our processing key
-        if (!wrapper.isConnected || wrapper.getAttribute('data-processing-key') !== processingKey) {
-            console.warn('Wrapper was removed or replaced during processing');
-            return;
-        }
-        
-        if (isFacebookProfileImage(img)) {
-            // Handle Facebook profile picture specific cleanup
-            const svgParent = wrapper.previousSibling;
-            if (svgParent?.tagName.toLowerCase() === 'svg') {
-                const image = svgParent.querySelector('image');
-                if (image) {
-                    image.style.opacity = '0';
-                }
-            }
-        }
-        
-    } catch (error) {
-        console.error('Face detection error:', error);
-        // Ensure image remains visible on error
-        if (img.style.visibility === 'hidden') {
-            img.style.visibility = 'visible';
-        }
-        throw error;
-    }
+// Initialize on document ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initialize);
+} else {
+    initialize();
 }
 
 //=============================================================================
-// UI Management
+// 7. UI Management
 //=============================================================================
 
 // Optimize queue processing with batching and prioritization
-const processingQueue = {
-    items: [],
-    processing: false,
-    batchSize: 5,  // Increased from 3 to 5 for better throughput
-    processingTimeout: 20000, // 20 second timeout for processing
-    
-    add(element, priority = false) {
-        const item = { 
-            element, 
-            priority,
-            timestamp: Date.now() 
-        };
-        
-        if (priority) {
-            this.items.unshift(item);
-        } else {
-            this.items.push(item);
-        }
-        
-        // Start processing if not already running
-        if (!this.processing) {
-            this.process();
-        }
-    },
-    
-    async process() {
-        if (this.processing || this.items.length === 0) return;
-        
-        this.processing = true;
-        while (this.items.length > 0) {
-            // Process items in batches with timeout protection
-            const batch = this.items.splice(0, this.batchSize);
-            const promises = batch.map(async ({ element, timestamp }) => {
-                try {
-                    // Skip if item is too old
-                    if (Date.now() - timestamp > this.processingTimeout) {
-                        console.log('Skipping stale item');
-                        return;
-                    }
-                    
-                    const src = element.tagName === 'IMG' ? 
-                        element.src : element.getAttribute('xlink:href');
-                    
-                    // Check cache first
-                    if (imageTracker.has(src)) {
-                        return;
-                    }
-                    
-                    await Promise.race([
-                        detectFacesWithFaceApi(element),
-                        new Promise((_, reject) => 
-                            setTimeout(() => reject(new Error('Processing timeout')), 
-                            this.processingTimeout)
-                        )
-                    ]);
-                } catch (error) {
-                    console.error('Processing error:', error);
-                }
-            });
-            
-            await Promise.all(promises);
-            
-            // Add small delay between batches but make it dynamic
-            const delay = Math.max(50, Math.min(batch.length * 20, 200));
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-        this.processing = false;
-    }
-};
+// processingQueue is now defined at the top of the file
+// const processingQueue = {
+//     queue: [],
+//     paused: false,
+//     
+//     pause() {
+//         this.paused = true;
+//         console.log('Processing queue paused');
+//     },
+//     
+//     resume() {
+//         this.paused = false;
+//         console.log('Processing queue resumed');
+//         
+//         // If we have items in the queue, start processing
+//         if (this.queue.length > 0) {
+//             this.process();
+//         }
+//     },
+//     
+//     add(element, priority = false) {
+//         if (!element) return;
+//         
+//         // Skip if already in queue
+//         if (this.queue.some(item => item.element === element)) {
+//             return;
+//         }
+//         
+//         // Add to queue with priority flag
+//         const item = { element, priority };
+//         
+//         if (priority) {
+//             this.queue.unshift(item); // Add to front if priority
+//         } else {
+//             this.queue.push(item); // Add to end otherwise
+//         }
+//         
+//         // Start processing if not paused
+//         if (!this.paused) {
+//             this.process();
+//         }
+//     },
+//     
+//     async process() {
+//         // Skip if paused or already processing
+//         if (this.paused || state.isProcessing) return;
+//         
+//         // Skip if queue is empty
+//         if (this.queue.length === 0) return;
+//         
+//         // Set processing flag
+//         state.isProcessing = true;
+//         
+//         try {
+//             // Get next item from queue
+//             const item = this.queue.shift();
+//             
+//             // Process the item
+//             await handleVisibleElement(item.element);
+//         } catch (error) {
+//             console.error('Error processing queue item:', error);
+//         } finally {
+//             // Reset processing flag
+//             state.isProcessing = false;
+//             
+//             // Continue processing if items remain and not paused
+//             if (this.queue.length > 0 && !this.paused) {
+//                 // Use setTimeout to avoid blocking the main thread
+//                 setTimeout(() => this.process(), 10);
+//             }
+//         }
+//     }
+// };
 
 // Helper functions for improved visualization
 function createWrapper(element) {
@@ -1092,11 +1806,15 @@ function createWrapper(element) {
             wrapper.setAttribute('data-original-container', isFacebookProfile.className);
             wrapper.setAttribute('data-image-type', 'facebook-profile');
             
-            // Insert wrapper next to original SVG
-            svgParent.parentNode.insertBefore(wrapper, svgParent.nextSibling);
-            
-            // Don't hide original immediately
-            element.style.opacity = '0.01';
+            // Insert wrapper next to original SVG - with null check
+            if (svgParent && svgParent.parentNode) {
+                svgParent.parentNode.insertBefore(wrapper, svgParent.nextSibling);
+                
+                // Don't hide original immediately
+                element.style.opacity = '0.01';
+            } else {
+                console.log("[FaceOne] Could not insert wrapper: parent node not found");
+            }
         } else {
             // Regular SVG image handling
             wrapper.style.position = 'relative';
@@ -1105,7 +1823,13 @@ function createWrapper(element) {
             imgElement.style.height = '100%';
             imgElement.style.objectFit = 'contain';
             
-            element.parentNode.insertBefore(wrapper, element);
+            // Add null check before inserting
+            if (element && element.parentNode) {
+                element.parentNode.insertBefore(wrapper, element);
+            } else {
+                console.log("[FaceOne] Could not insert wrapper: parent node not found");
+                return null; // Return null to indicate failure
+            }
         }
         
         wrapper.appendChild(imgElement);
@@ -1122,8 +1846,14 @@ function createWrapper(element) {
     element.style.height = '100%';
     element.style.objectFit = 'contain';
     
-    element.parentNode.insertBefore(wrapper, element);
-    wrapper.appendChild(element);
+    // Add null check before inserting
+    if (element && element.parentNode) {
+        element.parentNode.insertBefore(wrapper, element);
+        wrapper.appendChild(element);
+    } else {
+        console.log("[FaceOne] Could not insert wrapper: parent node not found");
+        return null; // Return null to indicate failure
+    }
     
     return wrapper;
 }
@@ -1719,211 +2449,192 @@ async function initializeExtensionContext() {
     });
 }
 
-// Modify initialization sequence
-window.addEventListener('load', async () => {
-    console.log('Initializing FaceOne extension...');
-    
+// Check if we're in an infinite refresh loop
+function checkRefreshLoop() {
     try {
-        // First ensure extension context is available
-        await initializeExtensionContext();
-        console.log('Extension context initialized');
-        
-        // Create and initialize sandbox frame with TensorFlow
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            await createSandboxFrame();
-            console.log('Sandbox frame created');
-            
-            // Additional wait to ensure frame is fully ready
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            console.log('Waiting period completed');
+        // First check if the extension is already disabled
+        if (isExtensionDisabled()) {
+            return true;
         }
         
-        // Load models
-        console.log('Starting model loading sequence...');
-        await loadFaceApiModels();
+        // Get current refresh data from session storage
+        const refreshData = sessionStorage.getItem(PAGE_REFRESH_KEY);
+        let refreshCount = 0;
+        let lastRefresh = 0;
         
-        // Start processing if auto-processing is enabled
-        if (flagShowFrameonImage.autoProcessImages) {
-            console.log('Auto-processing enabled, starting image processing...');
-            await processExistingImages();
-            observeElements();
+        if (refreshData) {
+            const data = JSON.parse(refreshData);
+            refreshCount = data.count || 0;
+            lastRefresh = data.timestamp || 0;
         }
         
-    } catch (error) {
-        console.error('Initialization error:', error);
-        console.error('Model status at error:', JSON.stringify(modelStatus, null, 2));
+        const now = Date.now();
         
-        // Cleanup and retry
-        if (error.message.includes('Extension context') || 
-            error.message.includes('Sandbox frame') ||
-            error.message.includes('TF initialization')) {
+        // Check if we're within the cooldown period
+        if (now - lastRefresh < REFRESH_COOLDOWN) {
+            // Increment refresh count
+            refreshCount++;
             
-            if (sandboxFrame) {
-                try {
-                    document.body.removeChild(sandboxFrame);
-                } catch (e) {
-                    console.warn('Error removing sandbox frame:', e);
-                }
-                sandboxFrame = null;
-            }
+            // Log refresh count
+            console.log(`Page refresh detected (${refreshCount}/${MAX_REFRESHES})`);
             
-            clearModelStatus();
-            
-            // Retry initialization after a delay
-            setTimeout(() => {
-                console.log('Retrying initialization...');
-                window.location.reload();
-            }, 2000);
-        }
-    }
-});
-
-// Add function to ensure TensorFlow is ready
-async function ensureTensorFlowReady() {
-    if (!sandboxFrame || !sandboxFrame.contentWindow) {
-        throw new Error('Sandbox frame not available');
-    }
-
-    const status = await checkTensorFlowStatus();
-    if (!status.isInitialized || !status.tfBackendInitialized) {
-        throw new Error('TensorFlow not properly initialized');
-    }
-}
-
-// Modify processExistingImages to ensure models are ready
-async function processExistingImages() {
-    try {
-        // Ensure models are loaded before starting
-        if (!state.modelsLoaded) {
-            console.log('Models not loaded, loading now...');
-            await loadFaceApiModels();
-        }
-
-        console.log('Scanning page for images...');
-        const elements = [
-            ...Array.from(document.getElementsByTagName('img')),
-            ...Array.from(document.getElementsByTagName('image')),
-            ...Array.from(document.querySelectorAll('svg image[xlink\\:href]')),
-            ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"]'))
-        ].filter(element => isValidElement(element));
-        
-        console.log(`Found ${elements.length} valid images to process`);
-        
-        // Process images in batches with delay between batches
-        const batchSize = 1;  // Keep this at 1 for better stability
-        for (let i = 0; i < elements.length; i += batchSize) {
-            const batch = elements.slice(i, i + batchSize);
-            await Promise.all(batch.map(async element => {
-                if (element.complete || element.tagName === 'image') {
-                    try {
-                        await handleVisibleElement(element);
-                    } catch (error) {
-                        console.error('Error processing image:', error);
-                    }
-                }
+            // Update session storage
+            sessionStorage.setItem(PAGE_REFRESH_KEY, JSON.stringify({
+                count: refreshCount,
+                timestamp: now
             }));
             
-            // Increase delay between batches
-            await new Promise(resolve => setTimeout(resolve, 500)); // Increased from 100ms to 500ms
+            // Check if we've exceeded the maximum number of refreshes
+            if (refreshCount > MAX_REFRESHES) {
+                // Set a flag to disable the extension for a longer period (30 minutes)
+                const disableUntil = now + 30 * 60 * 1000; // 30 minutes
+                localStorage.setItem('faceone_disabled_until', disableUntil.toString());
+                
+                console.error(`Refresh loop detected (${refreshCount} refreshes in ${REFRESH_COOLDOWN/1000}s). Extension disabled for 30 minutes.`);
+                return true;
+            }
+            
+            // Check if we should permanently disable the extension
+            if (refreshCount > MAX_REFRESHES * 3) {
+                console.error(`Severe refresh loop detected (${refreshCount} refreshes). Extension permanently disabled.`);
+                localStorage.setItem('faceone_permanently_disabled', 'true');
+                return true;
+            }
+        } else {
+            // Reset refresh count if outside cooldown period
+            sessionStorage.setItem(PAGE_REFRESH_KEY, JSON.stringify({
+                count: 1,
+                timestamp: now
+            }));
         }
         
-        console.log('Finished processing existing images');
+        return false;
     } catch (error) {
-        console.error('Error processing existing images:', error);
+        console.warn(`Error checking refresh loop:`, error);
+        return false;
     }
 }
 
-// Modify generateEmbedding to ensure model readiness
-async function generateEmbedding(faceCanvas) {
-    return new Promise((resolve, reject) => {
-        const checkModelStatus = (event) => {
-            if (event.data.type === 'MODEL_STATUS') {
-                window.removeEventListener('message', checkModelStatus);
-                if (event.data.isReady) {
-                    proceedWithEmbedding();
-                } else {
-                    reject(new Error('FaceNet model not ready: ' + (event.data.reason || 'Unknown reason')));
-                }
-            }
-        };
-
-        const proceedWithEmbedding = () => {
-            const handleEmbedding = (event) => {
-                if (event.data.type === 'EMBEDDING_GENERATED') {
-                    window.removeEventListener('message', handleEmbedding);
-                    if (event.data.success) {
-                        resolve(new Float32Array(event.data.embedding));
-                    } else {
-                        reject(new Error(event.data.error || 'Embedding generation failed'));
-                    }
-                }
-            };
-
-            window.addEventListener('message', handleEmbedding);
-            const imageData = faceCanvas.getContext('2d').getImageData(0, 0, faceCanvas.width, faceCanvas.height);
+// Reset the refresh loop counter
+function resetRefreshLoop() {
+    try {
+        // Clear session storage refresh counter
+        sessionStorage.removeItem(PAGE_REFRESH_KEY);
+        
+        // Clear all disable flags
+        localStorage.removeItem('faceone_disabled_until');
+        localStorage.removeItem('faceone_permanently_disabled');
+        localStorage.removeItem('faceone_permanent_disable'); // Old key for backward compatibility
+        
+        console.log('[FaceOne] Refresh loop counter and disable flags reset');
+        
+        // Force re-initialization if extension was previously disabled
+        // Only check initializationComplete if it's defined
+        if (typeof initializationComplete !== 'undefined' && !initializationComplete) {
+            console.log('[FaceOne] Re-initializing extension after reset');
             
-            sandboxFrame.contentWindow.postMessage({
-                type: 'GENERATE_EMBEDDING',
-                imageData: Array.from(imageData.data)
-            }, '*');
-
-            setTimeout(() => {
-                window.removeEventListener('message', handleEmbedding);
-                reject(new Error('Embedding generation timeout'));
-            }, 30000);
-        };
-
-        window.addEventListener('message', checkModelStatus);
-        sandboxFrame.contentWindow.postMessage({
-            type: 'CHECK_MODEL_STATUS',
-            modelName: 'faceNet'
-        }, '*');
-
-        setTimeout(() => {
-            window.removeEventListener('message', checkModelStatus);
-            reject(new Error('Model status check timeout'));
-        }, 5000);
-    });
-}
-
-// Add function to load your new model
-async function loadMyModel() {
-    const modelPath = chrome.runtime.getURL('models/myModel/tfjs_graph_model/model.json');
-    await loadTFModel('myModel', modelPath);
-}
-
-// Add function to run inference with your model
-async function runModelInference(modelName, inputData, inputShape) {
-    if (!modelStatus[modelName].loaded) {
-        throw new Error(`${modelName} model not loaded`);
-    }
-
-    return new Promise((resolve, reject) => {
-        const handleMessage = (event) => {
-            if (event.data.type === 'INFERENCE_COMPLETE' && event.data.modelName === modelName) {
-                window.removeEventListener('message', handleMessage);
-                if (event.data.success) {
-                    resolve(event.data.result);
-                } else {
-                    reject(new Error(event.data.error));
-                }
+            // Make sure initialize is defined before trying to call it
+            if (typeof initialize === 'function') {
+                setTimeout(() => {
+                    initialize().catch(error => {
+                        console.error('[FaceOne] Re-initialization failed:', error);
+                    });
+                }, 1000);
+            } else {
+                console.log('[FaceOne] Cannot re-initialize: initialize function not available yet');
             }
+        }
+    } catch (e) {
+        console.warn('[FaceOne] Error resetting refresh loop:', e);
+    }
+}
+
+// Add a message listener for commands from the popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'resetRefreshLoop') {
+        resetRefreshLoop();
+        sendResponse({ success: true, message: 'Refresh loop counter reset' });
+        return true;
+    }
+    
+    if (message.action === 'getStatus') {
+        // Get current status
+        const status = {
+            initialized: typeof initializationComplete !== 'undefined' && initializationComplete,
+            initializing: typeof isInitializing !== 'undefined' && isInitializing,
+            attempts: typeof initializationAttempts !== 'undefined' ? initializationAttempts : 0,
+            sandboxReady: sandboxManager && sandboxManager.isReady,
+            refreshLoopActive: checkRefreshLoop()
         };
         
-        window.addEventListener('message', handleMessage);
-        sandboxFrame.contentWindow.postMessage({
-            type: 'RUN_INFERENCE',
-            modelName: modelName,
-            inputData: inputData,
-            inputShape: inputShape
-        }, '*');
-        
-        setTimeout(() => {
-            window.removeEventListener('message', handleMessage);
-            reject(new Error('Inference timeout'));
-        }, 30000);
-    });
-}
+        sendResponse({ success: true, status });
+        return true;
+    }
+    
+    // Add handler for GET_MEMORY_STATS
+    if (message.type === 'GET_MEMORY_STATS') {
+        try {
+            // Get model loading status
+            const modelStatus = getModelLoadingStatus();
+            
+            // Get memory stats from tf if available
+            let memoryStats = {
+                numTensors: 0,
+                memoryMB: 0,
+                imagesProcessed: imagesProcessed || 0,
+                cacheSize: 0
+            };
+            
+            // Try to get stats from sandbox if available
+            if (sandboxManager && sandboxManager.isReady) {
+                sandboxManager.sendMessage({ type: 'GET_TF_STATUS' }, 5000)
+                    .then(response => {
+                        if (response && response.status && response.status.memory) {
+                            const memory = response.status.memory;
+                            memoryStats.numTensors = memory.numTensors || 0;
+                            memoryStats.memoryMB = Math.round((memory.numBytes || 0) / (1024 * 1024));
+                        }
+                        
+                        sendResponse({ 
+                            success: true, 
+                            stats: memoryStats,
+                            modelStatus: modelStatus
+                        });
+                    })
+                    .catch(error => {
+                        console.error('Error getting memory stats from sandbox:', error);
+                        sendResponse({ 
+                            success: true, 
+                            stats: memoryStats,
+                            modelStatus: modelStatus,
+                            error: 'Failed to get detailed stats from sandbox'
+                        });
+                    });
+                
+                // Return true to indicate we'll send the response asynchronously
+                return true;
+            } else {
+                // No sandbox available, return basic stats
+                sendResponse({ 
+                    success: true, 
+                    stats: memoryStats,
+                    modelStatus: modelStatus,
+                    sandboxStatus: 'Not available'
+                });
+                return true;
+            }
+        } catch (error) {
+            console.error('Error getting memory stats:', error);
+            sendResponse({ 
+                success: false, 
+                error: 'Error retrieving memory stats: ' + error.message
+            });
+            return true;
+        }
+    }
+    
+    return false;
+});
 
 /**
  * Computes similarity between two face embeddings
@@ -1932,596 +2643,413 @@ async function runModelInference(modelName, inputData, inputShape) {
  * @returns {Promise<number>} Similarity score between 0 and 1
  */
 async function computeFaceSimilarity(embedding1, embedding2) {
-    if (!modelStatus.myModel.loaded) {
-        throw new Error('Similarity model not loaded');
+    try {
+        // Ensure sandbox manager exists
+        ensureSandboxManager();
+        
+        // Check if sandbox is ready
+        if (!sandboxManager || !sandboxManager.isReady) {
+            throw new Error('Sandbox not ready for similarity computation');
+        }
+        
+        // Validate embeddings
+        if (!embedding1 || !embedding2 || !Array.isArray(embedding1) || !Array.isArray(embedding2)) {
+            throw new Error('Invalid embeddings provided for similarity computation');
+        }
+        
+        // Send compute request to sandbox
+        const response = await sandboxManager.sendMessage({
+            type: 'COMPUTE_SIMILARITY',
+            embedding1,
+            embedding2
+        }, 10000); // 10 second timeout
+        
+        if (!response || !response.success) {
+            throw new Error(response?.error || 'Failed to compute similarity');
+        }
+        
+        return response.similarity;
+    } catch (error) {
+        console.error('Error computing face similarity:', error);
+        throw error;
     }
+}
 
-    return new Promise((resolve, reject) => {
-        const handleMessage = (event) => {
-            if (event.data.type === 'SIMILARITY_COMPUTED') {
-                window.removeEventListener('message', handleMessage);
-                if (event.data.success) {
-                    resolve(event.data.similarity);
-                } else {
-                    reject(new Error(event.data.error));
+// Add function to ensure TensorFlow is ready
+async function ensureTensorFlowReady() {
+    debugLog('Ensuring TensorFlow is ready');
+    
+    // Check if sandbox is ready
+    if (!sandboxManager || !sandboxManager.isReady) {
+        throw new Error('Sandbox not ready for TensorFlow check');
+    }
+    
+    // Check TensorFlow status
+    const status = await checkTensorFlowStatus();
+    
+    if (!status || !status.isInitialized) {
+        throw new Error('TensorFlow not properly initialized');
+    }
+    
+    debugLog('TensorFlow is ready');
+    return true;
+}
+
+// Add function to check TensorFlow status
+async function checkTensorFlowStatus() {
+    debugLog('Checking TensorFlow status');
+    
+    // Check if sandbox is ready
+    if (!sandboxManager || !sandboxManager.isReady) {
+        throw new Error('Sandbox not ready for TensorFlow status check');
+    }
+    
+    try {
+        debugLog('Sending GET_TF_STATUS message to sandbox');
+        
+        // Send status request to sandbox with a longer timeout
+        const response = await sandboxManager.sendMessage({
+            type: 'GET_TF_STATUS'
+        }, 20000); // Increased to 20 second timeout
+        
+        if (!response) {
+            debugLog('No response received from sandbox for TensorFlow status');
+            throw new Error('No response received from sandbox for TensorFlow status');
+        }
+        
+        if (!response.success) {
+            debugLog('Error in response from sandbox:', response.error);
+            throw new Error(response.error || 'Failed to get TensorFlow status');
+        }
+        
+        debugLog('TensorFlow status:', response.status);
+        return response.status;
+    } catch (error) {
+        debugLog('Error checking TensorFlow status:', error);
+        
+        // If it's a timeout, provide more detailed error
+        if (error.message && error.message.includes('timeout')) {
+            debugLog('TensorFlow status check timed out, sandbox may be stuck');
+            throw new Error('Sandbox request timeout for GET_TF_STATUS - try reloading the page');
+        }
+        
+        throw error;
+    }
+}
+
+/**
+ * Verify that all required resources are available and ready
+ * @returns {Promise<boolean>} True if all resources are ready
+ */
+async function verifyResources() {
+    console.log("Verifying resources...");
+    
+    try {
+        // Check if models directory exists
+        const modelsExist = await checkDirectoryExists('models');
+        if (!modelsExist) {
+            console.warn("Models directory not found. Resources verification failed.");
+            return false;
+        }
+        
+        // Check sandbox status
+        let sandboxReady = false;
+        if (sandboxManager && sandboxManager.isReady) {
+            console.log("Sandbox is ready");
+            sandboxReady = true;
+        } else {
+            console.warn("Sandbox is not ready");
+        }
+        
+        // Check TensorFlow status
+        let tensorflowReady = false;
+        if (sandboxReady) {
+            try {
+                await checkTensorFlowStatus();
+                console.log("TensorFlow is ready");
+                tensorflowReady = true;
+            } catch (error) {
+                console.warn("TensorFlow is not ready:", error);
+            }
+        }
+        
+        // Check model loading status
+        const modelStatus = getModelLoadingStatus();
+        console.log("Model loading status:", modelStatus);
+        
+        // Check if all required resources are ready
+        const allReady = sandboxReady && 
+                         tensorflowReady && 
+                         modelStatus.faceApi.loaded && 
+                         modelStatus.faceNet.loaded;
+        
+        console.log("Resources verification result:", allReady ? "SUCCESS" : "FAILED");
+        return allReady;
+    } catch (error) {
+        console.error("Error verifying resources:", error);
+        return false;
+    }
+}
+
+/**
+ * Check if a directory exists
+ * @param {string} path - The path to check
+ * @returns {Promise<boolean>} - True if the directory exists
+ */
+async function checkDirectoryExists(path) {
+    try {
+        console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Checking if directory exists: ${path}`);
+        
+        // For Chrome extensions, we can't directly check if a directory exists
+        // Instead, we'll check for specific files that should be in the directory
+        
+        // Don't try to access the directory directly - Chrome doesn't allow this
+        // Instead, check for specific model files
+        
+        // For models directory, check for specific model files
+        if (path === 'models') {
+            // Define files to check for
+            const files = [
+                // Face recognition model
+                'models/face_recognition_model-weights_manifest.json',
+                // Face landmark model
+                'models/face_landmark_68_model-weights_manifest.json',
+                // SSD Mobilenet (if inside FaceAPI directory)
+                'models/FaceAPI/ssd_mobilenetv1/ssd_mobilenetv1_model-weights_manifest.json'
+            ];
+            
+            // Check each file
+            for (const file of files) {
+                try {
+                    const fileUrl = chrome.runtime.getURL(file);
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Testing model file: ${fileUrl}`);
+                    
+                    const response = await fetch(fileUrl, { 
+                        method: 'HEAD',
+                        cache: 'no-cache'
+                    });
+                    
+                    if (response.ok) {
+                        console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Found model file: ${file.split('/').pop()}`);
+                        return true;
+                    }
+                } catch (error) {
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Failed to check model file ${file}: ${error.message}`);
+                    // Continue checking other files
                 }
             }
+            
+            // Check for files in root directory for backward compatibility
+            const rootFiles = [
+                'face_recognition_model-weights_manifest.json',
+                'face_landmark_68_model-weights_manifest.json'
+            ];
+            
+            for (const file of rootFiles) {
+                try {
+                    const fileUrl = chrome.runtime.getURL(file);
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Testing root model file: ${fileUrl}`);
+                    
+                    const response = await fetch(fileUrl, { 
+                        method: 'HEAD',
+                        cache: 'no-cache'
+                    });
+                    
+                    if (response.ok) {
+                        console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Found model file in root: ${file}`);
+                        return true;
+                    }
+                } catch (error) {
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Failed to check root model file ${file}: ${error.message}`);
+                }
+            }
+            
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Could not find any model files`);
+            return false;
+        }
+        
+        // For other directories, use a simpler approach - check a known file
+        const testFiles = {
+            'models/FaceAPI': 'models/FaceAPI/ssd_mobilenetv1/ssd_mobilenetv1_model-weights_manifest.json',
+            'models/FaceNet': 'models/FaceNet/Facenet512_tfjs_graph_model/model.json',
+            'lib': 'lib/face-api.min.js',
+            'js': 'js/content.js',
+            'css': 'css/styles.css'
         };
         
-        window.addEventListener('message', handleMessage);
-        sandboxFrame.contentWindow.postMessage({
-            type: 'COMPUTE_SIMILARITY',
-            embedding1: Array.from(embedding1),
-            embedding2: Array.from(embedding2)
-        }, '*');
-        
-        setTimeout(() => {
-            window.removeEventListener('message', handleMessage);
-            reject(new Error('Similarity computation timeout'));
-        }, 30000);
-    });
-}
-
-// Add retry mechanism for model loading
-async function retryModelLoad(loadFunction, maxAttempts = 3, delayMs = 1000) {
-    let lastError;
-    
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-            console.log(`Attempt ${attempt}/${maxAttempts} to load model...`);
-            return await loadFunction();
-        } catch (error) {
-            console.warn(`Load attempt ${attempt} failed:`, error);
-            lastError = error;
-            
-            if (attempt < maxAttempts) {
-                console.log(`Waiting ${delayMs}ms before retry...`);
-                await new Promise(resolve => setTimeout(resolve, delayMs * attempt));
+        const testFile = testFiles[path];
+        if (testFile) {
+            try {
+                const fileUrl = chrome.runtime.getURL(testFile);
+                console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Testing directory via file: ${fileUrl}`);
+                
+                const response = await fetch(fileUrl, { 
+                    method: 'HEAD',
+                    cache: 'no-cache'
+                });
+                
+                if (response.ok) {
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Directory exists (verified via file): ${path}`);
+                    return true;
+                }
+            } catch (error) {
+                console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Failed to verify directory via file: ${error.message}`);
             }
         }
-    }
-    
-    throw lastError;
-}
-
-// Modify loadTFModel to use retry mechanism with longer timeout
-async function loadTFModel(modelName, modelPath) {
-    if (modelStatus[modelName].loaded) return;
-    
-    if (modelStatus[modelName].loading) {
-        const startTime = Date.now();
-        while (modelStatus[modelName].loading && (Date.now() - startTime) < 60000) {  // Increased to 60 seconds
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        if (modelStatus[modelName].loaded) return;
-        if (modelStatus[modelName].loading) {
-            modelStatus[modelName].loading = false;
-            throw new Error(`${modelName} model load timeout`);
-        }
-    }
-    
-    try {
-        modelStatus[modelName].loading = true;
-        modelStatus[modelName].error = null;
         
-        // Ensure sandbox frame is ready
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            console.log('Creating sandbox frame for model loading...');
-            await createSandboxFrame();
-        }
-        
-        // Add delay to ensure frame is fully ready
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        await retryModelLoad(async () => {
-            return new Promise((resolve, reject) => {
-                const handleMessage = (event) => {
-                    if (event.data.type === 'MODEL_LOADED' && event.data.modelName === modelName) {
-                        window.removeEventListener('message', handleMessage);
-                        if (event.data.success) {
-                            console.log(`${modelName} model loaded successfully`);
-                            modelStatus[modelName].loaded = true;
-                            resolve();
-                        } else {
-                            console.error(`${modelName} model loading failed:`, event.data.error);
-                            reject(new Error(event.data.error || `${modelName} model loading failed`));
-                        }
-                    }
-                };
-                
-                window.addEventListener('message', handleMessage);
-                console.log(`Sending load request for ${modelName} model...`);
-                sandboxFrame.contentWindow.postMessage({ 
-                    type: 'LOAD_MODEL',
-                    modelName: modelName,
-                    modelPath: modelPath,
-                    waitForWarmup: true
-                }, '*');
-                
-                setTimeout(() => {
-                    window.removeEventListener('message', handleMessage);
-                    reject(new Error('Model load response timeout'));
-                }, 45000);  // Increased timeout for model loading
-            });
-        }, 3, 5000);  // Increased retry delay
-        
+        console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Directory does not exist: ${path}`);
+        return false;
     } catch (error) {
-        console.error(`Error loading ${modelName} model:`, error);
-        modelStatus[modelName].error = error;
-        throw error;
-    } finally {
-        modelStatus[modelName].loading = false;
+        console.warn(`[FaceOne ${new Date().toLocaleTimeString()}] Error checking if directory exists: ${path}`, error);
+        // Return false on error, but don't fail completely
+        return false;
     }
 }
 
-// Add missing helper functions
-function clearModelStatus() {
-    // Only clear error states and loading flags, preserve loaded states
-    Object.keys(modelStatus).forEach(key => {
-        if (modelStatus[key].error) {
-            modelStatus[key].error = null;
-        }
-        if (modelStatus[key].loading) {
-            modelStatus[key].loading = false;
-        }
-    });
-}
-
-// Update createScaledImage to handle small images
-async function createScaledImage(img) {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    
-    // Get original dimensions
-    const originalWidth = img.width || img.naturalWidth;
-    const originalHeight = img.height || img.naturalHeight;
-    
-    // Calculate minimum required size
-    const minRequiredSize = MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
-    const smallestDimension = Math.min(originalWidth, originalHeight);
-    
-    let targetWidth = originalWidth;
-    let targetHeight = originalHeight;
-    let scaleFactor = 1;
-    
-    // Scale up if image is too small
-    if (smallestDimension < minRequiredSize) {
-        scaleFactor = Math.ceil(minRequiredSize / smallestDimension);
-        targetWidth = Math.round(originalWidth * scaleFactor);
-        targetHeight = Math.round(originalHeight * scaleFactor);
-        
-        // Ensure dimensions are multiples of 32 for better model performance
-        targetWidth = Math.ceil(targetWidth / 32) * 32;
-        targetHeight = Math.ceil(targetHeight / 32) * 32;
-    }
-    
-    // Set canvas dimensions
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    
-    // Use better quality settings for upscaling
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    
-    try {
-        // Draw image with scaling if needed
-        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-        
-        // Store scale factor for later use
-        canvas.scaleFactor = scaleFactor;
-        
-        return canvas;
-    } catch (error) {
-        console.error('Error creating scaled image:', error);
-        throw new Error('Failed to create scaled image canvas');
-    }
-}
-
-/**
- * Draws face detection boxes on a canvas
- * @param {HTMLCanvasElement} canvas - The canvas to draw on
- * @param {Array} detections - Array of face detections
- * @param {HTMLImageElement} img - The source image
- */
-function drawDetections(canvas, detections, img) {
-    const ctx = canvas.getContext('2d');
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = '#FF0000';
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
-    
-    detections.forEach((detection, index) => {
-        const { x, y, width, height } = detection.box;
-        ctx.strokeRect(x, y, width, height);
-        
-        if (flagShowFrameonImage.addLabel) {
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(x, y - 20, 70, 20);
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = '12px Arial';
-            ctx.fillText(`Face ${index + 1}`, x + 5, y - 5);
-        }
-    });
-}
-
-/**
- * Adds a result indicator to the wrapper
- * @param {HTMLElement} wrapper - The wrapper element
- * @param {string} text - The text to display
- */
-function addResultIndicator(wrapper, text) {
-    const indicator = document.createElement('div');
-    indicator.className = 'result-indicator';
-    indicator.style.position = 'absolute';
-    indicator.style.top = '5px';
-    indicator.style.right = '5px';
-    indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-    indicator.style.color = 'white';
-    indicator.style.padding = '2px 5px';
-    indicator.style.borderRadius = '3px';
-    indicator.style.fontSize = '12px';
-    indicator.textContent = text;
-    wrapper.appendChild(indicator);
-}
-
-/**
- * Extracts a face region from an image
- * @param {HTMLImageElement} img - The source image
- * @param {Object} detection - The face detection data
- * @returns {HTMLCanvasElement} A canvas containing the face region
- */
-async function extractFaceRegion(img, detection) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 160;
-    canvas.height = 160;
-    const ctx = canvas.getContext('2d');
-    
-    const { x, y, width, height } = detection.box;
-    ctx.drawImage(img, x, y, width, height, 0, 0, 160, 160);
-    
-    return canvas;
-}
-
-// Add helper function to check model status
-function checkModelStatus() {
-    const status = {
-        faceApi: modelStatus.faceApi.loaded,
-        faceNet: modelStatus.faceNet.loaded,
-        myModel: modelStatus.myModel.loaded,
-        errors: []
-    };
-    
-    if (!modelStatus.faceApi.loaded && modelStatus.faceApi.error) {
-        status.errors.push(`FaceAPI: ${modelStatus.faceApi.error.message}`);
-    }
-    if (!modelStatus.faceNet.loaded && modelStatus.faceNet.error) {
-        status.errors.push(`FaceNet: ${modelStatus.faceNet.error.message}`);
-    }
-    if (!modelStatus.myModel.loaded && modelStatus.myModel.error) {
-        status.errors.push(`Similarity: ${modelStatus.myModel.error.message}`);
-    }
-    
-    return status;
-}
-
-// Add helper function to check model loading status
+// Add helper function to get model loading status
 function getModelLoadingStatus() {
     return {
         faceApi: {
-            ...modelStatus.faceApi,
-            loading: modelStatus.faceApi.loading
+            loaded: typeof state !== 'undefined' && state.faceApiLoaded,
+            loading: typeof state !== 'undefined' && state.faceApiLoading,
+            error: typeof state !== 'undefined' ? state.faceApiError : null
         },
         faceNet: {
-            ...modelStatus.faceNet,
-            loading: modelStatus.faceNet.loading
+            loaded: typeof state !== 'undefined' && state.faceNetLoaded,
+            loading: typeof state !== 'undefined' && state.faceNetLoading,
+            error: typeof state !== 'undefined' ? state.faceNetError : null
         },
         myModel: {
-            ...modelStatus.myModel,
-            loading: modelStatus.myModel.loading
-        },
-        isLoadingModels,
-        attempts: state.modelLoadAttempts
+            loaded: typeof state !== 'undefined' && state.myModelLoaded,
+            loading: typeof state !== 'undefined' && state.myModelLoading,
+            error: typeof state !== 'undefined' ? state.myModelError : null
+        }
     };
 }
 
-// Add function to check TF status
-async function checkTensorFlowStatus() {
-    if (!sandboxFrame || !sandboxFrame.contentWindow) {
-        return { initialized: false, error: 'No sandbox frame' };
-    }
-
-    return new Promise((resolve) => {
-        const handleResponse = (event) => {
-            if (event.data && event.data.type === 'TF_STATUS') {
-                window.removeEventListener('message', handleResponse);
-                resolve(event.data.status);
-            }
-        };
-
-        window.addEventListener('message', handleResponse);
-        sandboxFrame.contentWindow.postMessage({ type: 'GET_TF_STATUS' }, '*');
-
-        // Add timeout
-        setTimeout(() => {
-            window.removeEventListener('message', handleResponse);
-            resolve({ initialized: false, error: 'Status check timeout' });
-        }, 5000);
-    });
-}
-
-// Add function to compute similarities when needed
-async function computeImageSimilarities(src) {
-    const imageInfo = imageTracker.images.get(src);
-    if (!imageInfo || !imageInfo.embeddings || imageInfo.embeddings.length <= 1) {
-        return;
-    }
-
-    // Only compute similarities if we haven't already
-    if (!imageInfo.similarities) {
-        try {
-            const similarities = [];
-            const embeddings = imageInfo.embeddings;
-            
-            for (let i = 0; i < embeddings.length; i++) {
-                for (let j = i + 1; j < embeddings.length; j++) {
-                    try {
-                        const similarity = await computeFaceSimilarity(
-                            embeddings[i].embedding,
-                            embeddings[j].embedding
-                        );
-                        similarities.push({
-                            face1: i + 1,
-                            face2: j + 1,
-                            similarity
-                        });
-                    } catch (error) {
-                        if (error.message !== 'Similarity model not loaded') {
-                            console.error(`Error computing similarity between faces ${i + 1} and ${j + 1}:`, error);
-                        }
-                    }
-                }
-            }
-            
-            imageInfo.similarities = similarities;
-        } catch (error) {
-            console.error('Error computing similarities:', error);
-        }
-    }
-}
-
-// Add message listener for settings updates
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'SETTINGS_UPDATED') {
-        flagShowFrameonImage = {
-            ...flagShowFrameonImage,
-            ...message.settings
-        };
-        
-        // Reprocess visible images with new settings
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
-        }
-    }
-});
-
-// Load initial settings
-chrome.storage.sync.get({
-    frameProsessedImage: true,
-    frameFaceDetected: true,
-    addLabel: true,
-    autoProcessImages: true,
-    minimumImageSize: 100,
-    confidenceThreshold: 70,
-    processingMode: 'face_detection'  // Add default mode
-}, function(items) {
-    flagShowFrameonImage = {
-        ...flagShowFrameonImage,
-        ...items
-    };
-});
-
-// Add function to check if image should be displayed
-function shouldDisplayImage(src) {
-    return imageTracker.shouldDisplay(src);
-}
-
-// Modify storage event listener to handle display updates and mode changes
-chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'sync') {
-        let needsReprocessing = false;
-        
-        // Check for relevant setting changes
-        if (changes.confidenceThreshold || changes.processingMode) {
-            needsReprocessing = true;
-        }
-        
-        if (needsReprocessing) {
-            // Clear processed status to allow reprocessing
-            imageTracker.images.forEach((info, src) => {
-                info.isProcessed = false;
-            });
-            
-            // Reprocess visible images
-            if (flagShowFrameonImage.autoProcessImages) {
-                processExistingImages();
-            }
-        }
-    }
-});
-
-function applyBlurEffect(element, shouldBlur) {
-    const wrapper = element.closest('.face-detection-wrapper');
-    if (!wrapper) return;
-
-    const imageType = wrapper.getAttribute('data-image-type');
-    const blurAmount = shouldBlur ? '10px' : '0px';
+/**
+ * Attempt to recover from model loading failures by using direct paths and explicit loading
+ */
+async function recoverModelLoading() {
+    console.log("[FaceOne " + new Date().toLocaleTimeString() + "] Attempting to recover model loading...");
     
-    // Use CSS transform to trigger GPU acceleration
-    const transform = shouldBlur ? 'translateZ(0)' : 'none';
-    
-    switch (imageType) {
-        case 'img':
-            const img = wrapper.querySelector('img');
-            if (img) {
-                img.style.filter = `blur(${blurAmount})`;
-                img.style.transform = transform;
-                // Add will-change to hint browser about animation
-                img.style.willChange = shouldBlur ? 'filter' : 'auto';
-            }
-            break;
-
-        case 'svg':
-        case 'svg-nested':
-            const svgImage = wrapper.querySelector('image');
-            if (svgImage) {
-                if (shouldBlur) {
-                    const filterId = `blur-${Math.random().toString(36).substr(2, 9)}`;
-                    const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
-                    filter.setAttribute('id', filterId);
-                    const blur = document.createElementNS('http://www.w3.org/2000/svg', 'feGaussianBlur');
-                    blur.setAttribute('stdDeviation', '5');
-                    filter.appendChild(blur);
-                    svgImage.closest('svg').appendChild(filter);
-                    svgImage.setAttribute('filter', `url(#${filterId})`);
-                } else {
-                    svgImage.removeAttribute('filter');
-                    const filters = svgImage.closest('svg').querySelectorAll('filter');
-                    filters.forEach(filter => filter.remove());
-                }
-            }
-            break;
-
-        case 'background':
-            const bgElement = wrapper.querySelector('img');
-            if (bgElement) {
-                bgElement.style.filter = `blur(${blurAmount})`;
-                bgElement.style.transform = transform;
-                bgElement.style.willChange = shouldBlur ? 'filter' : 'auto';
-            }
-            break;
-    }
-}
-
-// Add debounced reprocess function
-const debouncedReprocess = debounce(async () => {
-    if (flagShowFrameonImage.autoProcessImages) {
-        await processExistingImages();
-        observeElements();
-    }
-}, 250);
-
-// Helper debounce function
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
-
-// Replace the old WorkerPool instantiation with EnhancedWorkerPool
-const workerPool = new EnhancedWorkerPool({
-    maxWorkers: 4,
-    taskTimeout: 30000,
-    retryAttempts: 2,
-    batchSize: 4
-});
-
-// Initialize the worker pool during extension initialization
-async function initializeExtension() {
     try {
-        // Initialize worker pool
-        await workerPool.initialize();
+        // First, check if the model files exist in root or models directory
+        const modelLocations = [
+            // Root directory files
+            {
+                path: '',
+                files: [
+                    'face_recognition_model-weights_manifest.json',
+                    'face_recognition_model-shard1',
+                    'face_landmark_68_model-weights_manifest.json',
+                    'face_landmark_68_model-shard1'
+                ]
+            },
+            // Models directory files
+            {
+                path: 'models/',
+                files: [
+                    'face_recognition_model-weights_manifest.json',
+                    'face_recognition_model-shard1',
+                    'face_landmark_68_model-weights_manifest.json',
+                    'face_landmark_68_model-shard1'
+                ]
+            },
+            // FaceAPI directory files
+            {
+                path: 'models/FaceAPI/',
+                files: [
+                    'ssd_mobilenetv1/ssd_mobilenetv1_model-weights_manifest.json',
+                    'ssd_mobilenetv1/ssd_mobilenetv1_model-shard1',
+                    'ssd_mobilenetv1/ssd_mobilenetv1_model-shard2'
+                ]
+            }
+        ];
         
-        // Load models and other initialization
-        await loadFaceApiModels();
-        await loadPositiveEmbeddings();
+        // Check each location to find where model files are stored
+        let modelPath = '';
+        let filesFound = false;
         
-        if (flagShowFrameonImage.autoProcessImages) {
-            await processExistingImages();
-            observeElements();
+        for (const location of modelLocations) {
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Checking for models in: ${location.path || 'root directory'}`);
+            
+            let allFilesExist = true;
+            for (const file of location.files) {
+                try {
+                    const url = chrome.runtime.getURL(location.path + file);
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Checking: ${url}`);
+                    
+                    const response = await fetch(url, { 
+                        method: 'HEAD', 
+                        cache: 'no-cache' 
+                    });
+                    
+                    if (!response.ok) {
+                        allFilesExist = false;
+                        console.log(`[FaceOne ${new Date().toLocaleTimeString()}] File not found: ${file}`);
+                        break;
+                    }
+                } catch (error) {
+                    allFilesExist = false;
+                    console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Error checking file: ${error.message}`);
+                    break;
+                }
+            }
+            
+            if (allFilesExist) {
+                modelPath = location.path;
+                filesFound = true;
+                console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Found all model files in: ${modelPath || 'root directory'}`);
+                break;
+            }
+        }
+        
+        if (!filesFound) {
+            console.error(`[FaceOne ${new Date().toLocaleTimeString()}] Could not find model files in any location`);
+            throw new Error("Could not find model files");
+        }
+        
+        // Now try loading models with direct paths
+        console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Loading models from: ${modelPath || 'root directory'}`);
+        
+        try {
+            // Use explicit model loading with the correct path
+            const baseModelPath = chrome.runtime.getURL(modelPath);
+            
+            // Modify the way we load the models to use direct file URLs
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Loading face detection model...`);
+            await faceapi.nets.ssdMobilenetv1.load(baseModelPath);
+            
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Loading face landmark model...`);
+            await faceapi.nets.faceLandmark68Net.load(baseModelPath);
+            
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] Loading face recognition model...`);
+            await faceapi.nets.faceRecognitionNet.load(baseModelPath);
+            
+            console.log(`[FaceOne ${new Date().toLocaleTimeString()}] All models loaded successfully!`);
+            state.faceApiLoaded = true;
+            state.faceApiLoading = false;
+            return true;
+        } catch (error) {
+            console.error(`[FaceOne ${new Date().toLocaleTimeString()}] Error loading models from ${modelPath}:`, error);
+            throw error;
         }
     } catch (error) {
-        console.error('Extension initialization failed:', error);
+        console.error(`[FaceOne ${new Date().toLocaleTimeString()}] Model recovery failed:`, error);
+        throw error;
     }
 }
 
-// Add helper function to rotate image
-async function rotateImage(canvas, angle) {
-    const rotatedCanvas = document.createElement('canvas');
-    const ctx = rotatedCanvas.getContext('2d');
-    
-    // Calculate new dimensions to fit rotated image
-    const radians = (angle * Math.PI) / 180;
-    const sin = Math.abs(Math.sin(radians));
-    const cos = Math.abs(Math.cos(radians));
-    const width = canvas.width;
-    const height = canvas.height;
-    rotatedCanvas.width = width * cos + height * sin;
-    rotatedCanvas.height = width * sin + height * cos;
-    
-    // Move to center and rotate
-    ctx.translate(rotatedCanvas.width/2, rotatedCanvas.height/2);
-    ctx.rotate(radians);
-    ctx.drawImage(canvas, -width/2, -height/2);
-    
-    return rotatedCanvas;
+// Add to the initialize function to call recovery if normal loading fails
+async function initialize() {
+// ... existing code ...
 }
 
-// Add helper function to adjust detection coordinates
-function adjustDetectionCoordinates(detections, angle, canvas) {
-    const radians = (-angle * Math.PI) / 180;
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-    
-    return detections.map(detection => {
-        const { x, y, width, height } = detection.box;
-        const cx = x + width/2 - centerX;
-        const cy = y + height/2 - centerY;
-        
-        // Rotate coordinates back
-        const rotatedX = cx * Math.cos(radians) - cy * Math.sin(radians);
-        const rotatedY = cx * Math.sin(radians) + cy * Math.cos(radians);
-        
-        return {
-            ...detection,
-            box: {
-                x: rotatedX + centerX - width/2,
-                y: rotatedY + centerY - height/2,
-                width,
-                height
-            }
-        };
-    });
-}
+// Add top-level variables for tracking
+let imagesProcessed = 0;
 
-// Add recovery function
-function recoverFailedImage(img) {
-    // Restore original visibility
-    img.style.visibility = 'visible';
-    img.style.opacity = '1';
-    
-    // Remove any processing-related classes/attributes
-    const wrapper = img.closest('.face-detection-wrapper');
-    if (wrapper) {
-        const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
-        Object.assign(img.style, originalStyles);
-        
-        // Unwrap the image if needed
-        if (wrapper.parentNode) {
-            wrapper.parentNode.insertBefore(img, wrapper);
-            wrapper.remove();
-        }
-    }
+// Add function to increment processed images count
+function incrementProcessedImagesCount() {
+    imagesProcessed++;
 }
-
-// Add to error handling
-window.addEventListener('error', function(event) {
-    if (event.target.tagName === 'IMG') {
-        console.warn('Recovering failed image:', event.target.src);
-        recoverFailedImage(event.target);
-    }
-});

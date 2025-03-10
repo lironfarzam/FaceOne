@@ -1,3 +1,6 @@
+console.log('#### STARTING WORKER_POOL.JS ####');
+
+
 /**
  * @fileoverview Manages a pool of web workers for parallel image processing.
  * Provides task queuing and worker lifecycle management.

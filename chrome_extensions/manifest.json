@@ -30,6 +30,7 @@
       "matches": ["<all_urls>"],
       "js": [
         "lib/face-api.min.js",
+        "js/memoryManager.js",
         "js/workerPool.js",
         "js/content.js"
       ],
@@ -39,12 +40,22 @@
   "web_accessible_resources": [{
     "resources": [
       "sandbox.html",
+      "reset.html",
       "lib/tf.min.js",
       "lib/tf-converter.min.js",
-      "models/*",
+      "lib/face-api.min.js",
+      "models/*.json",
+      "models/*-shard*",
+      "models/*.bin",
+      "models/FaceAPI/**/*",
+      "models/FaceNet/**/*",
+      "models/myModel/**/*",
+      "models/embeddings/**/*",
       "css/*",
       "js/imageWorker.js",
-      "js/workerPool.js"
+      "js/workerPool.js",
+      "js/memoryManager.js",
+      "js/reset_refresh.js"
     ],
     "matches": ["<all_urls>"]
   }],

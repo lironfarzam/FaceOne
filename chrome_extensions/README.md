@@ -13,6 +13,7 @@ FaceOne is a powerful Chrome extension that provides real-time face detection an
 7. [User Interface](#user-interface)
 8. [Performance Optimizations](#performance-optimizations)
 9. [Behind the Scenes: Code Execution Flow](#behind-the-scenes-code-execution-flow)
+10. [Advanced Memory Management Recommendations](#advanced-memory-management-recommendations)
 
 ## Overview
 
@@ -821,6 +822,782 @@ The extension implements sophisticated memory management to prevent leaks:
      this.taskQueue = new PriorityQueue();
    }
    ```
+
+## Advanced Memory Management Recommendations
+
+To improve memory management and prevent performance issues in the FaceOne Chrome extension, consider implementing the following optimizations:
+
+### 1. TensorFlow.js Memory Optimizations
+
+#### Implement Aggressive Tensor Cleanup
+
+```javascript
+// Enhanced tensor disposal with reference tracking
+const tensorTracker = {
+  activeReferences: new Map(),
+
+  track(tensor, context = "unknown") {
+    if (!tensor || !tensor.id) return tensor;
+    this.activeReferences.set(tensor.id, {
+      tensor,
+      context,
+      createdAt: Date.now(),
+      stack: new Error().stack,
+    });
+    return tensor;
+  },
+
+  dispose(tensor) {
+    if (!tensor || !tensor.id) return;
+    if (tensor.dispose && !tensor.isDisposed) {
+      tensor.dispose();
+    }
+    this.activeReferences.delete(tensor.id);
+  },
+
+  disposeAll() {
+    tf.tidy(() => {
+      const tensors = Array.from(this.activeReferences.values());
+      tensors.forEach((ref) => {
+        try {
+          if (ref.tensor && !ref.tensor.isDisposed && ref.tensor.dispose) {
+            ref.tensor.dispose();
+          }
+        } catch (e) {
+          console.warn(`Failed to dispose tensor from ${ref.context}:`, e);
+        }
+      });
+      this.activeReferences.clear();
+    });
+  },
+
+  getLeaks() {
+    const now = Date.now();
+    const leaks = [];
+    this.activeReferences.forEach((ref, id) => {
+      if (now - ref.createdAt > 60000) {
+        // Older than 1 minute
+        leaks.push({
+          id,
+          context: ref.context,
+          age: Math.round((now - ref.createdAt) / 1000) + "s",
+          stack: ref.stack,
+        });
+      }
+    });
+    return leaks;
+  },
+};
+
+// Usage example
+function processImage(imageData) {
+  return tf.tidy(() => {
+    const img = tensorTracker.track(tf.tensor(imageData), "processImage:input");
+    const processed = tensorTracker.track(
+      img.expandDims(0),
+      "processImage:expand"
+    );
+    // ... processing ...
+    return result; // tf.tidy will clean up tracked tensors
+  });
+}
+```
+
+#### Implement Memory-Aware Processing Queue
+
+```javascript
+// Memory-aware task scheduler
+class MemoryAwareScheduler {
+  constructor(options = {}) {
+    this.options = {
+      maxTensors: 1000,
+      maxBytes: 200 * 1024 * 1024, // 200MB
+      checkInterval: 1000, // 1 second
+      pauseThreshold: 0.9, // 90% of max
+      resumeThreshold: 0.7, // 70% of max
+      ...options,
+    };
+
+    this.queue = [];
+    this.isPaused = false;
+    this.isProcessing = false;
+
+    // Start memory monitoring
+    this.startMonitoring();
+  }
+
+  startMonitoring() {
+    this.monitorInterval = setInterval(() => {
+      this.checkMemoryUsage();
+    }, this.options.checkInterval);
+  }
+
+  checkMemoryUsage() {
+    try {
+      const memInfo = tf.memory();
+      const tensorUsage = memInfo.numTensors / this.options.maxTensors;
+      const memoryUsage = memInfo.numBytes / this.options.maxBytes;
+      const usage = Math.max(tensorUsage, memoryUsage);
+
+      if (!this.isPaused && usage > this.options.pauseThreshold) {
+        this.pause();
+        // Force garbage collection and tensor cleanup
+        tensorTracker.disposeAll();
+        tf.engine().endScope();
+        tf.engine().startScope();
+        console.warn("Memory pressure detected, pausing processing");
+      } else if (this.isPaused && usage < this.options.resumeThreshold) {
+        this.resume();
+        console.log("Memory pressure relieved, resuming processing");
+      }
+    } catch (e) {
+      console.warn("Error checking memory usage:", e);
+    }
+  }
+
+  pause() {
+    this.isPaused = true;
+  }
+
+  resume() {
+    this.isPaused = false;
+    if (!this.isProcessing) {
+      this.processNext();
+    }
+  }
+
+  enqueue(task, priority = 0) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, priority, resolve, reject });
+      this.queue.sort((a, b) => b.priority - a.priority);
+
+      if (!this.isProcessing && !this.isPaused) {
+        this.processNext();
+      }
+    });
+  }
+
+  async processNext() {
+    if (this.isPaused || this.queue.length === 0) {
+      this.isProcessing = false;
+      return;
+    }
+
+    this.isProcessing = true;
+    const { task, resolve, reject } = this.queue.shift();
+
+    try {
+      // Execute task in a tidy environment
+      const result = await tf.tidy(() => task());
+      resolve(result);
+    } catch (error) {
+      reject(error);
+    } finally {
+      // Process next task
+      this.processNext();
+    }
+  }
+
+  destroy() {
+    clearInterval(this.monitorInterval);
+    this.queue = [];
+    this.isProcessing = false;
+  }
+}
+
+// Usage
+const scheduler = new MemoryAwareScheduler();
+scheduler.enqueue(() => processImage(imageData), 1);
+```
+
+### 2. WebWorker Memory Optimizations
+
+#### Implement Worker Lifecycle Management
+
+```javascript
+// Enhanced worker pool with lifecycle management
+class EnhancedWorkerPool {
+  constructor(options = {}) {
+    this.options = {
+      maxWorkers: navigator.hardwareConcurrency || 4,
+      maxIdleTime: 30000, // 30 seconds
+      maxProcessingTime: 10000, // 10 seconds
+      maxTasksPerWorker: 100,
+      ...options,
+    };
+
+    this.workers = new Map();
+    this.idleWorkers = new Set();
+    this.taskQueue = [];
+    this.workerStats = new Map();
+  }
+
+  async createWorker(id) {
+    const worker = new Worker(chrome.runtime.getURL("js/imageWorker.js"));
+
+    // Initialize worker
+    await this.initWorker(worker, id);
+
+    // Set up worker monitoring
+    this.workerStats.set(id, {
+      created: Date.now(),
+      lastActive: Date.now(),
+      taskCount: 0,
+      errors: 0,
+      avgProcessingTime: 0,
+    });
+
+    // Set up idle timeout
+    this.setupIdleTimeout(id);
+
+    return worker;
+  }
+
+  setupIdleTimeout(id) {
+    const worker = this.workers.get(id);
+    if (!worker) return;
+
+    const stats = this.workerStats.get(id);
+    if (!stats) return;
+
+    // Clear existing timeout
+    if (stats.idleTimeout) {
+      clearTimeout(stats.idleTimeout);
+    }
+
+    // Set new timeout
+    stats.idleTimeout = setTimeout(() => {
+      const idleTime = Date.now() - stats.lastActive;
+      if (idleTime > this.options.maxIdleTime && this.idleWorkers.has(worker)) {
+        // Worker has been idle too long, terminate and recreate
+        this.recycleWorker(id);
+      } else {
+        // Check again later
+        this.setupIdleTimeout(id);
+      }
+    }, this.options.maxIdleTime / 2);
+  }
+
+  async recycleWorker(id) {
+    const worker = this.workers.get(id);
+    if (!worker) return;
+
+    // Remove from idle set
+    this.idleWorkers.delete(worker);
+
+    // Terminate worker
+    worker.terminate();
+
+    // Create new worker
+    const newWorker = await this.createWorker(id);
+
+    // Update maps
+    this.workers.set(id, newWorker);
+    this.idleWorkers.add(newWorker);
+
+    console.log(`Recycled worker #${id} after extended idle period`);
+  }
+
+  async executeTask(worker, task) {
+    const id = this.getWorkerId(worker);
+    const stats = this.workerStats.get(id);
+
+    if (!stats) {
+      throw new Error("Worker stats not found");
+    }
+
+    // Update stats
+    stats.lastActive = Date.now();
+    stats.taskCount++;
+
+    // Set up task timeout
+    const timeoutPromise = new Promise((_, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error("Task execution timeout"));
+        // Force recycle the worker
+        this.recycleWorker(id);
+      }, this.options.maxProcessingTime);
+
+      // Store timeout ID for cleanup
+      task.timeoutId = timeoutId;
+    });
+
+    // Execute task with timeout
+    try {
+      const result = await Promise.race([
+        this.doExecuteTask(worker, task),
+        timeoutPromise,
+      ]);
+
+      // Clear timeout
+      if (task.timeoutId) {
+        clearTimeout(task.timeoutId);
+      }
+
+      // Check if worker needs recycling
+      if (stats.taskCount >= this.options.maxTasksPerWorker) {
+        // Schedule worker recycling
+        setTimeout(() => {
+          if (this.idleWorkers.has(worker)) {
+            this.recycleWorker(id);
+          }
+        }, 0);
+      }
+
+      return result;
+    } catch (error) {
+      // Clear timeout
+      if (task.timeoutId) {
+        clearTimeout(task.timeoutId);
+      }
+
+      // Update error stats
+      stats.errors++;
+
+      // Recycle worker if too many errors
+      if (stats.errors > 3) {
+        this.recycleWorker(id);
+      }
+
+      throw error;
+    }
+  }
+
+  getWorkerId(worker) {
+    for (const [id, w] of this.workers.entries()) {
+      if (w === worker) return id;
+    }
+    return null;
+  }
+
+  // Other methods...
+}
+```
+
+### 3. Image Processing Optimizations
+
+#### Implement Progressive Image Processing
+
+```javascript
+// Progressive image processing
+async function processImageProgressively(img) {
+  // Skip if image is too small
+  if (img.width < 100 || img.height < 100) {
+    return;
+  }
+
+  // Process at multiple scales for large images
+  const maxDimension = Math.max(img.width, img.height);
+
+  if (maxDimension > 1024) {
+    // First pass: low resolution for quick results
+    const scale = 512 / maxDimension;
+    const lowResData = await getScaledImageData(img, scale);
+    const lowResResults = await detectFaces(lowResData);
+
+    // Show preliminary results
+    if (lowResResults.length > 0) {
+      visualizeResults(img, lowResResults, { preliminary: true });
+    }
+
+    // Second pass: full resolution for accuracy
+    if (lowResResults.length > 0) {
+      const fullResData = await getImageData(img);
+      const fullResResults = await detectFaces(fullResData);
+
+      // Update with final results
+      visualizeResults(img, fullResResults, { preliminary: false });
+    }
+  } else {
+    // Standard processing for smaller images
+    const imageData = await getImageData(img);
+    const results = await detectFaces(imageData);
+    visualizeResults(img, results, { preliminary: false });
+  }
+}
+```
+
+#### Implement Smart Image Caching
+
+```javascript
+// Enhanced image cache with size-aware management
+class SmartImageCache {
+  constructor(options = {}) {
+    this.options = {
+      maxEntries: 1000,
+      maxMemoryUsage: 100 * 1024 * 1024, // 100MB
+      entryTTL: 5 * 60 * 1000, // 5 minutes
+      ...options,
+    };
+
+    this.cache = new Map();
+    this.memoryUsage = 0;
+
+    // Start cleanup interval
+    this.cleanupInterval = setInterval(() => {
+      this.cleanup();
+    }, 60000); // Cleanup every minute
+  }
+
+  estimateSize(imageData) {
+    if (!imageData) return 0;
+    if (imageData.data && imageData.data.length) {
+      return imageData.data.length;
+    }
+    return 0;
+  }
+
+  set(key, data, metadata = {}) {
+    // Remove if already exists
+    if (this.cache.has(key)) {
+      this.remove(key);
+    }
+
+    // Estimate size
+    const size = this.estimateSize(data);
+
+    // Check if we have space
+    if (this.memoryUsage + size > this.options.maxMemoryUsage) {
+      this.makeRoom(size);
+    }
+
+    // Add to cache
+    this.cache.set(key, {
+      data,
+      metadata,
+      size,
+      timestamp: Date.now(),
+      lastAccessed: Date.now(),
+      accessCount: 0,
+    });
+
+    this.memoryUsage += size;
+  }
+
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+
+    // Update access stats
+    entry.lastAccessed = Date.now();
+    entry.accessCount++;
+
+    return entry.data;
+  }
+
+  remove(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return;
+
+    this.memoryUsage -= entry.size;
+    this.cache.delete(key);
+  }
+
+  makeRoom(requiredSize) {
+    // If cache is empty, nothing to do
+    if (this.cache.size === 0) return;
+
+    // If required size is larger than max, we can't cache it
+    if (requiredSize > this.options.maxMemoryUsage) {
+      console.warn("Requested cache entry exceeds maximum cache size");
+      return;
+    }
+
+    // Sort entries by priority (last accessed, then access count)
+    const entries = Array.from(this.cache.entries())
+      .map(([key, entry]) => ({ key, entry }))
+      .sort((a, b) => {
+        // First sort by last accessed (oldest first)
+        const timeDiff = a.entry.lastAccessed - b.entry.lastAccessed;
+        if (Math.abs(timeDiff) > 60000) {
+          // If more than 1 minute difference
+          return timeDiff;
+        }
+        // Then by access count (least accessed first)
+        return a.entry.accessCount - b.entry.accessCount;
+      });
+
+    // Remove entries until we have enough space
+    let removedSize = 0;
+    for (const { key, entry } of entries) {
+      this.remove(key);
+      removedSize += entry.size;
+
+      if (this.memoryUsage + requiredSize <= this.options.maxMemoryUsage) {
+        break;
+      }
+    }
+  }
+
+  cleanup() {
+    const now = Date.now();
+    const expiredKeys = [];
+
+    // Find expired entries
+    this.cache.forEach((entry, key) => {
+      if (now - entry.timestamp > this.options.entryTTL) {
+        expiredKeys.push(key);
+      }
+    });
+
+    // Remove expired entries
+    expiredKeys.forEach((key) => this.remove(key));
+
+    // If still too many entries, remove oldest
+    if (this.cache.size > this.options.maxEntries) {
+      const entries = Array.from(this.cache.entries())
+        .map(([key, entry]) => ({ key, timestamp: entry.timestamp }))
+        .sort((a, b) => a.timestamp - b.timestamp);
+
+      const toRemove = entries.slice(
+        0,
+        this.cache.size - this.options.maxEntries
+      );
+      toRemove.forEach(({ key }) => this.remove(key));
+    }
+  }
+
+  destroy() {
+    clearInterval(this.cleanupInterval);
+    this.cache.clear();
+    this.memoryUsage = 0;
+  }
+}
+```
+
+### 4. Sandbox Memory Management
+
+#### Implement Sandbox Lifecycle Management
+
+```javascript
+// Enhanced sandbox management
+class SandboxManager {
+  constructor() {
+    this.iframe = null;
+    this.isReady = false;
+    this.pendingRequests = new Map();
+    this.requestId = 0;
+    this.lastActivity = Date.now();
+    this.healthCheckInterval = null;
+    this.restartCount = 0;
+  }
+
+  async initialize() {
+    if (this.iframe) {
+      this.destroy();
+    }
+
+    // Create sandbox iframe
+    this.iframe = document.createElement("iframe");
+    this.iframe.src = chrome.runtime.getURL("sandbox.html");
+    this.iframe.style.display = "none";
+    document.body.appendChild(this.iframe);
+
+    // Set up message handler
+    window.addEventListener("message", this.handleMessage.bind(this));
+
+    // Wait for sandbox to be ready
+    await this.waitForReady();
+
+    // Start health check
+    this.startHealthCheck();
+
+    return this.iframe;
+  }
+
+  async waitForReady() {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Sandbox initialization timeout"));
+      }, 10000);
+
+      const readyHandler = (event) => {
+        if (event.data && event.data.type === "SANDBOX_READY") {
+          window.removeEventListener("message", readyHandler);
+          clearTimeout(timeout);
+          this.isReady = true;
+          resolve();
+        }
+      };
+
+      window.addEventListener("message", readyHandler);
+    });
+  }
+
+  startHealthCheck() {
+    this.healthCheckInterval = setInterval(() => {
+      this.checkHealth();
+    }, 30000); // Check every 30 seconds
+  }
+
+  async checkHealth() {
+    try {
+      // Check if sandbox is responsive
+      const status = await this.sendMessage({ type: "HEALTH_CHECK" }, 5000);
+
+      // Check memory usage
+      if (status.memoryInfo && status.memoryInfo.numTensors > 1000) {
+        console.warn(
+          "High tensor count in sandbox:",
+          status.memoryInfo.numTensors
+        );
+        await this.sendMessage({ type: "CLEANUP" });
+      }
+
+      // Check for long inactivity
+      const inactiveTime = Date.now() - this.lastActivity;
+      if (inactiveTime > 5 * 60 * 1000) {
+        // 5 minutes
+        console.log("Sandbox inactive for 5 minutes, performing cleanup");
+        await this.sendMessage({ type: "CLEANUP" });
+      }
+    } catch (error) {
+      console.error("Sandbox health check failed:", error);
+
+      // Restart sandbox if health check fails
+      this.restartCount++;
+      if (this.restartCount <= 3) {
+        console.warn(`Restarting sandbox (attempt ${this.restartCount})`);
+        await this.restart();
+      } else {
+        console.error("Too many sandbox restart attempts, giving up");
+      }
+    }
+  }
+
+  async restart() {
+    try {
+      this.destroy();
+      await this.initialize();
+      console.log("Sandbox restarted successfully");
+    } catch (error) {
+      console.error("Failed to restart sandbox:", error);
+    }
+  }
+
+  sendMessage(message, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const id = this.requestId++;
+      message.id = id;
+
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error("Sandbox request timeout"));
+      }, timeout);
+
+      // Store pending request
+      this.pendingRequests.set(id, { resolve, reject, timeoutId });
+
+      // Send message
+      this.iframe.contentWindow.postMessage(message, "*");
+
+      // Update activity timestamp
+      this.lastActivity = Date.now();
+    });
+  }
+
+  handleMessage(event) {
+    const data = event.data;
+    if (!data || !data.id) return;
+
+    const request = this.pendingRequests.get(data.id);
+    if (!request) return;
+
+    // Clear timeout
+    clearTimeout(request.timeoutId);
+
+    // Remove from pending requests
+    this.pendingRequests.delete(data.id);
+
+    // Update activity timestamp
+    this.lastActivity = Date.now();
+
+    // Resolve or reject
+    if (data.error) {
+      request.reject(new Error(data.error));
+    } else {
+      request.resolve(data);
+    }
+  }
+
+  destroy() {
+    // Clear interval
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+
+    // Clear all pending requests
+    this.pendingRequests.forEach((request) => {
+      clearTimeout(request.timeoutId);
+      request.reject(new Error("Sandbox destroyed"));
+    });
+    this.pendingRequests.clear();
+
+    // Remove iframe
+    if (this.iframe) {
+      document.body.removeChild(this.iframe);
+      this.iframe = null;
+    }
+
+    this.isReady = false;
+  }
+}
+```
+
+### 5. Implementation Strategy
+
+To implement these memory management improvements, follow this phased approach:
+
+1. **Phase 1: Monitoring**
+
+   - Implement the tensor tracking system to identify memory leaks
+   - Add detailed logging of memory usage patterns
+   - Create a dashboard for visualizing memory usage
+
+2. **Phase 2: Critical Fixes**
+
+   - Implement the enhanced tensor disposal system
+   - Add worker lifecycle management
+   - Implement sandbox health checks and recovery
+
+3. **Phase 3: Advanced Optimizations**
+
+   - Implement the memory-aware scheduler
+   - Add progressive image processing
+   - Implement the smart image cache
+
+4. **Phase 4: Testing and Validation**
+   - Perform stress testing with large numbers of images
+   - Monitor memory usage over extended periods
+   - Validate performance improvements
+
+### 6. Best Practices for Ongoing Development
+
+1. **Always use tf.tidy()**
+
+   - Wrap all TensorFlow.js operations in tf.tidy() to automatically clean up tensors
+   - Explicitly return tensors that should be preserved
+
+2. **Implement memory budgets**
+
+   - Set explicit limits on memory usage for different components
+   - Pause processing when approaching limits
+
+3. **Use WeakMap for caching**
+
+   - When caching results tied to DOM elements, use WeakMap to allow garbage collection
+
+4. **Implement graceful degradation**
+
+   - When memory pressure is high, reduce quality or disable features rather than crashing
+
+5. **Regular cleanup cycles**
+   - Implement periodic deep cleanup during idle times
+   - Clear caches when tab visibility changes
+
+By implementing these recommendations, the FaceOne Chrome extension will achieve significantly improved memory management, leading to better performance, stability, and user experience.
 
 ---
 

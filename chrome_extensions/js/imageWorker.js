@@ -1,3 +1,6 @@
+console.log('#### STARTING IMAGE_WORKER.JS ####');
+
+
 /**
  * @fileoverview Optimized Web Worker for image processing operations.
  * Handles image preprocessing tasks in a separate thread.
