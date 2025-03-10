@@ -2,7 +2,6 @@ from datetime import datetime
 import json
 import time
 import random
-from typing import Callable
 import cv2
 import os
 import random
@@ -18,21 +17,11 @@ import shutil
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cool_utils import load_config, print_green, print_red, print_blue
 
-from tensorflow.keras.models import Model, Sequential, load_model
+from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
-    Layer,
     Dense,
     Input,
-    Lambda,
-    Dropout,
-    Concatenate,
-    BatchNormalization,
-    Conv2D,
-    MaxPooling2D,
-    Flatten,
-    Reshape,
 )
-from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import (
     ReduceLROnPlateau,
     EarlyStopping,
@@ -44,7 +33,6 @@ from deepface import DeepFace
 from sklearn.model_selection import train_test_split
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ProcessPoolExecutor
 
 import threading
 from rich.progress import track
