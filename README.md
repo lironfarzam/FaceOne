@@ -13,25 +13,31 @@
 ## Methods and Technologies
 
 ### 1. Face Landmarks and 3D Modeling
+
 The system utilizes facial landmarks to extract key features from a face. These landmarks are then used to generate a 3D model of the face, which helps in improving recognition accuracy by accounting for variations in angle and expression.
 
 **Key Steps**:
+
 - **Face Landmark Detection**: Using MediaPipe to detect key points on the face.
 - **3D Model Generation**: Constructing a 3D representation of the face based on detected landmarks.
 
 ### 2. Embedding Vectors
+
 The system converts facial images into embedding vectors using a CNN-based architecture. These vectors represent the unique features of a face and are used to compare different faces.
 
 ### 3. Siamese Networks
+
 A Siamese network is employed to compare two face images by computing the distance between their embedding vectors. The network is trained to distinguish between pairs of images and determine whether they represent the same person.
 
 **Key Components**:
+
 - **L1 Distance Layer**: Calculates the absolute difference between two embedding vectors.
 - **Binary Classification**: A Dense layer with a sigmoid activation function is used to classify the pairs as either the same person or different persons.
 
 ## Project Code Overview
 
 ### 1. Embedding Network
+
 The embedding network is responsible for converting face images into high-dimensional embedding vectors. This network is implemented using a series of convolutional and pooling layers.
 
 ```python
@@ -50,6 +56,7 @@ def make_embedding():
 ```
 
 ### 2. Siamese Network
+
 The Siamese network is used to compare two face images by computing the distance between their embeddings. The L1 distance is used as a measure of similarity, and the network outputs a probability indicating whether the two images belong to the same person.
 
 ```python
@@ -69,6 +76,7 @@ def make_siamese_model():
 ```
 
 ### 3. Training the Model
+
 The training process involves feeding pairs of images into the network and optimizing the network to minimize the binary crossentropy loss. Early stopping and learning rate reduction techniques are used to prevent overfitting.
 
 ```python
@@ -84,6 +92,7 @@ def train_and_save_model(train_loader, test_loader, train_labels, test_labels):
 ```
 
 ### 4. Threshold Calculation and Image Testing
+
 After training, the model calculates a threshold based on positive samples. This threshold is used to classify new images. The system can then test a new image against the stored positive samples to determine if it belongs to the same person.
 
 ```python
@@ -100,42 +109,51 @@ def calculate_threshold(model, positive_vectors):
 ## Usage
 
 ### Prerequisites
+
 - Python 3.x
 - TensorFlow 2.x
 - Necessary Python packages (listed in `requirements.txt`)
 
 ### Setup
+
 1. Clone the repository:
-    ```bash
-    git clone https://github.com/yourusername/FaceOne.git
-    cd FaceOne
-    ```
+
+   ```bash
+   git clone https://github.com/yourusername/FaceOne.git
+   cd FaceOne
+   ```
 
 2. Install the required packages:
-    ```bash
-    pip install -r requirements.txt
-    ```
+
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 3. Prepare your dataset:
-    - Place your positive, negative, and anchor images in the appropriate directories (`/imgs/positives`, `/imgs/negatives`, `/imgs/anchors`).
+
+   - Place your positive, negative, and anchor images in the appropriate directories (`/imgs/positives`, `/imgs/negatives`, `/imgs/anchors`).
 
 4. Run the training script:
-    ```bash
-    python main_conv_tf.py
-    ```
+
+   ```bash
+   python main_conv_tf.py
+   ```
 
 5. Test the model:
-    - After training, you can use the model to test new images by placing them in the `/imgs/test_imgs` directory and running the test function.
+   - After training, you can use the model to test new images by placing them in the `/imgs/test_imgs` directory and running the test function.
 
 ## Examples
 
 ### Training Example
+
 The training process is automated in the `main_conv_tf.py` script. The script will output training progress, including loss and accuracy metrics.
 
 ### Testing Example
+
 You can test the model by running the `test_image` function on a new image, and the system will output whether the image matches any of the stored positive samples.
 
 ## Conclusion
+
 FaceOne is a robust face recognition system that leverages modern deep learning techniques to achieve high accuracy with minimal data. The use of Siamese networks and 3D modeling makes it particularly effective in challenging scenarios where traditional methods may fail.
 
 For further customization and advanced usage, refer to the code comments and functions provided in the `main_conv_tf.py` script.
