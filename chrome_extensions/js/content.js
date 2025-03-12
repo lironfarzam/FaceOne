@@ -166,15 +166,24 @@ async function createSandboxFrame(attemptCount = 1) {
     logFunctionEntry('createSandboxFrame');
     logWithEmoji('setup', 'createSandboxFrame', 'Creating sandbox iframe for TensorFlow operations');
     const maxRetries = 3;
-    const baseTimeout = 10000;  // 10 seconds base timeout
-    const timeout = Math.min(baseTimeout * (1 + attemptCount * 0.5), 30000); // Increase timeout with attempts, max 30s
+    const baseTimeout = 5000;  // Reduced from 10 seconds to 5 seconds for faster loading
+    const timeout = Math.min(baseTimeout * (1 + attemptCount * 0.5), 15000); // Reduced max to 15s from 30s
     
+    // OPTIMIZATION: Check for existing frame first
     if (sandboxFrame && sandboxFrame.contentWindow) {
         logWithEmoji('success', 'createSandboxFrame', 'Existing sandbox frame found');
-        // Check if already initialized
+        // Check if already initialized using a faster method
         try {
             logWithEmoji('loading', 'createSandboxFrame', 'Checking existing sandbox frame status');
-            const status = await checkTensorFlowStatus();
+            
+            // Use a cached status check with timeout
+            const statusCheckPromise = checkTensorFlowStatus();
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Status check timeout')), 2000); // Shorter timeout for faster response
+            });
+            
+            const status = await Promise.race([statusCheckPromise, timeoutPromise]);
+            
             if (status.isInitialized && status.tfBackendInitialized) {
                 logWithEmoji('success', 'createSandboxFrame', 'Existing sandbox frame is already initialized');
                 return;
@@ -200,11 +209,17 @@ async function createSandboxFrame(attemptCount = 1) {
         sandboxFrame = null;
     }
 
+    // OPTIMIZATION: More efficient retry loop with proper error handling
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             logWithEmoji('loading', 'createSandboxFrame', `Creating new sandbox frame (attempt ${attempt}/${maxRetries})...`);
+            
+            // Create frame with defined timeout for faster response
+            const startTime = performance.now();
             await createFrame(timeout);
-            logWithEmoji('success', 'createSandboxFrame', 'Sandbox frame created and initialized successfully');
+            const endTime = performance.now();
+            
+            logWithEmoji('success', 'createSandboxFrame', `Sandbox frame created and initialized successfully in ${Math.round(endTime - startTime)}ms`);
             return;
         } catch (error) {
             logWithEmoji('error', 'createSandboxFrame', `Failed to create sandbox frame on attempt ${attempt}/${maxRetries}: ${error.message}`);
@@ -226,8 +241,8 @@ async function createSandboxFrame(attemptCount = 1) {
                 throw new Error(`Failed to create sandbox frame after ${maxRetries} attempts: ${error.message}`);
             }
             
-            // Wait before retry with increasing delay
-            const delay = 1000 * attempt; // 1s, 2s, 3s...
+            // Wait before retry with shorter delay for faster recovery
+            const delay = 500 * attempt; // 500ms, 1000ms, 1500ms (reduced from 1000ms base)
             logWithEmoji('timer', 'createSandboxFrame', `Waiting ${delay}ms before retrying...`);
             await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -279,6 +294,7 @@ async function createSandboxFrame(attemptCount = 1) {
                     logWithEmoji('loading', 'createFrame', 'Sandbox frame loaded, waiting for TF initialization...');
                     window.addEventListener('message', handleTfInit);
                     logWithEmoji('success', 'createFrame', 'TF initialization listener added');
+                    // OPTIMIZATION: Shorter TF init timeout for faster failure detection
                     tfInitTimeout = setTimeout(() => {
                         logWithEmoji('loading', 'createFrame', 'TF initialization timeout, cleaning up...');
                         cleanup();
@@ -295,11 +311,14 @@ async function createSandboxFrame(attemptCount = 1) {
                 sandboxFrame.addEventListener('load', handleLoad);
                 sandboxFrame.addEventListener('error', handleError);
                 logWithEmoji('success', 'createFrame', 'Sandbox frame event listeners added');
+                
+                // OPTIMIZATION: Shorter frame load timeout for faster failure detection
                 frameLoadTimeout = setTimeout(() => {
                     cleanup();
-                    reject(new Error(`Sandbox frame load timeout after ${timeout}ms`));
-                }, timeout);
+                    reject(new Error(`Sandbox frame load timeout after ${timeout/2}ms`));
+                }, timeout/2); // Half the timeout for frame loading
                 
+                // OPTIMIZATION: Append to document before other operations to start loading earlier
                 document.body.appendChild(sandboxFrame);
                 logWithEmoji('success', 'createFrame', 'Sandbox frame appended to document body');
             } catch (error) {
@@ -324,6 +343,7 @@ async function loadFaceNetModel() {
     logWithEmoji('loading', 'loadFaceNetModel', 'Starting FaceNet model load...');
     const modelPath = chrome.runtime.getURL('models/FaceNet/Facenet512_tfjs_graph_model/model.json');
     const maxRetries = 3;
+    const startTime = performance.now();
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         logWithEmoji('loading', 'loadFaceNetModel', `FaceNet load attempt ${attempt}/${maxRetries}`);
@@ -335,8 +355,33 @@ async function loadFaceNetModel() {
                 await createSandboxFrame(attempt);
             }
             
-            // Verify TensorFlow is ready
-            const tfStatus = await checkTensorFlowStatus();
+            // Verify TensorFlow is ready with shorter timeout
+            const tfStatusPromise = checkTensorFlowStatus();
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('TensorFlow status check timeout')), 3000);
+            });
+            
+            let tfStatus;
+            try {
+                tfStatus = await Promise.race([tfStatusPromise, timeoutPromise]);
+            } catch (error) {
+                logWithEmoji('error', 'loadFaceNetModel', 'TensorFlow status check failed: ' + error.message);
+                // Try to recreate the sandbox frame
+                if (sandboxFrame) {
+                    try {
+                        logWithEmoji('loading', 'loadFaceNetModel', 'Removing existing sandbox frame after status check failure');
+                        document.body.removeChild(sandboxFrame);
+                        logWithEmoji('success', 'loadFaceNetModel', 'Existing sandbox frame removed successfully');
+                    } catch (e) {
+                        logWithEmoji('warning', 'loadFaceNetModel', 'Error removing sandbox frame: ' + e.message);
+                    }
+                    sandboxFrame = null;
+                }
+                
+                await createSandboxFrame(attempt + 1);
+                tfStatus = await checkTensorFlowStatus();
+            }
+            
             if (!tfStatus.isInitialized || !tfStatus.tfBackendInitialized) {
                 logWithEmoji('warning', 'loadFaceNetModel', 'TensorFlow not initialized properly. Status: ' + JSON.stringify(tfStatus));
                 
@@ -361,18 +406,29 @@ async function loadFaceNetModel() {
                 }
             }
             
-            // Load the model
+            // Load the model with a more efficient timeout management
             const result = await new Promise((resolve, reject) => {
                 logWithEmoji('loading', 'loadFaceNetModel', 'Loading FaceNet model in sandbox...');
-                const handleMessage = (event) => {
+                
+                // Create a cleanup function for all event listeners and timeouts
+                let messageHandler = null;
+                let timeoutId = null;
+                
+                const cleanup = () => {
+                    if (timeoutId) clearTimeout(timeoutId);
+                    if (messageHandler) window.removeEventListener('message', messageHandler);
+                };
+                
+                messageHandler = (event) => {
                     if (event.data.type === 'MODEL_LOADED' && event.data.modelName === 'faceNet') {
-                        window.removeEventListener('message', handleMessage);
+                        cleanup();
                         if (event.data.success) {
+                            const loadTime = performance.now() - startTime;
                             if (event.data.modelInfo && event.data.modelInfo.warmedUp) {
-                                logWithEmoji('success', 'loadFaceNetModel', 'FaceNet model loaded and warmed up successfully');
+                                logWithEmoji('success', 'loadFaceNetModel', `FaceNet model loaded and warmed up successfully in ${Math.round(loadTime)}ms`);
                                 resolve(true);
                             } else {
-                                logWithEmoji('warning', 'loadFaceNetModel', 'FaceNet model loaded but not warmed up');
+                                logWithEmoji('warning', 'loadFaceNetModel', `FaceNet model loaded but not warmed up in ${Math.round(loadTime)}ms`);
                                 resolve(false);
                             }
                         } else {
@@ -382,26 +438,15 @@ async function loadFaceNetModel() {
                     }   
                 };
                 
-                // Add timeout to message handler
-                const timeoutId = setTimeout(() => {
-                    logWithEmoji('loading', 'loadFaceNetModel', 'FaceNet model load timeout, removing message handler...');
-                    window.removeEventListener('message', handleMessage);
+                // Set a timeout proportional to the attempt number with a maximum
+                const timeoutDuration = Math.min(20000 + (attempt - 1) * 5000, 30000);
+                timeoutId = setTimeout(() => {
+                    cleanup();
+                    logWithEmoji('error', 'loadFaceNetModel', `FaceNet model load timeout after ${timeoutDuration}ms`);
                     reject(new Error('FaceNet model load timeout'));
-                }, 30000);
+                }, timeoutDuration);
                 
-                // Enhanced message handler with cleanup
-                const messageHandlerWithTimeout = (event) => {
-                    try {
-                        handleMessage(event);
-                    } catch (e) {
-                        logWithEmoji('error', 'loadFaceNetModel', 'Error handling message:', e);
-                        window.removeEventListener('message', messageHandlerWithTimeout);
-                        clearTimeout(timeoutId);
-                        reject(e);
-                    }
-                };
-                
-                window.addEventListener('message', messageHandlerWithTimeout);
+                window.addEventListener('message', messageHandler);
                 
                 try {
                     logWithEmoji('loading', 'loadFaceNetModel', 'Sending FaceNet load request to sandbox...');
@@ -413,9 +458,8 @@ async function loadFaceNetModel() {
                     }, '*');
                     logWithEmoji('success', 'loadFaceNetModel', 'FaceNet load request sent to sandbox successfully');
                 } catch (e) {
+                    cleanup();
                     logWithEmoji('error', 'loadFaceNetModel', 'Error sending load request:', e);
-                    window.removeEventListener('message', messageHandlerWithTimeout);
-                    clearTimeout(timeoutId);
                     reject(new Error('Error sending load request: ' + e.message));
                 }
             });
@@ -423,7 +467,8 @@ async function loadFaceNetModel() {
             if (result === true) {
                 modelStatus.faceNet.loaded = true;
                 state.faceNetLoaded = true;
-                logWithEmoji('success', 'loadFaceNetModel', 'FaceNet model fully loaded and ready');
+                const totalLoadTime = performance.now() - startTime;
+                logWithEmoji('success', 'loadFaceNetModel', `FaceNet model fully loaded and ready in ${Math.round(totalLoadTime)}ms`);
                 return;
             } else {
                 logWithEmoji('warning', 'loadFaceNetModel', 'FaceNet loaded but not warmed up, retrying...');
@@ -431,7 +476,8 @@ async function loadFaceNetModel() {
                     // On last attempt, accept not warmed up
                     modelStatus.faceNet.loaded = true;
                     state.faceNetLoaded = true;
-                    logWithEmoji('warning', 'loadFaceNetModel', 'Accepting FaceNet model without warmup as this was the last attempt');
+                    const totalLoadTime = performance.now() - startTime;
+                    logWithEmoji('warning', 'loadFaceNetModel', `Accepting FaceNet model without warmup after ${Math.round(totalLoadTime)}ms as this was the last attempt`);
                     return;
                 }
             }
@@ -440,12 +486,13 @@ async function loadFaceNetModel() {
             
             if (attempt === maxRetries) {
                 modelStatus.faceNet.error = error;
-                logWithEmoji('error', 'loadFaceNetModel', `Failed to load FaceNet after ${maxRetries} attempts: ${error.message}`);
+                const totalTime = performance.now() - startTime;
+                logWithEmoji('error', 'loadFaceNetModel', `Failed to load FaceNet after ${maxRetries} attempts in ${Math.round(totalTime)}ms: ${error.message}`);
                 throw new Error(`Failed to load FaceNet after ${maxRetries} attempts: ${error.message}`);
             }
             
-            // Wait before retry with increasing delay
-            const delay = 2000 * attempt; // 2s, 4s, 6s...
+            // Wait before retry with increasing but smaller delay
+            const delay = 1000 * attempt; // 1s, 2s, 3s (reduced from 2s base)
             logWithEmoji('timer', 'loadFaceNetModel', `Waiting ${delay}ms before retrying FaceNet load...`);
             await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -491,7 +538,9 @@ async function loadFaceApiModels() {
 
     // Ensure TensorFlow is ready before proceeding
     try {
+        logWithEmoji('loading', 'loadFaceApiModels', 'Ensuring TensorFlow is ready');
         await ensureTensorFlowReady();
+        logWithEmoji('success', 'loadFaceApiModels', 'TensorFlow is ready');
     } catch (error) {
         logWithEmoji('error', 'loadFaceApiModels', 'TensorFlow not ready: ' + error.message);
         // Don't refresh, just recreate the sandbox frame
@@ -507,7 +556,7 @@ async function loadFaceApiModels() {
         // Create a new sandbox frame and try again
         logWithEmoji('loading', 'loadFaceApiModels', 'Recreating sandbox frame after TensorFlow error');
         await createSandboxFrame();
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Reduced from 2000 to 1000ms
         
         // Try again to ensure TensorFlow is ready
         logWithEmoji('loading', 'loadFaceApiModels', 'Retrying TensorFlow initialization');
@@ -566,8 +615,8 @@ async function loadFaceApiModels() {
         if (!sandboxFrame || !sandboxFrame.contentWindow) {
             logWithEmoji('loading', 'loadFaceApiModels', 'Creating sandbox frame...');
             await createSandboxFrame(state.modelLoadAttempts);
-            // Reduced wait time but still ensure frame is ready
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Reduced wait time to improve performance
+            await new Promise(resolve => setTimeout(resolve, 500)); // Reduced from 1000 to 500ms
         }
         
         // Verify sandbox frame is properly initialized
@@ -575,13 +624,66 @@ async function loadFaceApiModels() {
             throw new Error('Sandbox frame not properly initialized');
         }
         
-        // Load all models in parallel with proper error handling for each
-        logWithEmoji('model', 'loadFaceApiModels', 'Beginning parallel model loading');
+        // OPTIMIZATION: Pre-check which models need loading
+        const modelsToLoad = [];
+        if (!modelStatus.faceApi.loaded && !modelStatus.faceApi.loading) modelsToLoad.push('faceApi');
+        if (!modelStatus.faceNet.loaded && !modelStatus.faceNet.loading) modelsToLoad.push('faceNet');
+        if (!modelStatus.myModel.loaded && !modelStatus.myModel.loading) modelsToLoad.push('myModel');
+        
+        logWithEmoji('model', 'loadFaceApiModels', `Beginning model loading for: ${modelsToLoad.join(', ')}`);
+        
+        // OPTIMIZATION: Prioritize models - load FaceNet first as it's the largest
         const loadPromises = [];
         
-        // Load FaceAPI models
-        if (!modelStatus.faceApi.loaded && !modelStatus.faceApi.loading) {
-            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceAPI models...');
+        // Load FaceNet model first (highest priority)
+        if (modelsToLoad.includes('faceNet')) {
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceNet model (priority 1)...');
+            modelStatus.faceNet.loading = true;
+            
+            const faceNetPromise = (async () => {
+                try {
+                    await loadFaceNetModel();
+                    logWithEmoji('success', 'loadFaceApiModels', 'FaceNet model loaded successfully');
+                } catch (error) {
+                    modelStatus.faceNet.error = error;
+                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load FaceNet model: ' + error.message);
+                    throw error;
+                } finally {
+                    modelStatus.faceNet.loading = false;
+                }
+            })();
+            
+            loadPromises.push(faceNetPromise);
+            
+            // Give FaceNet a head start before loading other models
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Load similarity model (medium priority)
+        if (modelsToLoad.includes('myModel')) {
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading similarity model (priority 2)...');
+            modelStatus.myModel.loading = true;
+            modelStatus.myModel.error = null;
+            
+            const myModelPromise = (async () => {
+                try {
+                    await loadMyModel();
+                    logWithEmoji('success', 'loadFaceApiModels', 'Similarity model loaded successfully');
+                } catch (error) {
+                    modelStatus.myModel.error = error;
+                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load similarity model: ' + error.message);
+                    throw error;
+                } finally {
+                    modelStatus.myModel.loading = false;
+                }
+            })();
+            
+            loadPromises.push(myModelPromise);
+        }
+        
+        // Load FaceAPI models (lowest priority as it's smaller and quicker)
+        if (modelsToLoad.includes('faceApi')) {
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceAPI models (priority 3)...');
             modelStatus.faceApi.loading = true;
             modelStatus.faceApi.error = null;
             
@@ -590,13 +692,16 @@ async function loadFaceApiModels() {
                     const modelPath = chrome.runtime.getURL('models/FaceAPI');
                     await retryModelLoad(async () => {
                         try {
-                            // Load both models in parallel with correct subdirectory paths
-                            await Promise.all([
-                                faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`),
-                                faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`)
-                            ]);
+                            // OPTIMIZATION: Load TinyFaceDetector first as it's faster and smaller
+                            await faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`);
+                            logWithEmoji('success', 'loadFaceApiModels', 'TinyFaceDetector loaded successfully');
+                            
+                            // Then load SSD MobileNet
+                            await faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`);
+                            logWithEmoji('success', 'loadFaceApiModels', 'SSD MobileNet loaded successfully');
+                            
                             modelStatus.faceApi.loaded = true;
-                            logWithEmoji('success', 'loadFaceApiModels', 'FaceAPI models loaded successfully');
+                            logWithEmoji('success', 'loadFaceApiModels', 'All FaceAPI models loaded successfully');
                             return true;
                         } catch (error) {
                             logWithEmoji('error', 'loadFaceApiModels', 'FaceAPI load attempt failed: ' + error.message);
@@ -613,47 +718,6 @@ async function loadFaceApiModels() {
             })();
             
             loadPromises.push(faceApiPromise);
-        }
-        
-        // Load FaceNet model
-        if (!modelStatus.faceNet.loaded && !modelStatus.faceNet.loading) {
-            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceNet model...');
-            modelStatus.faceNet.loading = true;
-            
-            const faceNetPromise = (async () => {
-                try {
-                    await loadFaceNetModel();
-                } catch (error) {
-                    modelStatus.faceNet.error = error;
-                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load FaceNet model: ' + error.message);
-                    throw error;
-                } finally {
-                    modelStatus.faceNet.loading = false;
-                }
-            })();
-            
-            loadPromises.push(faceNetPromise);
-        }
-
-        // Load similarity model
-        if (!modelStatus.myModel.loaded && !modelStatus.myModel.loading) {
-            logWithEmoji('model', 'loadFaceApiModels', 'Loading similarity model...');
-            modelStatus.myModel.loading = true;
-            modelStatus.myModel.error = null;
-            
-            const myModelPromise = (async () => {
-                try {
-                    await loadMyModel();
-                } catch (error) {
-                    modelStatus.myModel.error = error;
-                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load similarity model: ' + error.message);
-                    throw error;
-                } finally {
-                    modelStatus.myModel.loading = false;
-                }
-            })();
-            
-            loadPromises.push(myModelPromise);
         }
         
         // Wait for all models to load with proper error handling
@@ -675,8 +739,9 @@ async function loadFaceApiModels() {
                 try {
                     if (modelName === 'FaceAPI' && !modelStatus.faceApi.loaded) {
                         const modelPath = chrome.runtime.getURL('models/FaceAPI');
-                        await faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`);
+                        // Load models individually with shorter timeouts
                         await faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`);
+                        await faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`);
                         modelStatus.faceApi.loaded = true;
                         logWithEmoji('success', 'loadFaceApiModels', `${modelName} loaded successfully on individual retry`);
                     } else if (modelName === 'FaceNet' && !modelStatus.faceNet.loaded) {
@@ -2119,6 +2184,10 @@ function logWithEmoji(type, functionName, message) {
 // Use the new logging function in key places
 window.addEventListener('load', async () => {
     logWithEmoji('start', 'init', 'Initializing FaceOne extension...');
+    const initStartTime = performance.now(); // Add performance tracking
+    
+    // OPTIMIZATION: Preload TensorFlow before initializing models
+    let preloadSandboxTime = 0;
     
     try {
         // Check for too many initialization attempts, but don't refresh
@@ -2130,23 +2199,31 @@ window.addEventListener('load', async () => {
             return; // Stop trying to initialize
         }
         
-        // First ensure extension context is available
-        await initializeExtensionContext();
-        logWithEmoji('success', 'init', 'Extension context initialized');
+        // OPTIMIZATION: Start preloading sandbox frame immediately
+        const preloadStartTime = performance.now();
+        logWithEmoji('loading', 'init', 'Preloading sandbox frame and extension context in parallel');
         
-        // Create and initialize sandbox frame with TensorFlow
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            await createSandboxFrame();
+        // OPTIMIZATION: Load extension context and sandbox frame in parallel
+        const extensionContextPromise = initializeExtensionContext().then(() => {
+            logWithEmoji('success', 'init', 'Extension context initialized');
+        });
+        
+        const sandboxFramePromise = createSandboxFrame().then(() => {
             logWithEmoji('success', 'init', 'Sandbox frame created');
-            
-            // Additional wait to ensure frame is fully ready
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            logWithEmoji('timer', 'init', 'Waiting period completed');
-        }
+            // No additional wait - continue immediately
+        });
         
-        // Load models with proper verification
+        // Wait for both to complete
+        await Promise.all([extensionContextPromise, sandboxFramePromise]);
+        preloadSandboxTime = performance.now() - preloadStartTime;
+        logWithEmoji('timer', 'init', `Preloading completed in ${Math.round(preloadSandboxTime)}ms`);
+        
+        // OPTIMIZATION: Start model loading with priority order
         logWithEmoji('model', 'init', 'Starting model loading sequence...');
+        const modelLoadStartTime = performance.now();
         await loadFaceApiModels();
+        const modelLoadTime = performance.now() - modelLoadStartTime;
+        logWithEmoji('timer', 'init', `Model loading completed in ${Math.round(modelLoadTime)}ms`);
         
         // Verify all models are actually loaded
         if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
@@ -2159,13 +2236,34 @@ window.addEventListener('load', async () => {
         
         // Start processing if auto-processing is enabled
         if (flagShowFrameonImage.autoProcessImages) {
+            // OPTIMIZATION: Load positive embeddings in parallel with image processing
+            logWithEmoji('loading', 'init', 'Loading positive embeddings in background');
+            const embeddingsPromise = loadPositiveEmbeddings().catch(error => {
+                logWithEmoji('warning', 'init', 'Error loading positive embeddings: ' + error.message);
+                // Non-fatal error, continue with processing
+            });
+            
             logWithEmoji('search', 'init', 'Auto-processing enabled, starting image processing...');
+            const processingStartTime = performance.now();
             await processExistingImages();
             observeElements();
+            const processingTime = performance.now() - processingStartTime;
+            logWithEmoji('timer', 'init', `Image processing completed in ${Math.round(processingTime)}ms`);
+            
+            // Wait for embeddings to finish loading
+            await embeddingsPromise;
+        } else {
+            // Load embeddings sequentially if not processing images
+            logWithEmoji('loading', 'init', 'Loading positive embeddings');
+            await loadPositiveEmbeddings();
         }
         
+        const totalInitTime = performance.now() - initStartTime;
+        logWithEmoji('success', 'init', `FaceOne initialization completed in ${Math.round(totalInitTime)}ms`);
+        
     } catch (error) {
-        logWithEmoji('error', 'init', 'Initialization error: ' + error.message);
+        const failTime = performance.now() - initStartTime;
+        logWithEmoji('error', 'init', `Initialization error after ${Math.round(failTime)}ms: ${error.message}`);
         logWithEmoji('error', 'init', 'Model status at error: ' + JSON.stringify(modelStatus, null, 2));
         
         // Clean up without refreshing
@@ -2186,9 +2284,13 @@ window.addEventListener('load', async () => {
         
         // Instead of page refresh, retry initialization after a delay
         if (currentAttempts < MAX_INIT_ATTEMPTS) {
-            logWithEmoji('loading', 'init', `Will retry initialization in 5 seconds...`);
+            const retryDelay = 3000; // Reduced from 5 seconds to 3 seconds
+            logWithEmoji('loading', 'init', `Will retry initialization in ${retryDelay/1000} seconds...`);
             setTimeout(() => {
-                // Recreate the sandbox and try loading models again
+                // OPTIMIZATION: Recreate the sandbox and try loading models with better error handling
+                logWithEmoji('loading', 'init', 'Retrying initialization');
+                const retryStartTime = performance.now();
+                
                 createSandboxFrame()
                     .then(() => {
                         logWithEmoji('success', 'init', 'Delayed sandbox frame creation successful');
@@ -2196,6 +2298,9 @@ window.addEventListener('load', async () => {
                     })
                     .then(() => {
                         logWithEmoji('success', 'init', 'Delayed model loading successful');
+                        const retryTime = performance.now() - retryStartTime;
+                        logWithEmoji('timer', 'init', `Retry initialization completed in ${Math.round(retryTime)}ms`);
+                        
                         if (flagShowFrameonImage.autoProcessImages) {
                             return processExistingImages()
                                 .then(() => {
@@ -2206,7 +2311,7 @@ window.addEventListener('load', async () => {
                         }
                     })
                     .catch(e => logWithEmoji('error', 'init', 'Error in delayed initialization: ' + e.message));
-            }, 5000);
+            }, retryDelay);
         } else {
             logWithEmoji('error', 'init', `Maximum initialization attempts reached. Extension will not initialize.`);
             resetInitAttempts(); // Reset for next page load
@@ -2216,14 +2321,28 @@ window.addEventListener('load', async () => {
 
 // Add function to ensure TensorFlow is ready
 async function ensureTensorFlowReady() {
-    console.log('🔄 ensureTensorFlowReady: Ensuring TensorFlow is properly initialized');
+    logFunctionEntry('ensureTensorFlowReady');
+    logWithEmoji('loading', 'ensureTensorFlowReady', 'Ensuring TensorFlow is properly initialized');
     if (!sandboxFrame || !sandboxFrame.contentWindow) {
         throw new Error('Sandbox frame not available');
     }
 
-    const status = await checkTensorFlowStatus();
-    if (!status.isInitialized || !status.tfBackendInitialized) {
-        throw new Error('TensorFlow not properly initialized');
+    // OPTIMIZATION: Use a cached status check with a short timeout
+    const statusCheckPromise = checkTensorFlowStatus();
+    const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('TensorFlow status check timeout')), 3000);
+    });
+    
+    try {
+        const status = await Promise.race([statusCheckPromise, timeoutPromise]);
+        if (!status.isInitialized || !status.tfBackendInitialized) {
+            throw new Error('TensorFlow not properly initialized');
+        }
+        logWithEmoji('success', 'ensureTensorFlowReady', 'TensorFlow is properly initialized');
+        return true;
+    } catch (error) {
+        logWithEmoji('error', 'ensureTensorFlowReady', 'TensorFlow initialization check failed: ' + error.message);
+        throw error;
     }
 }
 
@@ -2738,23 +2857,36 @@ async function checkTensorFlowStatus() {
         return { initialized: false, error: 'No sandbox frame' };
     }
 
-    return new Promise((resolve) => {
-        const handleResponse = (event) => {
-            if (event.data && event.data.type === 'TF_STATUS') {
-                window.removeEventListener('message', handleResponse);
-                resolve(event.data.status);
-            }
-        };
-
-        window.addEventListener('message', handleResponse);
+    try {
+        // Send message and wait for response with timeout
         sandboxFrame.contentWindow.postMessage({ type: 'GET_TF_STATUS' }, '*');
-
-        // Add timeout
-        setTimeout(() => {
-            window.removeEventListener('message', handleResponse);
-            resolve({ initialized: false, error: 'Status check timeout' });
-        }, 5000);
-    });
+        
+        const result = await new Promise((resolve, reject) => {
+            const messageHandler = (event) => {
+                if (event.data && event.data.type === 'TF_STATUS') {
+                    cleanup();
+                    resolve(event.data.status);
+                }
+            };
+            
+            const timeoutId = setTimeout(() => {
+                cleanup();
+                reject(new Error('Status check timeout'));
+            }, 3000);
+            
+            const cleanup = () => {
+                clearTimeout(timeoutId);
+                window.removeEventListener('message', messageHandler);
+            };
+            
+            window.addEventListener('message', messageHandler);
+        });
+        
+        return result;
+    } catch (error) {
+        logError('checkTensorFlowStatus', 'Error checking TF status:', error);
+        return { initialized: false, error: error.message || 'Status check failed' };
+    }
 }
 
 // Add function to compute similarities when needed
@@ -3054,4 +3186,63 @@ window.addEventListener('error', function(event) {
 // Add a helper function for all functions to log their entry point
 function logFunctionEntry(functionName) {
     logWithEmoji('setup', functionName, 'Function started');
+}
+
+// Improve the error handling in the sandbox.html communication by adding a special error handler function
+
+// Add the logError function after logWithEmoji
+function logError(functionName, message, error = null) {
+    logWithEmoji('error', functionName, message);
+    if (error && error.stack) {
+        console.error(`${functionName} error stack:`, error.stack);
+    } else if (error) {
+        console.error(`${functionName} error details:`, error);
+    }
+}
+
+// Add a cleanup utility function for handling message event listeners
+function createMessageHandler(expectedType, timeout, onSuccess, onError) {
+    return new Promise((resolve, reject) => {
+        let messageListener = null;
+        let timeoutId = null;
+        
+        const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (messageListener) window.removeEventListener('message', messageListener);
+        };
+        
+        messageListener = (event) => {
+            if (event.data && event.data.type === expectedType) {
+                cleanup();
+                if (onSuccess) {
+                    try {
+                        const result = onSuccess(event.data);
+                        resolve(result);
+                    } catch (error) {
+                        logError('messageHandler', `Error handling successful ${expectedType} message:`, error);
+                        reject(error);
+                    }
+                } else {
+                    resolve(event.data);
+                }
+            }
+        };
+        
+        window.addEventListener('message', messageListener);
+        
+        timeoutId = setTimeout(() => {
+            cleanup();
+            const error = new Error(`Timeout waiting for ${expectedType} message (${timeout}ms)`);
+            if (onError) {
+                try {
+                    onError(error);
+                } catch (callbackError) {
+                    logError('messageHandler', `Error in timeout handler for ${expectedType}:`, callbackError);
+                }
+            }
+            reject(error);
+        }, timeout);
+        
+        return { cleanup };
+    });
 }
