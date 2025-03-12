@@ -6,6 +6,102 @@
  * @version 1.0.0
  */
 
+// Load utils.js dynamically
+(function loadUtilsScript() {
+    // Define a function to check if logging functions are available
+    function checkLoggingFunctions() {
+        return typeof logWithEmoji === 'function' && 
+               typeof logFunctionEntry === 'function' && 
+               typeof logError === 'function';
+    }
+    
+    // If logging functions are already available, no need to load utils.js
+    if (checkLoggingFunctions()) {
+        console.log('✅ Logging functions already available');
+        return;
+    }
+    
+    try {
+        // Check if we're in a content script context (chrome.runtime will be available)
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
+            // Create a script element for utils.js
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('js/utils.js');
+            script.onload = function() {
+                console.log('✅ utils.js loaded successfully from extension');
+                
+                // Verify that logging functions are now available
+                if (!checkLoggingFunctions()) {
+                    console.warn('⚠️ utils.js loaded but logging functions not found');
+                }
+            };
+            script.onerror = function(error) {
+                console.error('❌ Failed to load utils.js from extension:', error);
+            };
+            
+            // Add the script to the document
+            (document.head || document.documentElement).appendChild(script);
+        } else {
+            console.warn('⚠️ Not in a content script context, cannot load utils.js from extension');
+        }
+    } catch (error) {
+        console.error('❌ Error loading utils.js:', error);
+    }
+})();
+
+// Fallback logging utilities in case utils.js is not yet loaded
+if (typeof logWithEmoji !== 'function') {
+    window.logWithEmoji = function(type, functionName, message) {
+        let emoji = '📝'; // Default emoji
+        
+        // Select emoji based on log type
+        switch (type) {
+            case 'info': emoji = '📋'; break;
+            case 'success': emoji = '✅'; break;
+            case 'warning': emoji = '⚠️'; break;
+            case 'error': emoji = '❌'; break;
+            case 'model': emoji = '🧠'; break;
+            case 'image': emoji = '🖼️'; break;
+            case 'loading': emoji = '🔄'; break;
+            case 'setup': emoji = '🔧'; break;
+            case 'timer': emoji = '⏱️'; break;
+            case 'search': emoji = '🔍'; break;
+            case 'lock': emoji = '🔒'; break;
+            case 'unlock': emoji = '🔓'; break;
+            case 'start': emoji = '🚀'; break;
+            case 'draw': emoji = '🎨'; break;
+        }
+        
+        console.log(`${emoji} ${functionName}: ${message}`);
+    };
+}
+
+if (typeof logFunctionEntry !== 'function') {
+    window.logFunctionEntry = function(functionName) {
+        if (typeof logWithEmoji === 'function') {
+            logWithEmoji('setup', functionName, 'Function started');
+        } else {
+            console.log(`🔧 ${functionName}: Function started`);
+        }
+    };
+}
+
+if (typeof logError !== 'function') {
+    window.logError = function(functionName, message, error = null) {
+        if (typeof logWithEmoji === 'function') {
+            logWithEmoji('error', functionName, message);
+        } else {
+            console.error(`❌ ${functionName}: ${message}`);
+        }
+        
+        if (error && error.stack) {
+            console.error(`${functionName} error stack:`, error.stack);
+        } else if (error) {
+            console.error(`${functionName} error details:`, error);
+        }
+    };
+}
+
 //=============================================================================
 // 1. Core Configuration and Types
 //=============================================================================
@@ -2128,58 +2224,59 @@ function resetInitAttempts() {
 }
 
 // Add a helper function for logging with emojis
-function logWithEmoji(type, functionName, message) {
-    let emoji = '📝'; // Default emoji
-    
-    // Select emoji based on log type
-    switch (type) {
-        case 'info':
-            emoji = '📋';
-            break;
-        case 'success':
-            emoji = '✅';
-            break;
-        case 'warning':
-            emoji = '⚠️';
-            break;
-        case 'error':
-            emoji = '❌';
-            break;
-        case 'model':
-            emoji = '🧠';
-            break;
-        case 'image':
-            emoji = '🖼️';
-            break;
-        case 'loading':
-            emoji = '🔄';
-            break;
-        case 'setup':
-            emoji = '🔧';
-            break;
-        case 'timer':
-            emoji = '⏱️';
-            break;
-        case 'search':
-            emoji = '🔍';
-            break;
-        case 'lock':
-            emoji = '🔒';
-            break;
-        case 'unlock':
-            emoji = '🔓';
-            break;
-        case 'start':
-            emoji = '🚀';
-            break;
-        case 'draw':
-            emoji = '🎨';
-            break;
-    }
-    
-    // Log with the selected emoji and function name
-    console.log(`${emoji} ${functionName}: ${message}`);
-}
+// This function is now imported from utils.js
+// function logWithEmoji(type, functionName, message) {
+//     let emoji = '📝'; // Default emoji
+//     
+//     // Select emoji based on log type
+//     switch (type) {
+//         case 'info':
+//             emoji = '📋';
+//             break;
+//         case 'success':
+//             emoji = '✅';
+//             break;
+//         case 'warning':
+//             emoji = '⚠️';
+//             break;
+//         case 'error':
+//             emoji = '❌';
+//             break;
+//         case 'model':
+//             emoji = '🧠';
+//             break;
+//         case 'image':
+//             emoji = '🖼️';
+//             break;
+//         case 'loading':
+//             emoji = '🔄';
+//             break;
+//         case 'setup':
+//             emoji = '🔧';
+//             break;
+//         case 'timer':
+//             emoji = '⏱️';
+//             break;
+//         case 'search':
+//             emoji = '🔍';
+//             break;
+//         case 'lock':
+//             emoji = '🔒';
+//             break;
+//         case 'unlock':
+//             emoji = '🔓';
+//             break;
+//         case 'start':
+//             emoji = '🚀';
+//             break;
+//         case 'draw':
+//             emoji = '🎨';
+//             break;
+//     }
+//     
+//     // Log with the selected emoji and function name
+//     console.log(`${emoji} ${functionName}: ${message}`);
+// }
 
 // Use the new logging function in key places
 window.addEventListener('load', async () => {
@@ -3184,9 +3281,10 @@ window.addEventListener('error', function(event) {
 });
 
 // Add a helper function for all functions to log their entry point
-function logFunctionEntry(functionName) {
-    logWithEmoji('setup', functionName, 'Function started');
-}
+// This function is now imported from utils.js
+// function logFunctionEntry(functionName) {
+//     logWithEmoji('setup', functionName, 'Function started');
+// }
 
 // Improve the error handling in the sandbox.html communication by adding a special error handler function
 
@@ -3246,3 +3344,14 @@ function createMessageHandler(expectedType, timeout, onSuccess, onError) {
         return { cleanup };
     });
 }
+
+// Add the utils.js script to content.js by creating a script element
+document.addEventListener('DOMContentLoaded', function() {
+    // Inject utils.js for logging functions
+    const utilsScript = document.createElement('script');
+    utilsScript.src = chrome.runtime.getURL('js/utils.js');
+    utilsScript.onload = function() {
+        console.log('Utils script loaded');
+    };
+    document.head.appendChild(utilsScript);
+});

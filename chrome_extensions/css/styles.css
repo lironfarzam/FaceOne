@@ -1,30 +1,179 @@
-/* Base styles */
+/* Styles for FaceOne Chrome Extension */
+
+/* Popup styles */
 body {
-    width: 300px;
+    width: 320px;
     padding: 15px;
     font-family: Arial, sans-serif;
+    margin: 0;
 }
 
-/* Settings container */
-.settings-container {
+.section {
+    margin-bottom: 15px;
+    padding: 15px;
+    background: #f5f5f5;
+    border-radius: 8px;
+}
+
+.section-title {
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 12px;
+    color: #333;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.section-title i {
+    font-size: 16px;
+    color: #666;
+}
+
+.mode-selector {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-bottom: 15px;
+    position: relative;
+}
+
+.mode-button {
+    padding: 15px 8px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    background: white;
+    cursor: pointer;
+    transition: all 0.3s ease;
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+    overflow: hidden;
 }
 
-/* Individual setting item */
-.setting-item {
+.mode-button i {
+    font-size: 24px;
+    color: #666;
+    transition: all 0.3s ease;
+}
+
+.mode-button.active {
+    border-color: #2E7D32;
+    background: linear-gradient(145deg, #2E7D32, #43A047);
+    color: white;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(46, 125, 50, 0.2);
+}
+
+.mode-button.active::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(45deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
+    pointer-events: none;
+}
+
+.mode-button.active i {
+    color: white;
+    transform: scale(1.1);
+}
+
+.mode-button:not(.active) {
+    opacity: 0.7;
+}
+
+.mode-button:not(.active):hover {
+    opacity: 1;
+    border-color: #4CAF50;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.1);
+}
+
+.mode-button:not(.active):hover i {
+    color: #4CAF50;
+}
+
+/* Update section style to better frame the mode selector */
+.section:first-child {
+    background: linear-gradient(to bottom, #fafafa, #f5f5f5);
+    border: 1px solid #e0e0e0;
+}
+
+/* Add active mode indicator */
+.mode-button.active::before {
+    content: '✓';
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 14px;
+    color: #A5D6A7;
+    background: rgba(0,0,0,0.2);
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.setting-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: white;
+    border-radius: 6px;
+    transition: opacity 0.3s;
+}
+
+.setting-row.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.setting-label {
+    flex: 1;
+    font-size: 13px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
 }
 
-/* Toggle switch styles */
+.setting-description {
+    font-size: 11px;
+    color: #666;
+    margin-top: 2px;
+}
+
+.slider-container {
+    margin-top: 15px;
+    background: white;
+    padding: 12px;
+    border-radius: 6px;
+}
+
+.slider {
+    width: 100%;
+    margin: 10px 0;
+}
+
+.slider-value {
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    margin-top: 5px;
+}
+
 .switch {
     position: relative;
     display: inline-block;
-    width: 50px;
-    height: 24px;
+    width: 40px;
+    height: 20px;
+    margin-left: 10px;
 }
 
 .switch input {
@@ -33,7 +182,7 @@ body {
     height: 0;
 }
 
-.slider {
+.slider-toggle {
     position: absolute;
     cursor: pointer;
     top: 0;
@@ -42,188 +191,79 @@ body {
     bottom: 0;
     background-color: #ccc;
     transition: .4s;
-    border-radius: 24px;
+    border-radius: 20px;
 }
 
-.slider:before {
+.slider-toggle:before {
     position: absolute;
     content: "";
     height: 16px;
     width: 16px;
-    left: 4px;
-    bottom: 4px;
+    left: 2px;
+    bottom: 2px;
     background-color: white;
     transition: .4s;
     border-radius: 50%;
 }
 
-input:checked + .slider {
-    background-color: #2196F3;
-}
-
-input:checked + .slider:before {
-    transform: translateX(26px);
-}
-
-/* Range input container */
-.range-container {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-input[type="range"] {
-    flex-grow: 1;
-}
-
-input[type="number"] {
-    width: 70px;
-    padding: 3px;
-}
-
-/* Setting labels and descriptions */
-.setting-label {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.setting-description {
-    font-size: 0.8em;
-    color: #666;
-    margin-top: 2px;
-}
-
-h2 {
-    color: #2196F3;
-    margin-bottom: 20px;
-}
-
-/* Button styles */
-.save-button {
-    background-color: #2196F3;
-    color: white;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 5px;
-    cursor: pointer;
-    margin-top: 15px;
-    transition: background-color 0.3s;
-}
-
-.save-button:hover {
-    background-color: #1976D2;
-}
-
-.reprocess-button {
+input:checked + .slider-toggle {
     background-color: #4CAF50;
+}
+
+input:checked + .slider-toggle:before {
+    transform: translateX(20px);
+}
+
+.action-button {
+    width: 100%;
+    padding: 12px;
+    background: #4CAF50;
     color: white;
     border: none;
-    padding: 10px 20px;
-    border-radius: 5px;
-    cursor: pointer;
-    margin-top: 10px;
-    transition: background-color 0.3s;
-}
-
-.reprocess-button:hover {
-    background-color: #388E3C;
-}
-
-/* Status message styles */
-.status {
-    color: #4CAF50;
-    text-align: center;
-    margin-top: 10px;
-    opacity: 0;
-    transition: opacity 0.3s;
-}
-
-.status.show {
-    opacity: 1;
-}
-
-/* Section styles */
-.section {
-    background-color: #f8f9fa;
-    border-radius: 8px;
-    padding: 15px;
-    margin-bottom: 20px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-}
-
-.section-title {
-    color: #2196F3;
-    font-size: 16px;
-    font-weight: 600;
-    margin-bottom: 10px;
-}
-
-.threshold-description {
-    color: #666;
-    font-size: 13px;
-    margin-bottom: 12px;
-}
-
-/* Slider styles */
-.slider-container {
-    padding: 10px 15px;
-    background-color: white;
     border-radius: 6px;
-}
-
-.slider-with-labels {
-    position: relative;
-    margin: 20px 10px 5px;
-}
-
-.threshold-slider {
-    width: 100%;
-    height: 4px;
-    -webkit-appearance: none;
-    background: #e0e0e0;
-    outline: none;
-    border-radius: 2px;
-    margin: 0 0 20px 0;
-}
-
-.threshold-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    background: #2196F3;
-    border-radius: 50%;
     cursor: pointer;
-    transition: background .3s ease-in-out;
-}
-
-.threshold-slider::-webkit-slider-thumb:hover {
-    background: #1976D2;
-}
-
-.slider-labels {
+    font-size: 14px;
     display: flex;
-    justify-content: space-between;
-    margin-top: 5px;
-    color: #666;
-    font-size: 12px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.2s;
 }
 
-.threshold-value {
-    text-align: center;
-    font-size: 16px;
-    font-weight: bold;
-    color: #2196F3;
+.action-button:hover {
+    background: #45a049;
+    transform: translateY(-1px);
+}
+
+.action-button:active {
+    background: #3d8b40;
+    transform: translateY(0);
+}
+
+.action-button:disabled {
+    background: #cccccc;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.status-indicator {
     margin-top: 10px;
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    min-height: 15px;
+    transition: all 0.3s;
+    opacity: 0;
+    transform: translateY(-5px);
 }
 
-.face-detection-canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-    z-index: 1000;
+.status-indicator.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Icons */
+.material-icons {
+    font-family: 'Material Icons';
+    font-size: 20px;
 }
