@@ -23,6 +23,65 @@
         let initializationAttempts = 0;
         const MAX_INIT_ATTEMPTS = 3;
 
+        // Add a helper function for logging with emojis
+        function logWithEmoji(type, functionName, message) {
+            let emoji = '📝'; // Default emoji
+            
+            // Select emoji based on log type
+            switch (type) {
+                case 'info':
+                    emoji = '📋';
+                    break;
+                case 'success':
+                    emoji = '✅';
+                    break;
+                case 'warning':
+                    emoji = '⚠️';
+                    break;
+                case 'error':
+                    emoji = '❌';
+                    break;
+                case 'model':
+                    emoji = '🧠';
+                    break;
+                case 'image':
+                    emoji = '🖼️';
+                    break;
+                case 'loading':
+                    emoji = '🔄';
+                    break;
+                case 'setup':
+                    emoji = '🔧';
+                    break;
+                case 'timer':
+                    emoji = '⏱️';
+                    break;
+                case 'search':
+                    emoji = '🔍';
+                    break;
+                case 'lock':
+                    emoji = '🔒';
+                    break;
+                case 'unlock':
+                    emoji = '🔓';
+                    break;
+                case 'start':
+                    emoji = '🚀';
+                    break;
+                case 'draw':
+                    emoji = '🎨';
+                    break;
+            }
+            
+            // Log with the selected emoji and function name
+            console.log(`${emoji} ${functionName}: ${message}`);
+        }
+
+        // Helper function to log function entry
+        function logFunctionEntry(functionName) {
+            logWithEmoji('setup', functionName, 'Function started');
+        }
+
         // Add initialization status tracking
         const initStatus = {
             tfReady: false,
@@ -151,7 +210,7 @@
         // Modify initTensorFlow to handle initialization better
         async function initTensorFlow(retryCount = 0) {
             if (isTfBackendReady()) {
-                console.log('✅ TensorFlow already initialized');
+                logWithEmoji('success', 'initTensorFlow', 'TensorFlow already initialized');
                 return;
             }
 
@@ -160,7 +219,7 @@
             }
 
             try {
-                console.log('🔄 Initializing TensorFlow...');
+                logWithEmoji('loading', 'initTensorFlow', 'Initializing TensorFlow...');
                 initializationAttempts++;
                 
                 // Reset status
@@ -173,11 +232,11 @@
                 // Wait for TF to be ready
                 await tf.ready();
                 initStatus.tfReady = true;
-                console.log('✅ TensorFlow core ready');
+                logWithEmoji('success', 'initTensorFlow', 'TensorFlow core ready');
 
                 // Try to initialize backend
                 await waitForBackend();
-                console.log('✅ Backend initialized');
+                logWithEmoji('success', 'initTensorFlow', 'Backend initialized');
 
                 // Set up WebGL backend if available
                 if (!tf.findBackend('webgl')) {
@@ -214,7 +273,7 @@
                     }
                 }, '*');
 
-                console.log('✅ TensorFlow initialization complete');
+                logWithEmoji('success', 'initTensorFlow', 'TensorFlow initialization complete');
                 
             } catch (error) {
                 console.error('❌ TensorFlow initialization error:', error);
@@ -234,7 +293,7 @@
                 tfBackendInitialized = false;
 
                 if (retryCount < MAX_INIT_ATTEMPTS - 1) {
-                    console.log(`🔄 Retrying initialization (attempt ${retryCount + 2}/${MAX_INIT_ATTEMPTS})`);
+                    logWithEmoji('loading', 'initTensorFlow', `Retrying initialization (attempt ${retryCount + 2}/${MAX_INIT_ATTEMPTS})`);
                     await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
                     return initTensorFlow(retryCount + 1);
                 }
@@ -545,7 +604,7 @@
         async function handleModelLoad(data) {
             try {
                 const { modelName, modelPath, waitForWarmup } = data;
-                console.log(`🔄 Loading ${modelName} model from ${modelPath}...`);
+                logWithEmoji('loading', 'loadModel', `Loading ${modelName} model from ${modelPath}...`);
                 
                 if (!modelManager.state.isInitialized) {
                     await modelManager.initialize();
@@ -665,7 +724,7 @@
 
         // Initialize TensorFlow on load with error handling
         window.addEventListener('load', () => {
-            console.log('🔄 Sandbox frame loaded, initializing TensorFlow...');
+            logWithEmoji('loading', 'sandboxInit', 'Sandbox frame loaded, initializing TensorFlow...');
             initTensorFlow().catch(error => {
                 console.error('❌ Initial TF initialization failed:', error);
                 window.parent.postMessage({
