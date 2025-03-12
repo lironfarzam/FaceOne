@@ -95,13 +95,13 @@
                         return true;
                     }
                 } catch (e) {
-                    console.warn('Backend initialization attempt failed:', e);
+                    console.warn('❌ Backend initialization attempt failed:', e);
                 }
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
             
             if (!tf.backend()) {
-                throw new Error('Backend initialization timeout after ' + timeout + 'ms');
+                throw new Error('❌ Backend initialization timeout after ' + timeout + 'ms');
             }
             return true;
         }
@@ -151,16 +151,16 @@
         // Modify initTensorFlow to handle initialization better
         async function initTensorFlow(retryCount = 0) {
             if (isTfBackendReady()) {
-                console.log('TensorFlow already initialized');
+                console.log('✅ TensorFlow already initialized');
                 return;
             }
 
             if (retryCount >= MAX_INIT_ATTEMPTS) {
-                throw new Error('Max initialization attempts reached');
+                throw new Error('❌ Max initialization attempts reached');
             }
 
             try {
-                console.log('Initializing TensorFlow...');
+                console.log('🔄 Initializing TensorFlow...');
                 initializationAttempts++;
                 
                 // Reset status
@@ -173,15 +173,15 @@
                 // Wait for TF to be ready
                 await tf.ready();
                 initStatus.tfReady = true;
-                console.log('TensorFlow core ready');
+                console.log('✅ TensorFlow core ready');
 
                 // Try to initialize backend
                 await waitForBackend();
-                console.log('Backend initialized');
+                console.log('✅ Backend initialized');
 
                 // Set up WebGL backend if available
                 if (!tf.findBackend('webgl')) {
-                    console.warn('WebGL not available, using CPU backend');
+                    console.warn('❌ WebGL not available, using CPU backend');
                     await tf.setBackend('cpu');
                 } else {
                     await tf.setBackend('webgl');
@@ -214,10 +214,10 @@
                     }
                 }, '*');
 
-                console.log('TensorFlow initialization complete');
+                console.log('✅ TensorFlow initialization complete');
                 
             } catch (error) {
-                console.error('TensorFlow initialization error:', error);
+                console.error('❌ TensorFlow initialization error:', error);
                 initStatus.error = error;
                 
                 // Clean up on error
@@ -227,14 +227,14 @@
                         tf.engine().endScope();
                     }
                 } catch (e) {
-                    console.warn('Cleanup error:', e);
+                    console.warn('❌ Cleanup error:', e);
                 }
 
                 isInitialized = false;
                 tfBackendInitialized = false;
 
                 if (retryCount < MAX_INIT_ATTEMPTS - 1) {
-                    console.log(`Retrying initialization (attempt ${retryCount + 2}/${MAX_INIT_ATTEMPTS})`);
+                    console.log(`🔄 Retrying initialization (attempt ${retryCount + 2}/${MAX_INIT_ATTEMPTS})`);
                     await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
                     return initTensorFlow(retryCount + 1);
                 }
@@ -264,7 +264,7 @@
 
         async function loadModel(modelPath) {
             if (isModelLoading) {
-                console.warn('Model load already in progress');
+                console.warn('⏱️ Model load already in progress');
                 return;
             }
 
@@ -282,7 +282,7 @@
                         await faceNetModel.dispose();
                         faceNetModel = null;
                     } catch (e) {
-                        console.warn('Error disposing existing model:', e);
+                        console.warn('❌ Error disposing existing model:', e);
                     }
                 }
 
@@ -339,7 +339,7 @@
                     }
                 }, '*');
             } catch (error) {
-                console.error('Model loading error:', error);
+                console.error('❌ Model loading error:', error);
                 modelWarmedUp = false;
                 faceNetModel = null;
                 window.parent.postMessage({
@@ -389,7 +389,7 @@
                     try {
                         const memoryInfo = tf.memory();
                         if (memoryInfo.numTensors > 100 || memoryInfo.numBytes > 50000000) {
-                            console.warn('Memory usage:', {
+                            console.warn('⚠️ Memory usage:', {
                                 tensors: memoryInfo.numTensors,
                                 bytes: Math.round(memoryInfo.numBytes / (1024 * 1024)) + ' MB',
                                 gpu: Math.round((memoryInfo.numBytesInGPU || 0) / (1024 * 1024)) + ' MB'
@@ -412,7 +412,7 @@
                     }
                 });
             } catch (error) {
-                console.warn('Memory cleanup:', error);
+                console.warn('❌ Memory cleanup:', error);
             }
         }, 30000);
 
@@ -425,7 +425,7 @@
                     }
                     imageCache.clear();
                 } catch (error) {
-                    console.warn('Visibility cleanup:', error);
+                    console.warn('❌ Visibility cleanup:', error);
                 }
             }
         });
@@ -537,7 +537,7 @@
                 }
             } catch (error) {
                 // Log warning but don't throw
-                console.warn('Cleanup during unload:', error);
+                console.warn('❌ Cleanup during unload:', error);
             }
         }, { once: true });
 
@@ -545,7 +545,7 @@
         async function handleModelLoad(data) {
             try {
                 const { modelName, modelPath, waitForWarmup } = data;
-                console.log(`Loading ${modelName} model from ${modelPath}...`);
+                console.log(`🔄 Loading ${modelName} model from ${modelPath}...`);
                 
                 if (!modelManager.state.isInitialized) {
                     await modelManager.initialize();
@@ -568,7 +568,7 @@
                 }, '*');
                 
             } catch (error) {
-                console.error(`Error loading ${data.modelName} model:`, error);
+                console.error(`❌ Error loading ${data.modelName} model:`, error);
                 window.parent.postMessage({
                     type: 'MODEL_LOADED',
                     modelName: data.modelName,
@@ -648,13 +648,13 @@
                         return;
                         
                     default:
-                        console.warn('Unknown message type:', data.type);
+                        console.warn('❌ Unknown message type:', data.type);
                         response.error = 'Unknown message type';
                 }
                 
                 window.parent.postMessage(response, '*');
             } catch (error) {
-                console.error('Message handling error:', error);
+                console.error('❌ Message handling error:', error);
                 window.parent.postMessage({
                     type: event.data?.type || 'ERROR',
                     success: false,
@@ -665,9 +665,9 @@
 
         // Initialize TensorFlow on load with error handling
         window.addEventListener('load', () => {
-            console.log('Sandbox frame loaded, initializing TensorFlow...');
+            console.log('🔄 Sandbox frame loaded, initializing TensorFlow...');
             initTensorFlow().catch(error => {
-                console.error('Initial TF initialization failed:', error);
+                console.error('❌ Initial TF initialization failed:', error);
                 window.parent.postMessage({
                     type: 'TF_INITIALIZED',
                     success: false,
@@ -713,7 +713,7 @@
                     await this.waitForBackend();
                     
                     if (!tf.findBackend('webgl')) {
-                        console.warn('WebGL not available, using CPU backend');
+                        console.warn('❌ WebGL not available, using CPU backend');
                         await tf.setBackend('cpu');
                     } else {
                         await tf.setBackend('webgl');
@@ -849,7 +849,7 @@
                     
                     this.state.warmedUp[modelName] = true;
                 } catch (error) {
-                    console.error(`Error warming up ${modelName}:`, error);
+                    console.error(`❌ Error warming up ${modelName}:`, error);
                     throw error;
                 }
             }
@@ -861,7 +861,7 @@
                         this.models[modelName] = null;
                         this.state.warmedUp[modelName] = false;
                     } catch (e) {
-                        console.warn(`Error disposing ${modelName} model:`, e);
+                        console.warn(`❌ Error disposing ${modelName} model:`, e);
                     }
                 }
             }
@@ -949,7 +949,7 @@
                         try {
                             await this.models.faceNet.dispose();
                         } catch (e) {
-                            console.warn('Error disposing FaceNet model:', e);
+                            console.warn('❌ Error disposing FaceNet model:', e);
                         }
                         this.models.faceNet = null;
                     }
@@ -963,7 +963,7 @@
                             tf.engine().startScope();
                         }
                     } catch (e) {
-                        console.warn('Error during tensor cleanup:', e);
+                        console.warn('❌ Error during tensor cleanup:', e);
                     }
 
                     // Reset global flags
@@ -974,7 +974,7 @@
                     faceNetModel = null;
 
                 } catch (error) {
-                    console.warn('Model cleanup error:', error);
+                    console.warn('❌ Model cleanup error:', error);
                     // Even if there's an error, try to reset the state
                     this.state.isInitialized = false;
                     this.state.tfBackendInitialized = false;
