@@ -1047,10 +1047,6 @@ async function createProxyImage(originalImg) {
     });
 }
 
-function roundToMultipleOf32(num) {
-    return Math.ceil(num / 32) * 32;
-}
-
 // Add new function to handle tiny image processing
 async function processTinyImage(img) {
     const canvas = document.createElement('canvas');
@@ -1059,8 +1055,8 @@ async function processTinyImage(img) {
     // Calculate dimensions that are multiples of 32
     const minSize = 32; // Minimum size required by TinyFaceDetector
     const scaleFactor = Math.max(2, Math.ceil(32 / Math.min(img.width, img.height)));
-    const targetWidth = roundToMultipleOf32(img.width * scaleFactor);
-    const targetHeight = roundToMultipleOf32(img.height * scaleFactor);
+    const targetWidth = Math.ceil(img.width * scaleFactor);
+    const targetHeight = Math.ceil(img.height * scaleFactor);
     
     canvas.width = targetWidth;
     canvas.height = targetHeight;
@@ -1092,7 +1088,7 @@ function selectFaceDetectionModel(img) {
 
     // For small images, use tinyFaceDetector with optimized settings
     if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
-        const inputSize = roundToMultipleOf32(Math.max(32, minDimension));
+        const inputSize = Math.max(32, minDimension);
         return {
             model: 'tinyFaceDetector',
             options: new faceapi.TinyFaceDetectorOptions({
@@ -1111,7 +1107,7 @@ function selectFaceDetectionModel(img) {
             model: 'ssdMobilenetv1',
             options: new faceapi.SsdMobilenetv1Options({
                 ...FACE_API_DETECTION_OPTIONS.ssdMobilenetv1,
-                inputSize: roundToMultipleOf32(Math.min(640, minDimension))
+                inputSize: Math.min(640, minDimension)
             })
         };
     }
@@ -1126,7 +1122,7 @@ function selectFaceDetectionModel(img) {
             model: 'ssdMobilenetv1',
             options: new faceapi.SsdMobilenetv1Options({
                 ...FACE_API_DETECTION_OPTIONS.ssdMobilenetv1,
-                inputSize: roundToMultipleOf32(Math.min(640, minDimension))
+                inputSize: Math.min(640, minDimension)
             })
         };
     }
@@ -1136,7 +1132,7 @@ function selectFaceDetectionModel(img) {
         model: 'tinyFaceDetector',
         options: new faceapi.TinyFaceDetectorOptions({
             ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
-            inputSize: roundToMultipleOf32(Math.max(32, minDimension)),
+            inputSize: Math.max(32, minDimension),
             minFaceSize: Math.max(16, Math.floor(minDimension * 0.15))
         })
     };
@@ -1182,20 +1178,22 @@ async function normalizeImageRotation(img) {
 }
 
 // Add helper function to detect if image needs rotation
-function detectImageRotation(imageData) {
-    // Simple heuristic: check if height is significantly larger than width
-    // This assumes portrait photos are more likely to need rotation
-    const aspectRatio = imageData.width / imageData.height;
-    return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
-}
+// This function is now imported from utils.js
+// function detectImageRotation(imageData) {
+//     // Simple heuristic: check if height is significantly larger than width
+//     // This assumes portrait photos are more likely to need rotation
+//     const aspectRatio = imageData.width / imageData.height;
+//     return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
+// }
 
 // Add helper function to detect Facebook profile images
-function isFacebookProfileImage(element) {
-    // Check if element is within Facebook's profile picture container
-    return element.closest('[data-visualcompletion="media-vc-image"]') !== null ||
-           element.closest('[data-type="profile_picture"]') !== null ||
-           element.closest('.profile-photo-container') !== null;
-}
+// This function is now imported from utils.js
+// function isFacebookProfileImage(element) {
+//     // Check if element is within Facebook's profile picture container
+//     return element.closest('[data-visualcompletion="media-vc-image"]') !== null ||
+//            element.closest('[data-type="profile_picture"]') !== null ||
+//            element.closest('.profile-photo-container') !== null;
+// }
 
 // Update the detectFacesWithFaceApi function to use the helper
 async function detectFacesWithFaceApi(img) {
@@ -1826,6 +1824,8 @@ function removeDuplicateDetections(detections) {
  * @param {Object} box1 - First bounding box
  * @param {Object} box2 - Second bounding box
  * @returns {number} IoU value between 0 and 1
+ * 
+ * Note: This function is also available in utils.js (duplicated here for now)
  */
 function getIntersectionOverUnion(box1, box2) {
   const intersection = {
@@ -1847,13 +1847,15 @@ function getIntersectionOverUnion(box1, box2) {
 /**
  * Prevents text selection when clicking on images
  * @param {Event} e - The event object
+ * 
+ * This function is now imported from utils.js
  */
-function preventTextSelection(e) {
-  if (e.target.tagName === 'IMG') {
-    e.preventDefault();
-    window.getSelection().removeAllRanges();
-  }
-}
+// function preventTextSelection(e) {
+//   if (e.target.tagName === 'IMG') {
+//     e.preventDefault();
+//     window.getSelection().removeAllRanges();
+//   }
+// }
 
 // Event listeners
 // document.addEventListener('mousedown', preventTextSelection);
@@ -2202,81 +2204,30 @@ async function initializeExtensionContext() {
 
 // Store initialization attempts in session storage to prevent infinite loops
 const MAX_INIT_ATTEMPTS = 3;
-function getInitAttempts() {
-    logFunctionEntry('getInitAttempts');
-    logWithEmoji('info', 'getInitAttempts', 'Getting initialization attempts count');
-    const attempts = sessionStorage.getItem('initAttempts') || 0;
-    return parseInt(attempts, 10);
-}
-
-function incrementInitAttempts() {
-    logFunctionEntry('incrementInitAttempts');
-    logWithEmoji('info', 'incrementInitAttempts', 'Incrementing initialization attempts count');
-    const attempts = getInitAttempts() + 1;
-    sessionStorage.setItem('initAttempts', attempts);
-    return attempts;
-}
-
-function resetInitAttempts() {
-    logFunctionEntry('resetInitAttempts');
-    logWithEmoji('info', 'resetInitAttempts', 'Resetting initialization attempts count');
-    sessionStorage.removeItem('initAttempts');
-}
+// These functions are now imported from utils.js
+// function getInitAttempts() {
+//     logFunctionEntry('getInitAttempts');
+//     logWithEmoji('info', 'getInitAttempts', 'Getting initialization attempts count');
+//     const attempts = sessionStorage.getItem('initAttempts') || 0;
+//     return parseInt(attempts, 10);
+// }
+// 
+// function incrementInitAttempts() {
+//     logFunctionEntry('incrementInitAttempts');
+//     logWithEmoji('info', 'incrementInitAttempts', 'Incrementing initialization attempts count');
+//     const attempts = getInitAttempts() + 1;
+//     sessionStorage.setItem('initAttempts', attempts);
+//     return attempts;
+// }
+// 
+// function resetInitAttempts() {
+//     logFunctionEntry('resetInitAttempts');
+//     logWithEmoji('info', 'resetInitAttempts', 'Resetting initialization attempts count');
+//     sessionStorage.removeItem('initAttempts');
+// }
 
 // Add a helper function for logging with emojis
-// This function is now imported from utils.js
-// function logWithEmoji(type, functionName, message) {
-//     let emoji = '📝'; // Default emoji
-//     
-//     // Select emoji based on log type
-//     switch (type) {
-//         case 'info':
-//             emoji = '📋';
-//             break;
-//         case 'success':
-//             emoji = '✅';
-//             break;
-//         case 'warning':
-//             emoji = '⚠️';
-//             break;
-//         case 'error':
-//             emoji = '❌';
-//             break;
-//         case 'model':
-//             emoji = '🧠';
-//             break;
-//         case 'image':
-//             emoji = '🖼️';
-//             break;
-//         case 'loading':
-//             emoji = '🔄';
-//             break;
-//         case 'setup':
-//             emoji = '🔧';
-//             break;
-//         case 'timer':
-//             emoji = '⏱️';
-//             break;
-//         case 'search':
-//             emoji = '🔍';
-//             break;
-//         case 'lock':
-//             emoji = '🔒';
-//             break;
-//         case 'unlock':
-//             emoji = '🔓';
-//             break;
-//         case 'start':
-//             emoji = '🚀';
-//             break;
-//         case 'draw':
-//             emoji = '🎨';
-//             break;
-//     }
-//     
-//     // Log with the selected emoji and function name
-//     console.log(`${emoji} ${functionName}: ${message}`);
-// }
+// ... existing code ...
 
 // Use the new logging function in key places
 window.addEventListener('load', async () => {
@@ -3154,19 +3105,20 @@ const debouncedReprocess = debounce(async () => {
 }, 250);
 
 // Helper debounce function
-function debounce(func, wait) {
-    logFunctionEntry('debounce');
-    logWithEmoji('info', 'debounce', 'Creating debounced function');
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
+// This function is now imported from utils.js
+// function debounce(func, wait) {
+//     logFunctionEntry('debounce');
+//     logWithEmoji('info', 'debounce', 'Creating debounced function');
+//     let timeout;
+//     return function executedFunction(...args) {
+//         const later = () => {
+//             clearTimeout(timeout);
+//             func(...args);
+//         };
+//         clearTimeout(timeout);
+//         timeout = setTimeout(later, wait);
+//     };
+// }
 
 // Replace the old WorkerPool instantiation with EnhancedWorkerPool
 const workerPool = new EnhancedWorkerPool({
@@ -3222,55 +3174,57 @@ async function rotateImage(canvas, angle) {
 }
 
 // Add helper function to adjust detection coordinates
-function adjustDetectionCoordinates(detections, angle, canvas) {
-    logFunctionEntry('adjustDetectionCoordinates');
-    logWithEmoji('image', 'adjustDetectionCoordinates', `Adjusting coordinates for ${angle} degree rotation`);
-    const radians = (-angle * Math.PI) / 180;
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-    
-    return detections.map(detection => {
-        const { x, y, width, height } = detection.box;
-        const cx = x + width/2 - centerX;
-        const cy = y + height/2 - centerY;
-        
-        // Rotate coordinates back
-        const rotatedX = cx * Math.cos(radians) - cy * Math.sin(radians);
-        const rotatedY = cx * Math.sin(radians) + cy * Math.cos(radians);
-        
-        return {
-            ...detection,
-            box: {
-                x: rotatedX + centerX - width/2,
-                y: rotatedY + centerY - height/2,
-                width,
-                height
-            }
-        };
-    });
-}
+// This function is now imported from utils.js
+// function adjustDetectionCoordinates(detections, angle, canvas) {
+//     logFunctionEntry('adjustDetectionCoordinates');
+//     logWithEmoji('image', 'adjustDetectionCoordinates', `Adjusting coordinates for ${angle} degree rotation`);
+//     const radians = (-angle * Math.PI) / 180;
+//     const centerX = canvas.width / 2;
+//     const centerY = canvas.height / 2;
+//     
+//     return detections.map(detection => {
+//         const { x, y, width, height } = detection.box;
+//         const cx = x + width/2 - centerX;
+//         const cy = y + height/2 - centerY;
+//         
+//         // Rotate coordinates back
+//         const rotatedX = cx * Math.cos(radians) - cy * Math.sin(radians);
+//         const rotatedY = cx * Math.sin(radians) + cy * Math.cos(radians);
+//         
+//         return {
+//             ...detection,
+//             box: {
+//                 x: rotatedX - width/2 + centerX,
+//                 y: rotatedY - height/2 + centerY,
+//                 width,
+//                 height
+//             }
+//         };
+//     });
+// }
 
 // Add recovery function
-function recoverFailedImage(img) {
-    logFunctionEntry('recoverFailedImage');
-    logWithEmoji('setup', 'recoverFailedImage', 'Attempting to recover failed image');
-    // Restore original visibility
-    img.style.visibility = 'visible';
-    img.style.opacity = '1';
-    
-    // Remove any processing-related classes/attributes
-    const wrapper = img.closest('.face-detection-wrapper');
-    if (wrapper) {
-        const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
-        Object.assign(img.style, originalStyles);
-        
-        // Unwrap the image if needed
-        if (wrapper.parentNode) {
-            wrapper.parentNode.insertBefore(img, wrapper);
-            wrapper.remove();
-        }
-    }
-}
+// This function is now imported from utils.js
+// function recoverFailedImage(img) {
+//     logFunctionEntry('recoverFailedImage');
+//     logWithEmoji('setup', 'recoverFailedImage', 'Attempting to recover failed image');
+//     // Restore original visibility
+//     img.style.visibility = 'visible';
+//     img.style.opacity = '1';
+//     
+//     // Remove any processing-related classes/attributes
+//     const wrapper = img.closest('.face-detection-wrapper');
+//     if (wrapper) {
+//         const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
+//         Object.assign(img.style, originalStyles);
+//         
+//         // Unwrap the image if needed
+//         if (wrapper.parentNode) {
+//             wrapper.parentNode.insertBefore(img, wrapper);
+//             wrapper.remove();
+//         }
+//     }
+// }
 
 // Add to error handling
 window.addEventListener('error', function(event) {
@@ -3289,61 +3243,63 @@ window.addEventListener('error', function(event) {
 // Improve the error handling in the sandbox.html communication by adding a special error handler function
 
 // Add the logError function after logWithEmoji
-function logError(functionName, message, error = null) {
-    logWithEmoji('error', functionName, message);
-    if (error && error.stack) {
-        console.error(`${functionName} error stack:`, error.stack);
-    } else if (error) {
-        console.error(`${functionName} error details:`, error);
-    }
-}
+// This function is now imported from utils.js
+// function logError(functionName, message, error = null) {
+//     logWithEmoji('error', functionName, message);
+//     if (error && error.stack) {
+//         console.error(`${functionName} error stack:`, error.stack);
+//     } else if (error) {
+//         console.error(`${functionName} error details:`, error);
+//     }
+// }
 
 // Add a cleanup utility function for handling message event listeners
-function createMessageHandler(expectedType, timeout, onSuccess, onError) {
-    return new Promise((resolve, reject) => {
-        let messageListener = null;
-        let timeoutId = null;
-        
-        const cleanup = () => {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (messageListener) window.removeEventListener('message', messageListener);
-        };
-        
-        messageListener = (event) => {
-            if (event.data && event.data.type === expectedType) {
-                cleanup();
-                if (onSuccess) {
-                    try {
-                        const result = onSuccess(event.data);
-                        resolve(result);
-                    } catch (error) {
-                        logError('messageHandler', `Error handling successful ${expectedType} message:`, error);
-                        reject(error);
-                    }
-                } else {
-                    resolve(event.data);
-                }
-            }
-        };
-        
-        window.addEventListener('message', messageListener);
-        
-        timeoutId = setTimeout(() => {
-            cleanup();
-            const error = new Error(`Timeout waiting for ${expectedType} message (${timeout}ms)`);
-            if (onError) {
-                try {
-                    onError(error);
-                } catch (callbackError) {
-                    logError('messageHandler', `Error in timeout handler for ${expectedType}:`, callbackError);
-                }
-            }
-            reject(error);
-        }, timeout);
-        
-        return { cleanup };
-    });
-}
+// This function is now imported from utils.js
+// function createMessageHandler(expectedType, timeout, onSuccess, onError) {
+//     return new Promise((resolve, reject) => {
+//         let messageListener = null;
+//         let timeoutId = null;
+//         
+//         const cleanup = () => {
+//             if (timeoutId) clearTimeout(timeoutId);
+//             if (messageListener) window.removeEventListener('message', messageListener);
+//         };
+//         
+//         messageListener = (event) => {
+//             if (event.data && event.data.type === expectedType) {
+//                 cleanup();
+//                 if (onSuccess) {
+//                     try {
+//                         const result = onSuccess(event.data);
+//                         resolve(result);
+//                     } catch (error) {
+//                         logError('messageHandler', `Error handling successful ${expectedType} message:`, error);
+//                         reject(error);
+//                     }
+//                 } else {
+//                     resolve(event.data);
+//                 }
+//             }
+//         };
+//         
+//         window.addEventListener('message', messageListener);
+//         
+//         timeoutId = setTimeout(() => {
+//             cleanup();
+//             const error = new Error(`Timeout waiting for ${expectedType} message (${timeout}ms)`);
+//             if (onError) {
+//                 try {
+//                     onError(error);
+//                 } catch (callbackError) {
+//                     logError('messageHandler', `Error in timeout handler for ${expectedType}:`, callbackError);
+//                 }
+//             }
+//             reject(error);
+//         }, timeout);
+//         
+//         return { cleanup };
+//     });
+// }
 
 // Add the utils.js script to content.js by creating a script element
 document.addEventListener('DOMContentLoaded', function() {
@@ -3355,3 +3311,8 @@ document.addEventListener('DOMContentLoaded', function() {
     };
     document.head.appendChild(utilsScript);
 });
+
+// This function is also available in utils.js (duplicated here for now)
+function roundToMultipleOf32(num) {
+    return Math.ceil(num / 32) * 32;
+}
