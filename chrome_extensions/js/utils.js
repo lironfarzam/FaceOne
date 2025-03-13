@@ -463,29 +463,121 @@ function applyBlurEffect(element, shouldBlur) {
  */
 
 /**
- * Enhanced tensor memory management to prevent memory leaks and improve performance
+ * Enhanced unified tensor memory management to prevent memory leaks and improve performance
  * This is a singleton that can be imported and reused throughout the application
  */
 const TensorMemoryManager = (() => {
-    // Set a memory budget
-    const MAX_BYTES_MB = 200; // 200MB memory budget
+    // Configuration with adaptive memory limits
+    const config = {
+        // Default memory budget (will be adjusted based on device)
+        MAX_BYTES_MB: 200,
+        // Memory check interval in ms
+        MEMORY_CHECK_INTERVAL: 30000,
+        // Memory threshold percentage to trigger cleanup
+        MEMORY_THRESHOLD: 0.8,
+        // Debug mode for detailed logging
+        DEBUG: false
+    };
     
-    // Keep track of tensors
-    const trackedTensors = new Set();
+    // Adapt memory limits based on device capabilities
+    try {
+        if (navigator && navigator.deviceMemory) {
+            // Adjust based on device memory (if available)
+            const deviceMemoryGB = navigator.deviceMemory;
+            // Scale budget proportionally, but keep within reasonable limits
+            config.MAX_BYTES_MB = Math.min(Math.max(100, deviceMemoryGB * 100), 500);
+            logWithEmoji('setup', 'TensorMemoryManager', 
+                `Adaptive memory limit set to ${config.MAX_BYTES_MB}MB based on ${deviceMemoryGB}GB device memory`);
+        }
+    } catch (e) {
+        // Fallback to default if detection fails
+        logWithEmoji('warning', 'TensorMemoryManager', 'Failed to detect device memory, using default limits');
+    }
     
-    // Memory check interval in ms
-    const MEMORY_CHECK_INTERVAL = 30000; // 30 seconds
+    // Keep track of tensors with LRU behavior
+    class LRUTensorTracker {
+        constructor() {
+            this.tensors = new Map(); // Maps tensor to its last access time
+        }
+        
+        track(tensor) {
+            if (tensor && !tensor.isDisposed) {
+                this.tensors.set(tensor, Date.now());
+            }
+            return tensor;
+        }
+        
+        untrack(tensor) {
+            this.tensors.delete(tensor);
+        }
+        
+        /**
+         * Get tensors ordered by least recently used
+         */
+        getLRUTensors() {
+            return Array.from(this.tensors.entries())
+                .sort((a, b) => a[1] - b[1]) // Sort by timestamp (oldest first)
+                .map(entry => entry[0]);     // Extract just the tensors
+        }
+        
+        /**
+         * Update timestamp for a tensor to mark it as recently used
+         */
+        touch(tensor) {
+            if (this.tensors.has(tensor)) {
+                this.tensors.set(tensor, Date.now());
+            }
+        }
+        
+        clear() {
+            this.tensors.clear();
+        }
+        
+        get size() {
+            return this.tensors.size;
+        }
+    }
+    
+    // Create LRU tracker instance
+    const trackedTensors = new LRUTensorTracker();
     
     // Setup periodic memory check
     let memoryCheckInterval = null;
     
+    // Last known memory metrics
+    let lastMemoryMetrics = {
+        timestamp: 0,
+        numTensors: 0,
+        numBytes: 0,
+        issuedWarning: false
+    };
+    
+    // Flag to indicate we're in a cleanup cycle
+    let isPerformingCleanup = false;
+    
+    /**
+     * Conditionally log based on debug setting
+     */
+    function debugLog(type, message) {
+        if (config.DEBUG) {
+            logWithEmoji(type, 'TensorMemoryManager', message);
+        }
+    }
+    
     return {
         /**
          * Initialize the memory manager
+         * @param {Object} options - Optional configuration overrides
+         * @returns {Object} - This instance for chaining
          */
-        initialize() {
+        initialize(options = {}) {
             logFunctionEntry('TensorMemoryManager.initialize');
-            logWithEmoji('setup', 'TensorMemoryManager', 'Initializing tensor memory management');
+            
+            // Apply custom configuration
+            Object.assign(config, options);
+            
+            logWithEmoji('setup', 'TensorMemoryManager', 
+                `Initializing tensor memory management with ${config.MAX_BYTES_MB}MB limit`);
             
             // Start periodic memory checks
             this.startPeriodicChecks();
@@ -494,11 +586,38 @@ const TensorMemoryManager = (() => {
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden) {
                     logWithEmoji('info', 'TensorMemoryManager', 'Tab hidden, performing garbage collection');
-                    this.garbageCollect();
+                    this.garbageCollect(true); // Force aggressive collection when tab hidden
                 }
             });
             
+            // Make available globally for the sandbox to access
+            window.TensorMemoryManager = this;
+            
             return this;
+        },
+        
+        /**
+         * Get the current configuration
+         * @returns {Object} Current configuration
+         */
+        getConfig() {
+            return {...config};
+        },
+        
+        /**
+         * Update configuration settings
+         * @param {Object} options - New configuration options
+         */
+        configure(options = {}) {
+            Object.assign(config, options);
+            
+            // Restart checks if interval changed
+            if (options.MEMORY_CHECK_INTERVAL && memoryCheckInterval) {
+                this.stopPeriodicChecks();
+                this.startPeriodicChecks();
+            }
+            
+            logWithEmoji('setup', 'TensorMemoryManager', 'Configuration updated');
         },
         
         /**
@@ -507,10 +626,30 @@ const TensorMemoryManager = (() => {
          * @returns {tf.Tensor} The same tensor for chaining
          */
         track(tensor) {
-            if (tensor && !tensor.isDisposed) {
-                trackedTensors.add(tensor);
+            if (!tensor) return null;
+            
+            if (Array.isArray(tensor)) {
+                // Handle arrays of tensors
+                tensor.forEach(t => trackedTensors.track(t));
+                return tensor;
             }
-            return tensor;
+            
+            return trackedTensors.track(tensor);
+        },
+        
+        /**
+         * Mark a tensor as recently used to prevent early disposal
+         * @param {tf.Tensor} tensor - The tensor to mark
+         */
+        markAsUsed(tensor) {
+            if (!tensor) return;
+            
+            if (Array.isArray(tensor)) {
+                tensor.forEach(t => trackedTensors.touch(t));
+                return;
+            }
+            
+            trackedTensors.touch(tensor);
         },
         
         /**
@@ -518,14 +657,45 @@ const TensorMemoryManager = (() => {
          * @param {tf.Tensor} tensor - The tensor to dispose
          */
         dispose(tensor) {
+            if (!tensor) return;
+            
+            if (Array.isArray(tensor)) {
+                tensor.forEach(t => this.dispose(t));
+                return;
+            }
+            
             if (tensor && !tensor.isDisposed && tensor.dispose) {
                 try {
                     tensor.dispose();
-                    trackedTensors.delete(tensor);
+                    trackedTensors.untrack(tensor);
                 } catch (e) {
                     logError('TensorMemoryManager', 'Error disposing tensor', e);
                 }
             }
+        },
+        
+        /**
+         * Run an operation within a memory-managed context
+         * Similar to tf.tidy but with our own tracking
+         * @param {Function} fn - Function to execute
+         * @returns {any} - Result of the function
+         */
+        tidy(fn) {
+            if (!window.tf) {
+                return fn();
+            }
+            
+            return tf.tidy(() => {
+                const result = fn();
+                
+                // If result is a tensor or array of tensors, track it
+                if (result && (result instanceof tf.Tensor || 
+                    (Array.isArray(result) && result[0] instanceof tf.Tensor))) {
+                    this.track(result);
+                }
+                
+                return result;
+            });
         },
         
         /**
@@ -538,7 +708,9 @@ const TensorMemoryManager = (() => {
             
             memoryCheckInterval = setInterval(() => {
                 this.checkMemory();
-            }, MEMORY_CHECK_INTERVAL);
+            }, config.MEMORY_CHECK_INTERVAL);
+            
+            debugLog('setup', 'Started periodic memory checks');
         },
         
         /**
@@ -548,6 +720,7 @@ const TensorMemoryManager = (() => {
             if (memoryCheckInterval) {
                 clearInterval(memoryCheckInterval);
                 memoryCheckInterval = null;
+                debugLog('setup', 'Stopped periodic memory checks');
             }
         },
         
@@ -557,17 +730,45 @@ const TensorMemoryManager = (() => {
         checkMemory() {
             if (!window.tf || !tf.memory) return;
             
+            // Skip if already in cleanup
+            if (isPerformingCleanup) return;
+            
             try {
                 const memInfo = tf.memory();
                 const memUsageMB = Math.round(memInfo.numBytes / (1024 * 1024));
+                const memoryUsagePercent = memInfo.numBytes / (config.MAX_BYTES_MB * 1024 * 1024);
                 
-                logWithEmoji('info', 'TensorMemoryManager', 
-                    `Memory usage: ${memUsageMB}MB, Tensors: ${memInfo.numTensors}`);
+                // Update memory metrics
+                lastMemoryMetrics = {
+                    timestamp: Date.now(),
+                    numTensors: memInfo.numTensors,
+                    numBytes: memInfo.numBytes,
+                    issuedWarning: lastMemoryMetrics.issuedWarning
+                };
+                
+                // Log memory status periodically even without warnings
+                debugLog('info', `Memory: ${memUsageMB}MB (${Math.round(memoryUsagePercent * 100)}%), Tensors: ${memInfo.numTensors}`);
+                
+                // Only log warnings if we exceed threshold
+                if (memoryUsagePercent > config.MEMORY_THRESHOLD) {
+                    // Don't spam warnings - only log if we haven't recently
+                    if (!lastMemoryMetrics.issuedWarning) {
+                        logWithEmoji('warning', 'TensorMemoryManager', 
+                            `Memory usage at ${Math.round(memoryUsagePercent * 100)}% of ${config.MAX_BYTES_MB}MB limit, running garbage collection`);
+                        lastMemoryMetrics.issuedWarning = true;
+                    }
                     
-                if (memInfo.numBytes > MAX_BYTES_MB * 1024 * 1024) {
-                    logWithEmoji('warning', 'TensorMemoryManager', 
-                        `Memory usage exceeds ${MAX_BYTES_MB}MB limit, running garbage collection`);
-                    this.garbageCollect();
+                    // Progressive cleanup based on severity
+                    if (memoryUsagePercent > 0.95) {
+                        // Critical: Aggressive cleanup
+                        this.garbageCollect(true);
+                    } else {
+                        // Standard cleanup
+                        this.garbageCollect(false);
+                    }
+                } else {
+                    // Reset warning flag when below threshold
+                    lastMemoryMetrics.issuedWarning = false;
                 }
             } catch (error) {
                 logError('TensorMemoryManager', 'Error checking memory', error);
@@ -576,41 +777,137 @@ const TensorMemoryManager = (() => {
         
         /**
          * Run a garbage collection cycle to free memory
+         * @param {boolean} aggressive - Whether to perform aggressive cleanup
          */
-        garbageCollect() {
-            logWithEmoji('loading', 'TensorMemoryManager', 'Running garbage collection');
+        garbageCollect(aggressive = false) {
+            // Prevent reentrancy
+            if (isPerformingCleanup) return;
+            isPerformingCleanup = true;
             
-            // Dispose all tracked tensors
-            let disposedCount = 0;
-            trackedTensors.forEach(tensor => {
-                try {
-                    if (tensor && !tensor.isDisposed) {
-                        tensor.dispose();
-                        disposedCount++;
-                    }
-                } catch (e) {
-                    // Ignore errors during disposal
+            try {
+                debugLog('loading', 'Running garbage collection' + (aggressive ? ' (aggressive)' : ''));
+                
+                if (!window.tf || !tf.memory) {
+                    isPerformingCleanup = false;
+                    return;
                 }
-            });
-            
-            trackedTensors.clear();
-            
-            // Force tf garbage collection if available
-            if (window.tf && tf.engine) {
-                try {
-                    tf.tidy(() => {});
-                    if (tf.engine().state && tf.engine().state.numDataMovesStack && 
-                        tf.engine().state.numDataMovesStack.length > 0) {
-                        tf.engine().endScope();
-                        tf.engine().startScope();
+                
+                // Get tensors by LRU order (oldest first)
+                const lruTensors = trackedTensors.getLRUTensors();
+                let disposedCount = 0;
+                
+                if (aggressive) {
+                    // In aggressive mode, dispose all except very recent tensors
+                    lruTensors.forEach(tensor => {
+                        try {
+                            if (tensor && !tensor.isDisposed) {
+                                tensor.dispose();
+                                disposedCount++;
+                            }
+                        } catch (e) {
+                            // Ignore errors during disposal
+                        }
+                    });
+                    
+                    // Clear tracking completely
+                    trackedTensors.clear();
+                } else {
+                    // In normal mode, dispose oldest 50% of tensors
+                    const disposeCount = Math.floor(lruTensors.length * 0.5);
+                    
+                    for (let i = 0; i < disposeCount; i++) {
+                        const tensor = lruTensors[i];
+                        if (tensor && !tensor.isDisposed) {
+                            try {
+                                tensor.dispose();
+                                trackedTensors.untrack(tensor);
+                                disposedCount++;
+                            } catch (e) {
+                                // Ignore errors during disposal
+                            }
+                        }
                     }
-                } catch (e) {
-                    logError('TensorMemoryManager', 'Error during TensorFlow GC', e);
                 }
+                
+                // Force TensorFlow garbage collection
+                if (window.tf && tf.engine) {
+                    this.forceTfGarbageCollection();
+                }
+                
+                // Only log substantial cleanups to reduce console noise
+                if (disposedCount > 0 || aggressive) {
+                    logWithEmoji('success', 'TensorMemoryManager', 
+                        `Garbage collection complete. Disposed ${disposedCount} tensors.`);
+                }
+                
+                // Update memory metrics after cleanup
+                if (window.tf && tf.memory) {
+                    const memInfo = tf.memory();
+                    const memUsageMB = Math.round(memInfo.numBytes / (1024 * 1024));
+                    debugLog('info', `Post-GC Memory: ${memUsageMB}MB, Tensors: ${memInfo.numTensors}`);
+                }
+            } catch (error) {
+                logError('TensorMemoryManager', 'Error during garbage collection', error);
+            } finally {
+                isPerformingCleanup = false;
+            }
+        },
+        
+        /**
+         * Force TensorFlow's internal garbage collection
+         */
+        forceTfGarbageCollection() {
+            if (!window.tf || !tf.engine) return;
+            
+            try {
+                // Run empty tidy to trigger disposal
+                tf.tidy(() => {});
+                
+                // Handle any dangling scopes
+                if (tf.engine().state && 
+                    tf.engine().state.numDataMovesStack && 
+                    tf.engine().state.numDataMovesStack.length > 0) {
+                    
+                    // End any existing scopes and start a fresh one
+                    tf.engine().endScope();
+                    tf.engine().startScope();
+                }
+            } catch (e) {
+                debugLog('warning', `Error during TensorFlow GC: ${e.message}`);
+            }
+        },
+        
+        /**
+         * Get current memory statistics
+         * @returns {Object} Memory statistics
+         */
+        getMemoryStats() {
+            if (!window.tf || !tf.memory) {
+                return {
+                    available: false,
+                    timestamp: Date.now()
+                };
             }
             
-            logWithEmoji('success', 'TensorMemoryManager', 
-                `Garbage collection complete. Disposed ${disposedCount} tracked tensors.`);
+            try {
+                const memInfo = tf.memory();
+                return {
+                    available: true,
+                    timestamp: Date.now(),
+                    numTensors: memInfo.numTensors,
+                    numBytes: memInfo.numBytes,
+                    numBytesInGPU: memInfo.numBytesInGPU || 0,
+                    unreliable: memInfo.unreliable,
+                    maxMemoryLimit: config.MAX_BYTES_MB * 1024 * 1024,
+                    trackedTensors: trackedTensors.size
+                };
+            } catch (e) {
+                return {
+                    available: false,
+                    error: e.message,
+                    timestamp: Date.now()
+                };
+            }
         },
         
         /**
@@ -618,7 +915,10 @@ const TensorMemoryManager = (() => {
          */
         cleanup() {
             this.stopPeriodicChecks();
-            this.garbageCollect();
+            this.garbageCollect(true);
+            
+            // Remove event listener
+            document.removeEventListener('visibilitychange', this.handleVisibilityChange);
         }
     };
 })();
