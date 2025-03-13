@@ -29,6 +29,7 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "js/utils.js",
         "lib/face-api.min.js",
         "js/workerPool.js",
         "js/content.js"
@@ -44,7 +45,9 @@
       "models/*",
       "css/*",
       "js/imageWorker.js",
-      "js/workerPool.js"
+      "js/workerPool.js",
+      "js/utils.js",
+      "js/sandbox.js"
     ],
     "matches": ["<all_urls>"]
   }],
