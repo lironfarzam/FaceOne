@@ -153,13 +153,14 @@ let flagShowFrameonImage = {
 //=============================================================================
 const MODEL_SELECTION_THRESHOLDS = {
     get MINIMUM_SIZE() {
-        return Math.max(16, flagShowFrameonImage.minimumImageSize);
+        // More lenient minimum - 16px or user setting, whichever is smaller
+        return Math.min(16, flagShowFrameonImage.minimumImageSize || 16);
     },
     get SMALL_IMAGE() {
-        return Math.max(96, this.MINIMUM_SIZE * 2);
+        return Math.max(64, this.MINIMUM_SIZE * 2);
     },
     get LARGE_IMAGE() {
-        return Math.max(320, this.SMALL_IMAGE * 2);
+        return Math.max(256, this.SMALL_IMAGE * 2);
     }
 };
 
@@ -612,251 +613,191 @@ const FACE_API_DETECTION_OPTIONS = {
 };
 
 /**
- * Loads all required models with retry mechanism
+ * Loads specified face API models with optimized resource management
+ * @param {Array<string>} modelList - List of models to load: ['tinyFaceDetector', 'ssdMobilenetv1', 'faceNet', 'myModel']
+ * @returns {Promise<boolean>} - Promise resolving to true if models loaded successfully
  */
-async function loadFaceApiModels() {
+async function loadFaceApiModels(modelList = ['tinyFaceDetector', 'ssdMobilenetv1', 'faceNet', 'myModel']) {
     logFunctionEntry('loadFaceApiModels');
-    // Check if models are already loaded
-    if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded && modelStatus.myModel.loaded) {
-        logWithEmoji('success', 'loadFaceApiModels', 'All models already loaded');
-        return;
-    }
-
-    // Ensure TensorFlow is ready before proceeding
-    try {
-        logWithEmoji('loading', 'loadFaceApiModels', 'Ensuring TensorFlow is ready');
-        await ensureTensorFlowReady();
-        logWithEmoji('success', 'loadFaceApiModels', 'TensorFlow is ready');
-    } catch (error) {
-        logWithEmoji('error', 'loadFaceApiModels', 'TensorFlow not ready: ' + error.message);
-        // Don't refresh, just recreate the sandbox frame
-        if (sandboxFrame) {
-            try {
-                document.body.removeChild(sandboxFrame);
-            } catch (e) {
-                logWithEmoji('warning', 'loadFaceApiModels', 'Error removing sandbox frame: ' + e.message);
-            }
-            sandboxFrame = null;
-        }
-        
-        // Create a new sandbox frame and try again
-        logWithEmoji('loading', 'loadFaceApiModels', 'Recreating sandbox frame after TensorFlow error');
-        await createSandboxFrame();
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Reduced from 2000 to 1000ms
-        
-        // Try again to ensure TensorFlow is ready
-        logWithEmoji('loading', 'loadFaceApiModels', 'Retrying TensorFlow initialization');
-        await ensureTensorFlowReady();
-    }
-
-    // Prevent concurrent loading attempts with a timeout to avoid deadlocks
+    
+    // Prevent concurrent loading
     if (isLoadingModels) {
-        logWithEmoji('timer', 'loadFaceApiModels', 'Model loading already in progress, waiting...');
+        logWithEmoji('lock', 'loadFaceApiModels', 'Model loading already in progress, waiting...');
         
-        // Clear any existing timeout to prevent multiple timeouts
-        if (modelLoadLockTimeout) {
-            clearTimeout(modelLoadLockTimeout);
-        }
-        
-        // Set a new timeout to release the lock if needed
-        modelLoadLockTimeout = setTimeout(() => {
-            logWithEmoji('warning', 'loadFaceApiModels', 'Releasing model loading lock due to timeout');
-            isLoadingModels = false;
-        }, 60000); // 60 second timeout
-        
-        let waitStart = Date.now();
-        while (isLoadingModels && (Date.now() - waitStart) < 30000) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        if (modelStatus.faceApi.loaded && modelStatus.faceNet.loaded && modelStatus.myModel.loaded) {
-            logWithEmoji('success', 'loadFaceApiModels', 'All models loaded while waiting');
-            return;
-        }
-        
-        if (isLoadingModels) {
-            throw new Error('Model loading timeout while waiting');
-        }
+        // Wait for current loading to complete with timeout
+        return new Promise((resolve, reject) => {
+            const checkLoaded = setInterval(() => {
+                if (!isLoadingModels) {
+                    clearInterval(checkLoaded);
+                    
+                    // Verify models were loaded
+                    const allLoaded = modelList.every(model => {
+                        switch (model) {
+                            case 'tinyFaceDetector':
+                                return modelStatus.faceApi.loaded;
+                            case 'ssdMobilenetv1':
+                                return modelStatus.faceApi.loaded;
+                            case 'faceNet':
+                                return modelStatus.faceNet.loaded;
+                            case 'myModel':
+                                return modelStatus.myModel.loaded;
+                            default:
+                                return false;
+                        }
+                    });
+                    
+                    if (allLoaded) {
+                        resolve(true);
+                    } else {
+                        resolve(loadFaceApiModels(modelList)); // Try loading again
+                    }
+                }
+            }, 100);
+            
+            // Set timeout
+            setTimeout(() => {
+                clearInterval(checkLoaded);
+                reject(new Error('Timed out waiting for model loading'));
+            }, 10000);
+        });
     }
-
-    isLoadingModels = true;
-    logWithEmoji('lock', 'loadFaceApiModels', 'Acquired model loading lock');
     
-    // Set a timeout to release the lock if something goes wrong
+    // Set loading lock with timeout
+    isLoadingModels = true;
     modelLoadLockTimeout = setTimeout(() => {
-        logWithEmoji('warning', 'loadFaceApiModels', 'Releasing model loading lock due to timeout');
         isLoadingModels = false;
-    }, 60000); // 60 second timeout
+        logWithEmoji('warning', 'loadFaceApiModels', 'Model loading lock timed out, releasing');
+    }, 30000);
+    
+    logWithEmoji('loading', 'loadFaceApiModels', `Loading models: ${modelList.join(', ')}`);
     
     try {
-        // Ensure extension context is available
-        if (!chrome.runtime || !chrome.runtime.id) {
-            logWithEmoji('loading', 'loadFaceApiModels', 'Initializing extension context');
-            await initializeExtensionContext();
-        }
-        
-        state.modelLoadAttempts++;
-        
-        // Create and wait for sandbox frame with dynamic timeout
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            logWithEmoji('loading', 'loadFaceApiModels', 'Creating sandbox frame...');
-            await createSandboxFrame(state.modelLoadAttempts);
-            // Reduced wait time to improve performance
-            await new Promise(resolve => setTimeout(resolve, 500)); // Reduced from 1000 to 500ms
-        }
-        
-        // Verify sandbox frame is properly initialized
-        if (!sandboxFrame || !sandboxFrame.contentWindow) {
-            throw new Error('Sandbox frame not properly initialized');
-        }
-        
-        // OPTIMIZATION: Pre-check which models need loading
+        // Determine which models need to be loaded
         const modelsToLoad = [];
-        if (!modelStatus.faceApi.loaded && !modelStatus.faceApi.loading) modelsToLoad.push('faceApi');
-        if (!modelStatus.faceNet.loaded && !modelStatus.faceNet.loading) modelsToLoad.push('faceNet');
-        if (!modelStatus.myModel.loaded && !modelStatus.myModel.loading) modelsToLoad.push('myModel');
         
-        logWithEmoji('model', 'loadFaceApiModels', `Beginning model loading for: ${modelsToLoad.join(', ')}`);
+        if (modelList.includes('tinyFaceDetector') && !modelStatus.faceApi.loaded) {
+            modelsToLoad.push('tinyFaceDetector');
+        }
         
-        // OPTIMIZATION: Prioritize models - load FaceNet first as it's the largest
+        if (modelList.includes('ssdMobilenetv1') && !modelStatus.faceApi.loaded) {
+            modelsToLoad.push('ssdMobilenetv1');
+        }
+        
+        if (modelList.includes('faceNet') && !modelStatus.faceNet.loaded) {
+            modelsToLoad.push('faceNet');
+        }
+        
+        if (modelList.includes('myModel') && !modelStatus.myModel.loaded) {
+            modelsToLoad.push('myModel');
+        }
+        
+        if (modelsToLoad.length === 0) {
+            logWithEmoji('success', 'loadFaceApiModels', 'All requested models already loaded');
+            return true;
+        }
+        
         const loadPromises = [];
         
-        // Load FaceNet model first (highest priority)
-        if (modelsToLoad.includes('faceNet')) {
-            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceNet model (priority 1)...');
-            modelStatus.faceNet.loading = true;
+        // Load TinyFaceDetector if needed
+        if (modelsToLoad.includes('tinyFaceDetector')) {
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading TinyFaceDetector model...');
+            const tinyFaceDetectorPromise = (async () => {
+                try {
+                    const modelPath = chrome.runtime.getURL('models/FaceAPI/tiny_face_detector');
+                    await faceapi.nets.tinyFaceDetector.loadFromUri(modelPath);
+                    logWithEmoji('success', 'loadFaceApiModels', 'TinyFaceDetector loaded successfully');
+                    modelStatus.faceApi.loaded = true;
+                    return true;
+                } catch (error) {
+                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load TinyFaceDetector: ' + error.message);
+                    throw error;
+                }
+            })();
             
+            loadPromises.push(tinyFaceDetectorPromise);
+        }
+        
+        // Load SSD MobileNet if needed
+        if (modelsToLoad.includes('ssdMobilenetv1')) {
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading SSD MobileNet model...');
+            const ssdPromise = (async () => {
+                try {
+                    const modelPath = chrome.runtime.getURL('models/FaceAPI/ssd_mobilenetv1');
+                    await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
+                    logWithEmoji('success', 'loadFaceApiModels', 'SSD MobileNet loaded successfully');
+                    modelStatus.faceApi.loaded = true;
+                    return true;
+                } catch (error) {
+                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load SSD MobileNet: ' + error.message);
+                    throw error;
+                }
+            })();
+            
+            loadPromises.push(ssdPromise);
+        }
+        
+        // Load FaceNet if needed
+        if (modelsToLoad.includes('faceNet')) {
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceNet model...');
             const faceNetPromise = (async () => {
                 try {
                     await loadFaceNetModel();
                     logWithEmoji('success', 'loadFaceApiModels', 'FaceNet model loaded successfully');
+                    return true;
                 } catch (error) {
-                    modelStatus.faceNet.error = error;
-                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load FaceNet model: ' + error.message);
+                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load FaceNet: ' + error.message);
                     throw error;
-                } finally {
-                    modelStatus.faceNet.loading = false;
                 }
             })();
             
             loadPromises.push(faceNetPromise);
-            
-            // Give FaceNet a head start before loading other models
-            await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        // Load similarity model (medium priority)
+        // Load similarity model (myModel) if needed
         if (modelsToLoad.includes('myModel')) {
-            logWithEmoji('model', 'loadFaceApiModels', 'Loading similarity model (priority 2)...');
-            modelStatus.myModel.loading = true;
-            modelStatus.myModel.error = null;
-            
+            logWithEmoji('model', 'loadFaceApiModels', 'Loading similarity model...');
             const myModelPromise = (async () => {
                 try {
                     await loadMyModel();
                     logWithEmoji('success', 'loadFaceApiModels', 'Similarity model loaded successfully');
+                    return true;
                 } catch (error) {
-                    modelStatus.myModel.error = error;
-                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load similarity model: ' + error.message);
-                    throw error;
-                } finally {
-                    modelStatus.myModel.loading = false;
+                    logWithEmoji('warning', 'loadFaceApiModels', 'Failed to load similarity model: ' + error.message);
+                    // Don't throw error for similarity model - allow graceful fallback
+                    // Mark as loaded with fallback mode to prevent repeated loading attempts
+                    modelStatus.myModel.loaded = true;
+                    modelStatus.myModel.fallbackMode = true;
+                    return true;
                 }
             })();
             
             loadPromises.push(myModelPromise);
         }
         
-        // Load FaceAPI models (lowest priority as it's smaller and quicker)
-        if (modelsToLoad.includes('faceApi')) {
-            logWithEmoji('model', 'loadFaceApiModels', 'Loading FaceAPI models (priority 3)...');
-            modelStatus.faceApi.loading = true;
-            modelStatus.faceApi.error = null;
-            
-            const faceApiPromise = (async () => {
-                try {
-                    const modelPath = chrome.runtime.getURL('models/FaceAPI');
-                    await retryModelLoad(async () => {
-                        try {
-                            // OPTIMIZATION: Load TinyFaceDetector first as it's faster and smaller
-                            await faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`);
-                            logWithEmoji('success', 'loadFaceApiModels', 'TinyFaceDetector loaded successfully');
-                            
-                            // Then load SSD MobileNet
-                            await faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`);
-                            logWithEmoji('success', 'loadFaceApiModels', 'SSD MobileNet loaded successfully');
-                            
-                            modelStatus.faceApi.loaded = true;
-                            logWithEmoji('success', 'loadFaceApiModels', 'All FaceAPI models loaded successfully');
-                            return true;
-                        } catch (error) {
-                            logWithEmoji('error', 'loadFaceApiModels', 'FaceAPI load attempt failed: ' + error.message);
-                            return false;
-                        }
-                    }, 3, 1000);
-                } catch (error) {
-                    modelStatus.faceApi.error = error;
-                    logWithEmoji('error', 'loadFaceApiModels', 'Failed to load FaceAPI models: ' + error.message);
-                    throw error;
-                } finally {
-                    modelStatus.faceApi.loading = false;
-                }
-            })();
-            
-            loadPromises.push(faceApiPromise);
-        }
-        
-        // Wait for all models to load with proper error handling
-        logWithEmoji('timer', 'loadFaceApiModels', 'Waiting for all model loading to complete');
+        // Wait for all promises to complete
         await Promise.allSettled(loadPromises);
         
-        // Check if all models loaded successfully
+        // Check which models were actually loaded
         const failedModels = [];
-        if (!modelStatus.faceApi.loaded) failedModels.push('FaceAPI');
-        if (!modelStatus.faceNet.loaded) failedModels.push('FaceNet');
-        if (!modelStatus.myModel.loaded) failedModels.push('Similarity Model');
+        if (modelList.includes('tinyFaceDetector') && !modelStatus.faceApi.loaded) failedModels.push('tinyFaceDetector');
+        if (modelList.includes('ssdMobilenetv1') && !modelStatus.faceApi.loaded) failedModels.push('ssdMobilenetv1');
+        if (modelList.includes('faceNet') && !modelStatus.faceNet.loaded) failedModels.push('faceNet');
+        if (modelList.includes('myModel') && !modelStatus.myModel.loaded && !modelStatus.myModel.fallbackMode) failedModels.push('myModel');
         
         if (failedModels.length > 0) {
-            logWithEmoji('error', 'loadFaceApiModels', `Some models failed to load: ${failedModels.join(', ')}`);
+            logWithEmoji('warning', 'loadFaceApiModels', `Some models failed to load: ${failedModels.join(', ')}`);
             
-            // Attempt to load failed models individually
-            for (const modelName of failedModels) {
-                logWithEmoji('loading', 'loadFaceApiModels', `Retrying to load ${modelName} individually...`);
-                try {
-                    if (modelName === 'FaceAPI' && !modelStatus.faceApi.loaded) {
-                        const modelPath = chrome.runtime.getURL('models/FaceAPI');
-                        // Load models individually with shorter timeouts
-                        await faceapi.nets.tinyFaceDetector.loadFromUri(`${modelPath}/tiny_face_detector`);
-                        await faceapi.nets.ssdMobilenetv1.loadFromUri(`${modelPath}/ssd_mobilenetv1`);
-                        modelStatus.faceApi.loaded = true;
-                        logWithEmoji('success', 'loadFaceApiModels', `${modelName} loaded successfully on individual retry`);
-                    } else if (modelName === 'FaceNet' && !modelStatus.faceNet.loaded) {
-                        await loadFaceNetModel();
-                        logWithEmoji('success', 'loadFaceApiModels', `${modelName} loaded successfully on individual retry`);
-                    } else if (modelName === 'Similarity Model' && !modelStatus.myModel.loaded) {
-                        await loadMyModel();
-                        logWithEmoji('success', 'loadFaceApiModels', `${modelName} loaded successfully on individual retry`);
-                    }
-                } catch (retryError) {
-                    logWithEmoji('error', 'loadFaceApiModels', `Failed to load ${modelName} on individual retry: ${retryError.message}`);
-                }
-            }
-            
-            // Check again if all models are loaded after retries
-            if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
-                const stillFailedModels = [];
-                if (!modelStatus.faceApi.loaded) stillFailedModels.push('FaceAPI');
-                if (!modelStatus.faceNet.loaded) stillFailedModels.push('FaceNet');
-                if (!modelStatus.myModel.loaded) stillFailedModels.push('Similarity Model');
-                
-                logWithEmoji('error', 'loadFaceApiModels', `Models still failed after individual retries: ${stillFailedModels.join(', ')}`);
-                throw new Error(`Failed to load models: ${stillFailedModels.join(', ')}`);
+            // Only fail if critical models failed
+            if (failedModels.includes('tinyFaceDetector') || failedModels.includes('faceNet')) {
+                throw new Error(`Critical models failed to load: ${failedModels.join(', ')}`);
+            } else {
+                logWithEmoji('info', 'loadFaceApiModels', 'Non-critical models failed to load. Continuing with limited functionality.');
+                // We'll continue with limited functionality
             }
         }
         
-        // All models loaded successfully
-        state.modelsLoaded = true;
-        logWithEmoji('success', 'loadFaceApiModels', 'All models loaded successfully');
+        logWithEmoji('success', 'loadFaceApiModels', 'Critical models loaded successfully');
+        return true;
         
     } catch (error) {
         logWithEmoji('error', 'loadFaceApiModels', 'Error loading models: ' + error.message);
@@ -869,6 +810,46 @@ async function loadFaceApiModels() {
             clearTimeout(modelLoadLockTimeout);
             modelLoadLockTimeout = null;
         }
+    }
+}
+
+/**
+ * Implements progressive model loading strategy for better performance
+ * First loads critical models synchronously, then loads optional models asynchronously
+ */
+async function loadModelsOnDemand() {
+    logFunctionEntry('loadModelsOnDemand');
+    logWithEmoji('loading', 'loadModelsOnDemand', 'Starting progressive model loading');
+    
+    try {
+        // 1. First load only critical face detection model synchronously
+        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: tinyFaceDetector');
+        await loadFaceApiModels(['tinyFaceDetector']);
+        
+        // 2. Then load FaceNet model which is needed for embeddings
+        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: faceNet');
+        await loadFaceApiModels(['faceNet']);
+        
+        // 3. Load non-critical models asynchronously
+        setTimeout(() => {
+            logWithEmoji('model', 'loadModelsOnDemand', 'Loading optional models in the background');
+            loadFaceApiModels(['myModel']).catch(error => {
+                // Just log errors for optional models
+                logWithEmoji('warning', 'loadModelsOnDemand', 
+                    `Optional model loading failed: ${error.message}. Some features will be limited.`);
+                
+                // Mark the model as in fallback mode to prevent repeated loading attempts
+                if (error.message.includes('myModel') || error.message.includes('Similarity')) {
+                    modelStatus.myModel.fallbackMode = true;
+                }
+            });
+        }, 2000);
+        
+        logWithEmoji('success', 'loadModelsOnDemand', 'Progressive model loading initiated successfully');
+        return true;
+    } catch (error) {
+        logWithEmoji('error', 'loadModelsOnDemand', `Error during progressive model loading: ${error.message}`);
+        throw error;
     }
 }
 
@@ -1883,136 +1864,263 @@ document.addEventListener('click', (e) => {
     }
 }, { passive: false });
 
-// Add a function to ensure models are loaded
+/**
+ * Ensures all required models are loaded
+ * @returns {Promise<boolean>} Promise resolving to true when models are loaded
+ */
 async function ensureModelsLoaded() {
     logFunctionEntry('ensureModelsLoaded');
     logWithEmoji('loading', 'ensureModelsLoaded', 'Checking if all models are loaded');
+    
     // Add a timeout to prevent hanging
     const timeout = 30000; // 30 seconds timeout
     const modelCheckStart = Date.now();
     
-    // Check if we need to load models
-    if (!modelStatus.faceApi.loaded || !modelStatus.faceNet.loaded || !modelStatus.myModel.loaded) {
-        logWithEmoji('loading', 'ensureModelsLoaded', 'Models not loaded, loading now... Status: ' + JSON.stringify(modelStatus));
+    // Define critical models (required for basic functionality)
+    const criticalModels = {
+        faceApi: true,    // We need at least one face detection model
+        faceNet: true     // We need face embedding generation for basic functionality
+    };
+    
+    // Define optional models (enhance functionality but not strictly required)
+    const optionalModels = {
+        myModel: true     // Similarity model enhances functionality but isn't critical
+    };
+    
+    try {
+        // Check which models need loading
+        const modelsToLoad = [];
         
-        try {
-            // Attempt to load models
-            await loadFaceApiModels();
+        if (!modelStatus.faceApi.loaded) modelsToLoad.push('tinyFaceDetector');
+        if (!modelStatus.faceNet.loaded) modelsToLoad.push('faceNet');
+        if (!modelStatus.myModel.loaded && !modelStatus.myModel.fallbackMode) modelsToLoad.push('myModel');
+        
+        if (modelsToLoad.length > 0) {
+            logWithEmoji('loading', 'ensureModelsLoaded', `Models not loaded, loading now... Status: ${JSON.stringify(modelStatus)}`);
             
-            // Double check model status after loading attempt
-            if (!modelStatus.faceApi.loaded) {
-                throw new Error('FaceAPI model failed to load');
+            try {
+                // Attempt to load models
+                await loadFaceApiModels(modelsToLoad);
+                
+                // Verify critical models are loaded
+                let missingCritical = [];
+                if (!modelStatus.faceApi.loaded && criticalModels.faceApi) missingCritical.push('FaceAPI');
+                if (!modelStatus.faceNet.loaded && criticalModels.faceNet) missingCritical.push('FaceNet');
+                
+                if (missingCritical.length > 0) {
+                    throw new Error(`Critical models failed to load: ${missingCritical.join(', ')}`);
+                }
+                
+                // Check optional models - log warnings but don't fail
+                let missingOptional = [];
+                if (!modelStatus.myModel.loaded && !modelStatus.myModel.fallbackMode && optionalModels.myModel) {
+                    missingOptional.push('Similarity Model');
+                    
+                    // Mark in fallback mode to prevent repeated loading attempts
+                    modelStatus.myModel.fallbackMode = true;
+                }
+                
+                if (missingOptional.length > 0) {
+                    logWithEmoji('warning', 'ensureModelsLoaded', 
+                        `Optional models not available: ${missingOptional.join(', ')}. Some features will be limited.`);
+                }
+                
+                logWithEmoji('success', 'ensureModelsLoaded', 'Critical models loaded successfully');
+                state.modelsLoaded = true;
+            } catch (error) {
+                logWithEmoji('error', 'ensureModelsLoaded', 'Error loading models: ' + error.message);
+                
+                // Check how long we've been trying
+                if (Date.now() - modelCheckStart > timeout) {
+                    logWithEmoji('error', 'ensureModelsLoaded', 'Model loading timeout');
+                    throw new Error(`Model loading timeout after ${timeout}ms: ${error.message}`);
+                }
+                
+                // Try to help with debugging by showing which models failed
+                const failedModels = [];
+                if (!modelStatus.faceApi.loaded && criticalModels.faceApi) failedModels.push('FaceAPI');
+                if (!modelStatus.faceNet.loaded && criticalModels.faceNet) failedModels.push('FaceNet');
+                
+                throw new Error(`Failed to load models: ${failedModels.join(', ')}. Error: ${error.message}`);
             }
-            if (!modelStatus.faceNet.loaded) {
-                throw new Error('FaceNet model failed to load');
-            }
-            if (!modelStatus.myModel.loaded) {
-                throw new Error('Similarity model failed to load');
-            }
-            
-            logWithEmoji('success', 'ensureModelsLoaded', 'Models loaded successfully');
-            state.modelsLoaded = true;
-        } catch (error) {
-            logWithEmoji('error', 'ensureModelsLoaded', 'Error loading models: ' + error.message);
-            
-            // Check how long we've been trying
-            if (Date.now() - modelCheckStart > timeout) {
-                logWithEmoji('error', 'ensureModelsLoaded', 'Model loading timeout');
-                clearModelStatus(); // Reset status on timeout
-                throw new Error(`Model loading timeout after ${timeout}ms: ${error.message}`);
-            }
-            
-            // Try to help with debugging by showing which models failed
-            const failedModels = [];
-            if (!modelStatus.faceApi.loaded) failedModels.push('FaceAPI');
-            if (!modelStatus.faceNet.loaded) failedModels.push('FaceNet');
-            if (!modelStatus.myModel.loaded) failedModels.push('Similarity Model');
-            
-            clearModelStatus(); // Reset status on error
-            throw new Error(`Failed to load models: ${failedModels.join(', ')}. Error: ${error.message}`);
+        } else {
+            logWithEmoji('success', 'ensureModelsLoaded', 'All required models already loaded');
         }
-    } else {
-        logWithEmoji('success', 'ensureModelsLoaded', 'All models already loaded');
+    } catch (error) {
+        // Preserve the error message but add more context for debugging
+        logWithEmoji('error', 'ensureModelsLoaded', `Model loading failed: ${error.message}`);
+        throw error;
     }
     
     // Final verification to ensure we're ready for processing
-    return state.modelsLoaded = modelStatus.faceApi.loaded && 
-           modelStatus.faceNet.loaded && 
-           modelStatus.myModel.loaded;
+    const criticalModelsLoaded = 
+        (modelStatus.faceApi.loaded || !criticalModels.faceApi) && 
+        (modelStatus.faceNet.loaded || !criticalModels.faceNet);
+    
+    // Update state based on critical model availability
+    state.modelsLoaded = criticalModelsLoaded;
+    
+    return criticalModelsLoaded;
 }
 
-// Modify handleVisibleElement to await model loading
+/**
+ * Handle a single visible element for processing
+ * @param {HTMLElement} element - The element to process
+ * @returns {Promise<void>}
+ */
 async function handleVisibleElement(element) {
     logFunctionEntry('handleVisibleElement');
     logWithEmoji('image', 'handleVisibleElement', 'Processing visible image element');
-    if (!element || !flagShowFrameonImage.autoProcessImages) return;
     
     try {
-        // Skip immediately if the element is not valid
-        if (!isValidElement(element)) return;
-        
-        const src = element.tagName === 'IMG' ? element.src : element.getAttribute('xlink:href');
-        if (!src) return;
-        
-        // Check if we've already processed this image
-        const info = imageTracker.images.get(src);
-        const needsProcessing = !info || !info.isProcessed;
-        
-        // Skip if already processed
-        if (!needsProcessing && info.isProcessed) {
-            logWithEmoji('info', 'handleVisibleElement', 'Image already processed, skipping: ' + src);
+        // Skip if already processed or being processed
+        if (processedImageTracker.isProcessed(element)) {
+            logWithEmoji('skip', 'handleVisibleElement', 'Image already processed or being processed');
             return;
         }
         
-        // Try to ensure models are loaded before processing
-        let modelsReady = false;
+        // Mark as pending to prevent double-processing
+        processedImageTracker.mark(element, 'pending');
+        
+        // Create the detection wrapper first
+        const wrapper = createWrapper(element);
+        
+        // Only proceed if image meets size requirements
+        const width = element.width || element.naturalWidth;
+        const height = element.height || element.naturalHeight;
+        
+        if (width < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE || height < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
+            logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}`);
+            processedImageTracker.mark(element, 'skipped');
+            if (wrapper && wrapper.isConnected) {
+                cleanupWrapper(wrapper);
+            }
+            return;
+        }
+        
+        // Check if we should skip this image
+        if (width < flagShowFrameonImage.minimumImageSize || height < flagShowFrameonImage.minimumImageSize) {
+            logWithEmoji('info', 'handleVisibleElement', `Image smaller than minimum size setting: ${width}x${height} < ${flagShowFrameonImage.minimumImageSize}`);
+            processedImageTracker.mark(element, 'skipped');
+            if (wrapper && wrapper.isConnected) {
+                cleanupWrapper(wrapper);
+            }
+            return;
+        }
+        
         try {
-            modelsReady = await ensureModelsLoaded();
-        } catch (modelError) {
-            logWithEmoji('error', 'handleVisibleElement', 'Failed to load models for image processing: ' + modelError.message);
-            // Don't throw here - we'll try to recover
-            return; // Skip processing this image for now
-        }
-        
-        if (!modelsReady) {
-            logWithEmoji('warning', 'handleVisibleElement', 'Models not ready, skipping image processing: ' + src);
-            return;
-        }
-        
-        // Process the image if needed
-        if (needsProcessing) {
-            logWithEmoji('image', 'handleVisibleElement', 'Processing image: ' + src);
-            if (!info) {
-                imageTracker.add(src);
+            // Ensure models are loaded but continue with limited functionality if only optional models fail
+            await ensureModelsLoaded();
+            
+            // Load positive embeddings if similarity model is available
+            if (modelStatus.myModel.loaded && !modelStatus.myModel.fallbackMode) {
+                await loadPositiveEmbeddings();
             }
             
-            try {
-                await detectFacesWithFaceApi(element);
-            } catch (detectionError) {
-                logWithEmoji('error', 'handleVisibleElement', 'Error detecting faces: ' + detectionError.message);
-                // Mark as processed to avoid repeated failures
-                imageTracker.markProcessed(src, false);
-                // Recover the image UI if needed
-                recoverFailedImage(element);
-            }
-        } else if (info && !info.isProcessed) {
-            // Reapply visualization if needed
-            logWithEmoji('image', 'handleVisibleElement', 'Reapplying visualization to image: ' + src);
-            const wrapper = createWrapper(element);
-            if (info.detections) {
-                updateVisualization(wrapper, element, info.detections);
+            // Process with face detection
+            await detectFacesWithFaceApi(element);
+            
+            // Mark as complete
+            processedImageTracker.mark(element, 'complete');
+            
+        } catch (error) {
+            logWithEmoji('error', 'handleVisibleElement', `Failed to load models for image processing: ${error.message}`);
+            
+            // Check if we can operate in fallback mode with limited features
+            const hasCriticalModels = modelStatus.faceApi.loaded && modelStatus.faceNet.loaded;
+            
+            if (hasCriticalModels) {
+                logWithEmoji('info', 'handleVisibleElement', 'Operating in fallback mode with limited functionality');
+                
+                try {
+                    // Try to perform basic face detection without similarity checks
+                    await performBasicFaceDetection(element, wrapper);
+                    processedImageTracker.mark(element, 'complete');
+                } catch (fallbackError) {
+                    logWithEmoji('error', 'handleVisibleElement', `Fallback processing also failed: ${fallbackError.message}`);
+                    
+                    // Clean up wrapper to avoid leaving artifacts
+                    if (wrapper && wrapper.isConnected) {
+                        cleanupWrapper(wrapper);
+                    }
+                    
+                    processedImageTracker.mark(element, 'failed');
+                }
+            } else {
+                // Critical models not available, just clean up
+                if (wrapper && wrapper.isConnected) {
+                    cleanupWrapper(wrapper);
+                }
+                processedImageTracker.mark(element, 'failed');
+                throw error; // Re-throw the original error
             }
         }
     } catch (error) {
-        logWithEmoji('error', 'handleVisibleElement', 'Error processing element: ' + error.message);
-        // Don't throw from here as it's called from observers
+        logWithEmoji('error', 'handleVisibleElement', `Error processing element: ${error.message}`);
+        processedImageTracker.mark(element, 'failed');
+    }
+}
+
+/**
+ * Perform basic face detection without similarity matching
+ * Used as a fallback when similarity model is not available
+ * @param {HTMLElement} element - The image element to process
+ * @param {HTMLElement} wrapper - The detection wrapper element
+ */
+async function performBasicFaceDetection(element, wrapper) {
+    logFunctionEntry('performBasicFaceDetection');
+    logWithEmoji('image', 'performBasicFaceDetection', 'Performing basic face detection without similarity checks');
+    
+    try {
+        // Use image preprocessing to normalize rotation
+        const proxyImg = await createProxyImage(element);
+        const normalizedImg = await normalizeImageRotation(proxyImg);
         
-        // Try to recover the image UI
-        try {
-            recoverFailedImage(element);
-        } catch (e) {
-            logWithEmoji('warning', 'handleVisibleElement', 'Failed to recover image: ' + e.message);
+        // Create scaled version for better detection
+        const scaledCanvas = await createScaledImage(normalizedImg);
+        const scaleFactor = scaledCanvas.scaleFactor || 1;
+        
+        // Get appropriate model and options
+        const { model, options } = selectFaceDetectionModel(scaledCanvas);
+        
+        // Detect faces
+        const detections = await (model === 'ssdMobilenetv1' 
+            ? faceapi.detectAllFaces(scaledCanvas, options)
+            : faceapi.detectAllFaces(scaledCanvas, options));
+        
+        // Process detections
+        if (detections.length > 0) {
+            // Scale back detections if we upscaled
+            const scaledDetections = scaleFactor !== 1 
+                ? scaleDetections(detections, scaleFactor) 
+                : detections;
+            
+            // Remove duplicates
+            const uniqueDetections = removeDuplicateDetections(scaledDetections);
+            
+            // Draw the detections without similarity information
+            const canvas = createDetectionCanvas(element);
+            if (canvas) {
+                drawDetections(canvas, uniqueDetections, element);
+                wrapper.appendChild(canvas);
+            }
+            
+            // Add indicator
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, `${uniqueDetections.length} face(s) detected (fallback mode)`);
+            }
+            
+            logWithEmoji('success', 'performBasicFaceDetection', `Detected ${uniqueDetections.length} faces in fallback mode`);
+        } else {
+            // No faces detected
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, 'No faces detected (fallback mode)');
+            }
+            logWithEmoji('info', 'performBasicFaceDetection', 'No faces detected in fallback mode');
         }
+    } catch (error) {
+        logWithEmoji('error', 'performBasicFaceDetection', `Fallback detection error: ${error.message}`);
+        throw error;
     }
 }
 
@@ -2133,32 +2241,45 @@ function startDocumentObserver() {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === Node.ELEMENT_NODE) {
+                        // Query for all images
                         const images = node.querySelectorAll('img:not(.face-detection-canvas)');
+                        
                         images.forEach((img) => {
-                            if (isValidElement(img) && !img.closest('.face-detection-wrapper')) {
+                            if (isValidElement(img) && 
+                                !img.closest('.face-detection-wrapper') && 
+                                !processedImageTracker.isProcessed(img)) {
+                                // Add to queue for processing
                                 imageQueue.add(img);
                             }
                         });
                         
-                        // Handle SVG images with xlink:href
-                        const svgImages = node.querySelectorAll('image');
-                        svgImages.forEach((svgImage) => {
-                            if (svgImage.getAttributeNS('http://www.w3.org/1999/xlink', 'href') && 
-                                !svgImage.closest('.face-detection-wrapper')) {
-                                imageQueue.add(svgImage);
+                        // Handle SVG images separately (they may be nested)
+                        const svgImages = node.querySelectorAll('image[xlink\\:href]');
+                        svgImages.forEach((img) => {
+                            if (isValidElement(img) && 
+                                !img.closest('.face-detection-wrapper') && 
+                                !processedImageTracker.isProcessed(img)) {
+                                // Add to queue for processing
+                                imageQueue.add(img);
                             }
                         });
                     }
                 });
             } else if (mutation.type === 'attributes') {
-                const target = mutation.target;
-                if (target.nodeType === Node.ELEMENT_NODE) {
-                    if (target.tagName.toLowerCase() === 'img' && isValidElement(target) && 
+                // Handle attribute changes (like image src) only if the attribute
+                // being changed is relevant to image content
+                if (mutation.attributeName === 'src' || mutation.attributeName === 'xlink:href') {
+                    const target = mutation.target;
+                    if ((target.tagName === 'IMG' || target.tagName === 'image') && 
+                        isValidElement(target) && 
                         !target.closest('.face-detection-wrapper')) {
-                        imageQueue.add(target);
-                    } else if (target.tagName.toLowerCase() === 'image' && 
-                               target.getAttributeNS('http://www.w3.org/1999/xlink', 'href') && 
-                               !target.closest('.face-detection-wrapper')) {
+                        
+                        // Reset processed status when src changes
+                        if (processedImageTracker.isProcessed(target)) {
+                            processedImageTracker.processed.delete(processedImageTracker.getImageIdentifier(target));
+                        }
+                        
+                        // Add to queue for processing
                         imageQueue.add(target);
                     }
                 }
@@ -2166,17 +2287,15 @@ function startDocumentObserver() {
         });
     });
     
-    // Register the document observer with the Tab Resource Manager
-    if (typeof TabResourceManager !== 'undefined') {
-        TabResourceManager.setDocumentObserver(documentObserver);
-    }
-    
+    // Start observing document
     documentObserver.observe(document.body, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ['src', 'xlink:href']
     });
+    
+    logWithEmoji('success', 'startDocumentObserver', 'Document observer started successfully');
     
     return documentObserver;
 }
@@ -2400,48 +2519,87 @@ async function ensureTensorFlowReady() {
     }
 }
 
-// Modify processExistingImages to ensure models are ready
+/**
+ * Process all images that already exist on the page
+ * @returns {Promise<void>}
+ */
 async function processExistingImages() {
     logFunctionEntry('processExistingImages');
     logWithEmoji('image', 'processExistingImages', 'Processing existing images on page');
+    
     try {
-        // Ensure models are loaded before starting
-        if (!state.modelsLoaded) {
+        // Ensure at least the critical models are loaded
+        const requiredModels = ['tinyFaceDetector', 'faceNet'];
+        
+        try {
             logWithEmoji('loading', 'processExistingImages', 'Models not loaded, loading now...');
-            await loadFaceApiModels();
+            await loadFaceApiModels(requiredModels);
+        } catch (error) {
+            logWithEmoji('error', 'processExistingImages', `Failed to load required models: ${error.message}`);
+            return; // Can't proceed without critical models
         }
-
+        
+        // Find all images on the page
         logWithEmoji('search', 'processExistingImages', 'Scanning page for images...');
-        const elements = [
-            ...Array.from(document.getElementsByTagName('img')),
-            ...Array.from(document.getElementsByTagName('image')),
-            ...Array.from(document.querySelectorAll('svg image[xlink\\:href]')),
-            ...Array.from(document.querySelectorAll('image[preserveAspectRatio="xMidYMid slice"]'))
-        ].filter(element => isValidElement(element));
         
-        logWithEmoji('info', 'processExistingImages', `Found ${elements.length} valid images to process`);
+        let images = [];
+        // Look for all images, not just those without data-faceone-processed attribute
+        const imgElements = document.querySelectorAll('img[src]');
         
-        // Process images in batches with delay between batches
-        const batchSize = 1;  // Keep this at 1 for better stability
-        for (let i = 0; i < elements.length; i += batchSize) {
-            const batch = elements.slice(i, i + batchSize);
-            await Promise.all(batch.map(async element => {
-                if (element.complete || element.tagName === 'image') {
-                    try {
-                        await handleVisibleElement(element);
-                    } catch (error) {
-                        logWithEmoji('error', 'processExistingImages', 'Error processing image: ' + error.message);
-                    }
-                }
-            }));
-            
-            // Increase delay between batches
-            await new Promise(resolve => setTimeout(resolve, 500)); // Increased from 100ms to 500ms
+        // Add SVG images
+        const svgImages = document.querySelectorAll('image[xlink\\:href]');
+        
+        // Collect valid elements that haven't been processed or are pending
+        for (const img of imgElements) {
+            if (isValidElement(img) && !processedImageTracker.isProcessed(img)) {
+                images.push(img);
+            }
         }
         
-        logWithEmoji('success', 'processExistingImages', 'Finished processing existing images');
+        for (const img of svgImages) {
+            if (isValidElement(img) && !processedImageTracker.isProcessed(img)) {
+                images.push(img);
+            }
+        }
+        
+        logWithEmoji('info', 'processExistingImages', `Found ${images.length} valid images to process`);
+        
+        // Process images in batches to avoid freezing the UI
+        const batchSize = 5;
+        const processBatch = async (startIndex) => {
+            const endIndex = Math.min(startIndex + batchSize, images.length);
+            const batch = images.slice(startIndex, endIndex);
+            
+            for (const img of batch) {
+                try {
+                    // No need to set attribute here, the tracker will handle it
+                    // Process the image
+                    await handleVisibleElement(img);
+                } catch (error) {
+                    logWithEmoji('error', 'processExistingImages', `Error processing image: ${error.message}`);
+                    // Mark as failed in case of error
+                    processedImageTracker.mark(img, 'failed');
+                }
+            }
+            
+            // Process next batch if there are more images
+            if (endIndex < images.length) {
+                setTimeout(() => {
+                    processBatch(endIndex);
+                }, 100);
+            } else {
+                logWithEmoji('success', 'processExistingImages', 'Finished processing existing images');
+            }
+        };
+        
+        // Start processing with the first batch
+        if (images.length > 0) {
+            processBatch(0);
+        } else {
+            logWithEmoji('info', 'processExistingImages', 'No valid images found to process');
+        }
     } catch (error) {
-        logWithEmoji('error', 'processExistingImages', 'Error processing existing images: ' + error.message);
+        logWithEmoji('error', 'processExistingImages', `Error processing images: ${error.message}`);
     }
 }
 
@@ -3137,93 +3295,115 @@ const workerPool = new EnhancedWorkerPool({
 // Initialize the worker pool during extension initialization
 async function initializeExtension() {
     logFunctionEntry('initializeExtension');
-    logWithEmoji('start', 'initializeExtension', 'Starting initialization');
+    
+    // Detailed timing
+    const startTime = performance.now();
+    let stepStartTime = startTime;
     
     try {
-        // Initialize the Tab Resource Manager to improve performance
-        if (typeof TabResourceManager !== 'undefined') {
-            // Define the status check callback
-            const checkExtensionStatus = async () => {
-                await checkTensorFlowStatus().catch(error => {
-                    logError('initializeExtension', 'Status check error:', error);
-                });
-            };
-            
-            // Initialize with configuration options
-            TabResourceManager.initialize({
-                statusCheckCallback: checkExtensionStatus,
-                suspensionDelay: 10000,  // Wait 10 seconds before suspending
-                resumptionDelay: 500     // Resume quickly when tab becomes active
-            });
-            
-            logWithEmoji('success', 'initializeExtension', 'Tab Resource Manager initialized');
+        // 0. Preload critical resources
+        preloadCriticalResources();
+        
+        // 1. Check if the site is restricted
+        const isRestricted = checkIfRestrictedSite() || hasWorkerRestrictions();
+        if (isRestricted) {
+            logWithEmoji('warning', 'initializeExtension', 'Detected restricted site, some features may be limited');
         }
         
-        // Initialize the Tensor Memory Manager to prevent memory leaks
-        // Note: This is only for the content script, the sandbox will initialize its own
-        if (typeof TensorMemoryManager !== 'undefined') {
-            TensorMemoryManager.initialize();
-            logWithEmoji('success', 'initializeExtension', 'Tensor Memory Manager initialized');
+        // 2. Initialize image tracker for processing state
+        if (!window.processedImageTracker) {
+            logWithEmoji('setup', 'initializeExtension', 'Initializing image tracker');
+            window.processedImageTracker = processedImageTracker;
         }
         
-        // Setup tab visibility handler
-        setupTabVisibilityHandler();
+        // 3. Initialize worker pool with optimal settings
+        const workerPoolInitialized = await initializeWorkerPool();
         
-        // Initialize extension context
-        await initializeExtensionContext();
+        const workerPoolTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Worker pool initialization took ${workerPoolTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
         
-        // Create sandbox frame for TensorFlow operations
-        await createSandboxFrame();
-        
-        // Load all required face detection models
-        await loadFaceApiModels();
-        
-        // Initialize the image queue and start processing
-        imageQueue = new ImageQueue();
-        
-        // Start document observer to detect new images
-        const observer = startDocumentObserver();
-        
-        // Process images that already exist in the page
-        await processExistingImages();
-        
-        // Load positive embeddings for similarity comparison
-        await loadPositiveEmbeddings();
-        
-        // Add event listener for document clicks to handle UI interactions
-        document.addEventListener('click', preventTextSelection);
-        
-        // Mark extension as initialized
-        isInitialized = true;
-        
-        window.addEventListener('beforeunload', () => {
-            // Cleanup resources on page unload
-            if (typeof TabResourceManager !== 'undefined') {
-                TabResourceManager.cleanup();
-            }
-            if (typeof TensorMemoryManager !== 'undefined') {
-                TensorMemoryManager.cleanup();
-            }
-            
-            // Remove event listeners
-            document.removeEventListener('click', preventTextSelection);
-            
-            // Disconnect observers
-            if (observer) {
-                observer.disconnect();
-            }
-            
-            // Clear queues and caches
-            if (imageQueue) {
-                imageQueue.clear();
-            }
+        // 4. Initialize image queue
+        imageQueue = new ImageQueue({
+            batchSize: 5,
+            processingInterval: 300
         });
         
-        logWithEmoji('success', 'initializeExtension', 'Extension fully initialized');
+        const queueTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Image queue initialization took ${queueTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
         
+        // 5. Initialize sandbox for TensorFlow (if not restricted)
+        if (!isRestricted) {
+            try {
+                await createSandboxFrame();
+                sandboxInitialized = true;
+                logWithEmoji('success', 'initializeExtension', 'Sandbox initialized successfully');
+            } catch (error) {
+                logWithEmoji('error', 'initializeExtension', `Failed to initialize sandbox: ${error.message}`);
+                sandboxInitialized = false;
+            }
+        } else {
+            logWithEmoji('warning', 'initializeExtension', 'Restricted site, skipping sandbox initialization');
+        }
+        
+        const sandboxTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Sandbox initialization took ${sandboxTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 6. Set up mutation observer
+        setupMutationObserver();
+        
+        const observerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Mutation observer setup took ${observerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 7. Set up memory monitoring
+        const memoryMonitoringTimer = setInterval(() => {
+            try {
+                if (typeof TensorMemoryManager !== 'undefined') {
+                    TensorMemoryManager.checkMemory();
+                }
+                
+                // Also check worker pool memory if available
+                if (workerPoolInitialized && workerPool) {
+                    workerPool.checkWorkerMemoryUsage();
+                }
+            } catch (error) {
+                console.error('Memory monitoring error:', error);
+            }
+        }, 30000); // Check every 30 seconds
+        
+        // 8. Load models progressively instead of all at once
+        await loadModelsOnDemand();
+        
+        const modelLoadTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Initial model loading took ${modelLoadTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 9. Set up message listeners
+        setupMessageListeners();
+        
+        // 10. Process existing images if auto-processing is enabled
+        if (flagShowFrameonImage.autoProcessImages) {
+            processExistingImages();
+        }
+        
+        // Mark as initialized
+        extensionInitialized = true;
+        
+        // Total initialization time
+        const totalTime = performance.now() - startTime;
+        logWithEmoji('success', 'initializeExtension', `Extension initialized in ${totalTime.toFixed(0)}ms`);
+        
+        return true;
     } catch (error) {
-        logError('initializeExtension', 'Initialization failed', error);
-        throw error;
+        logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
+        
+        // Even with errors, mark as initialized with limited functionality
+        extensionInitialized = true;
+        
+        return false;
     }
 }
 
@@ -3411,6 +3591,22 @@ function setupTabVisibilityHandler() {
             imageQueue.pause();
             logWithEmoji('success', 'tabVisibility', 'Image queue processing paused');
         }
+        
+        // Mark pending images as needing reprocessing
+        if (processedImageTracker) {
+            let pendingCount = 0;
+            processedImageTracker.processed.forEach((data, id) => {
+                if (data.state === 'pending') {
+                    // Delete pending states to force reprocessing when tab becomes active again
+                    processedImageTracker.processed.delete(id);
+                    pendingCount++;
+                }
+            });
+            
+            if (pendingCount > 0) {
+                logWithEmoji('info', 'tabVisibility', `Cleared ${pendingCount} pending images from tracker`);
+            }
+        }
     });
     
     window.addEventListener('faceone:resumed', () => {
@@ -3422,6 +3618,25 @@ function setupTabVisibilityHandler() {
             logWithEmoji('success', 'tabVisibility', 'Image queue processing resumed');
         }
         
+        // Reset image tracking for all non-processed images
+        if (processedImageTracker) {
+            // Only remove pending images, keep completed ones
+            const completedImages = new Map();
+            processedImageTracker.processed.forEach((data, id) => {
+                if (data.state === 'complete') {
+                    completedImages.set(id, data);
+                }
+            });
+            
+            // Clear tracker and restore completed images
+            processedImageTracker.clear();
+            completedImages.forEach((data, id) => {
+                processedImageTracker.processed.set(id, data);
+            });
+            
+            logWithEmoji('success', 'tabVisibility', 'Image tracking state reset for pending images');
+        }
+        
         // Process any images that became visible while tab was inactive
         if (isInitialized && flagShowFrameonImage.autoProcessImages) {
             setTimeout(() => {
@@ -3429,4 +3644,694 @@ function setupTabVisibilityHandler() {
             }, 1000);
         }
     });
+}
+
+// Preload resources using resource hints for faster loading
+function preloadCriticalResources() {
+    logFunctionEntry('preloadCriticalResources');
+    
+    const resources = [
+        { type: 'script', url: chrome.runtime.getURL('lib/tf.min.js') },
+        { type: 'script', url: chrome.runtime.getURL('lib/face-api.min.js') },
+        { type: 'fetch', url: chrome.runtime.getURL('models/FaceAPI/tiny_face_detector/model.json') }
+    ];
+    
+    for (const resource of resources) {
+        try {
+            const link = document.createElement('link');
+            link.rel = resource.type === 'script' ? 'preload' : 'prefetch';
+            link.href = resource.url;
+            link.as = resource.type;
+            link.crossOrigin = 'anonymous';
+            
+            document.head.appendChild(link);
+            
+            logWithEmoji('setup', 'preloadCriticalResources', `Preloaded ${resource.type}: ${resource.url.split('/').pop()}`);
+        } catch (error) {
+            logWithEmoji('warning', 'preloadCriticalResources', `Failed to preload ${resource.url}: ${error.message}`);
+        }
+    }
+}
+
+// Update initializeExtension to call this first
+async function initializeExtension() {
+    logFunctionEntry('initializeExtension');
+    
+    // Detailed timing
+    const startTime = performance.now();
+    let stepStartTime = startTime;
+    
+    try {
+        // 0. Preload critical resources
+        preloadCriticalResources();
+        
+        // 1. Check if the site is restricted
+        const isRestricted = checkIfRestrictedSite() || hasWorkerRestrictions();
+        if (isRestricted) {
+            logWithEmoji('warning', 'initializeExtension', 'Detected restricted site, some features may be limited');
+        }
+        
+        // 2. Initialize image tracker for processing state
+        if (!window.processedImageTracker) {
+            logWithEmoji('setup', 'initializeExtension', 'Initializing image tracker');
+            window.processedImageTracker = processedImageTracker;
+        }
+        
+        // 3. Initialize worker pool with optimal settings
+        const workerPoolInitialized = await initializeWorkerPool();
+        
+        const workerPoolTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Worker pool initialization took ${workerPoolTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 4. Initialize image queue
+        imageQueue = new ImageQueue({
+            batchSize: 5,
+            processingInterval: 300
+        });
+        
+        const queueTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Image queue initialization took ${queueTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 5. Initialize sandbox for TensorFlow (if not restricted)
+        if (!isRestricted) {
+            try {
+                await createSandboxFrame();
+                sandboxInitialized = true;
+                logWithEmoji('success', 'initializeExtension', 'Sandbox initialized successfully');
+            } catch (error) {
+                logWithEmoji('error', 'initializeExtension', `Failed to initialize sandbox: ${error.message}`);
+                sandboxInitialized = false;
+            }
+        } else {
+            logWithEmoji('warning', 'initializeExtension', 'Restricted site, skipping sandbox initialization');
+        }
+        
+        const sandboxTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Sandbox initialization took ${sandboxTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 6. Set up mutation observer
+        setupMutationObserver();
+        
+        const observerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Mutation observer setup took ${observerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 7. Set up memory monitoring
+        const memoryMonitoringTimer = setInterval(() => {
+            try {
+                if (typeof TensorMemoryManager !== 'undefined') {
+                    TensorMemoryManager.checkMemory();
+                }
+                
+                // Also check worker pool memory if available
+                if (workerPoolInitialized && workerPool) {
+                    workerPool.checkWorkerMemoryUsage();
+                }
+            } catch (error) {
+                console.error('Memory monitoring error:', error);
+            }
+        }, 30000); // Check every 30 seconds
+        
+        // 8. Load models progressively instead of all at once
+        await loadModelsOnDemand();
+        
+        const modelLoadTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Initial model loading took ${modelLoadTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 9. Set up message listeners
+        setupMessageListeners();
+        
+        // 10. Process existing images if auto-processing is enabled
+        if (flagShowFrameonImage.autoProcessImages) {
+            processExistingImages();
+        }
+        
+        // Mark as initialized
+        extensionInitialized = true;
+        
+        // Total initialization time
+        const totalTime = performance.now() - startTime;
+        logWithEmoji('success', 'initializeExtension', `Extension initialized in ${totalTime.toFixed(0)}ms`);
+        
+        return true;
+    } catch (error) {
+        logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
+        
+        // Even with errors, mark as initialized with limited functionality
+        extensionInitialized = true;
+        
+        return false;
+    }
+}
+
+// Dynamically load scripts only when needed
+async function loadScriptOnDemand(scriptPath) {
+    logFunctionEntry('loadScriptOnDemand');
+    logWithEmoji('loading', 'loadScriptOnDemand', `Loading script: ${scriptPath.split('/').pop()}`);
+    
+    return new Promise((resolve, reject) => {
+        const scriptUrl = chrome.runtime.getURL(scriptPath);
+        
+        // Check if script is already loaded
+        const existingScript = document.querySelector(`script[src="${scriptUrl}"]`);
+        if (existingScript) {
+            logWithEmoji('info', 'loadScriptOnDemand', `Script already loaded: ${scriptPath.split('/').pop()}`);
+            return resolve(existingScript);
+        }
+        
+        // Create a new script element
+        const script = document.createElement('script');
+        script.src = scriptUrl;
+        script.async = true;
+        
+        // Set up event handlers
+        script.onload = () => {
+            logWithEmoji('success', 'loadScriptOnDemand', `Script loaded successfully: ${scriptPath.split('/').pop()}`);
+            resolve(script);
+        };
+        
+        script.onerror = (error) => {
+            logWithEmoji('error', 'loadScriptOnDemand', `Failed to load script: ${scriptPath.split('/').pop()}`);
+            reject(new Error(`Failed to load script: ${scriptPath}`));
+        };
+        
+        // Add script to document
+        document.head.appendChild(script);
+    });
+}
+
+// Cache for storing loaded resources
+const resourceCache = {
+    scripts: new Map(),
+    models: new Map(),
+    
+    // Add a resource to the cache
+    add(type, key, resource) {
+        if (type === 'script') {
+            this.scripts.set(key, { 
+                resource, 
+                timestamp: Date.now() 
+            });
+        } else if (type === 'model') {
+            this.models.set(key, { 
+                resource, 
+                timestamp: Date.now() 
+            });
+        }
+    },
+    
+    // Get a resource from the cache
+    get(type, key) {
+        if (type === 'script') {
+            return this.scripts.get(key)?.resource;
+        } else if (type === 'model') {
+            return this.models.get(key)?.resource;
+        }
+        return null;
+    },
+    
+    // Check if a resource exists in the cache
+    has(type, key) {
+        if (type === 'script') {
+            return this.scripts.has(key);
+        } else if (type === 'model') {
+            return this.models.has(key);
+        }
+        return false;
+    }
+};
+
+/**
+ * Determines the optimal number of workers based on device capabilities
+ * @returns {number} The optimal number of workers
+ */
+function determineOptimalWorkerCount() {
+    // Get the number of CPU cores
+    const cores = navigator.hardwareConcurrency || 4;
+    
+    // Check device memory if available
+    let deviceMemoryGB = 4; // Default assumption: 4GB RAM
+    if (navigator.deviceMemory) {
+        deviceMemoryGB = navigator.deviceMemory;
+    }
+    
+    // Low-end devices: Use fewer workers
+    if (deviceMemoryGB <= 2 || cores <= 2) {
+        return 1; // Single worker for low-end devices
+    }
+    
+    // Mid-range devices: 2 workers
+    if (deviceMemoryGB <= 4 || cores <= 4) {
+        return 2;
+    }
+    
+    // High-end devices: Use up to cores-1 workers, max 4
+    return Math.min(cores - 1, 4);
+}
+
+/**
+ * Initializes the worker pool with optimal settings for the current device
+ * @returns {Promise<boolean>} True if initialization was successful
+ */
+async function initializeWorkerPool() {
+    logFunctionEntry('initializeWorkerPool');
+    
+    try {
+        // Check for CSP restrictions that would prevent workers
+        if (hasWorkerRestrictions()) {
+            logWithEmoji('warning', 'initializeWorkerPool', 'Worker creation restricted by CSP, skipping worker pool');
+            return false;
+        }
+        
+        // Determine optimal worker count
+        const workerCount = determineOptimalWorkerCount();
+        logWithEmoji('info', 'initializeWorkerPool', `Using ${workerCount} workers based on device capabilities`);
+        
+        // Initialize worker pool with adaptive settings
+        workerPool = new WorkerPool({ 
+            maxWorkers: workerCount,
+            taskTimeout: 15000, // 15 seconds timeout for tasks
+            batchSize: 4,
+            // Reduce restart threshold for low-memory devices
+            workerRestartThreshold: navigator.deviceMemory && navigator.deviceMemory <= 2 ? 500 : 1000
+        });
+        
+        const initialized = await workerPool.initialize();
+        
+        if (initialized) {
+            logWithEmoji('success', 'initializeWorkerPool', `Worker pool initialized with ${workerCount} workers`);
+            return true;
+        } else {
+            logWithEmoji('error', 'initializeWorkerPool', 'Worker pool initialization failed');
+            return false;
+        }
+    } catch (error) {
+        logWithEmoji('error', 'initializeWorkerPool', `Failed to initialize worker pool: ${error.message}`);
+        return false;
+    }
+}
+
+/**
+ * Marks an image for fallback processing when worker-based processing is restricted
+ * This creates a wrapper and visual indicator to show the image is being handled by FaceOne
+ * @param {HTMLElement} img - The image element to mark for fallback processing
+ */
+function markImageForFallbackProcessing(img) {
+    logFunctionEntry('markImageForFallbackProcessing');
+    
+    // Skip if already processed or being processed
+    if (img.closest('.face-detection-wrapper')) {
+        return;
+    }
+    
+    // Create a wrapper div for the image
+    const wrapper = document.createElement('div');
+    wrapper.className = 'face-detection-wrapper';
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    wrapper.style.maxWidth = '100%';
+    wrapper.style.lineHeight = '0';
+    wrapper.setAttribute('data-faceone-indicator', 'true');
+    
+    // Store original styles
+    const computedStyle = window.getComputedStyle(img);
+    const originalStyles = {
+        position: img.style.position,
+        margin: img.style.margin,
+        padding: img.style.padding,
+        display: img.style.display
+    };
+    wrapper.setAttribute('data-original-styles', JSON.stringify(originalStyles));
+    
+    // Add the wrapper around the image
+    if (img.parentNode) {
+        img.parentNode.insertBefore(wrapper, img);
+        wrapper.appendChild(img);
+    }
+    
+    // Add a small indicator to show FaceOne is active
+    const indicator = document.createElement('div');
+    indicator.className = 'faceone-fallback-indicator';
+    indicator.style.position = 'absolute';
+    indicator.style.top = '5px';
+    indicator.style.right = '5px';
+    indicator.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    indicator.style.color = 'white';
+    indicator.style.padding = '2px 5px';
+    indicator.style.fontSize = '10px';
+    indicator.style.borderRadius = '3px';
+    indicator.style.zIndex = '9999';
+    indicator.style.pointerEvents = 'none';
+    indicator.textContent = 'FaceOne';
+    
+    wrapper.appendChild(indicator);
+    
+    // Mark the image as being processed
+    img.setAttribute('data-faceone-fallback', 'true');
+    
+    logWithEmoji('success', 'markImageForFallbackProcessing', 'Image marked for fallback processing');
+}
+
+// Modify generateEmbedding to ensure model readiness
+// ... existing code ...
+
+/**
+ * Checks if the current environment has restrictions that prevent using Web Workers
+ * This is typically due to Content Security Policy (CSP) restrictions
+ * @returns {boolean} True if workers are restricted, false otherwise
+ */
+function hasWorkerRestrictions() {
+    logFunctionEntry('hasWorkerRestrictions');
+    
+    try {
+        // Try to detect CSP that blocks workers
+        if (window.__worker_restrictions_detected) {
+            return true; // Already detected restrictions
+        }
+        
+        // Check if we're on a site known to use restrictive CSP
+        const hostname = window.location.hostname;
+        const knownRestrictiveSites = [
+            'github.com',
+            'gitlab.com',
+            'bitbucket.org',
+            'stackoverflow.com',
+            'jira.atlassian.com'
+        ];
+        
+        if (knownRestrictiveSites.some(site => hostname.includes(site))) {
+            logWithEmoji('warning', 'hasWorkerRestrictions', `Detected known restrictive site: ${hostname}`);
+            window.__worker_restrictions_detected = true;
+            return true;
+        }
+        
+        // Try creating a worker as a test
+        try {
+            // Create a simple worker from a blob
+            const blob = new Blob(['self.onmessage = function() { self.postMessage("ok"); }'], 
+                                { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
+            const worker = new Worker(url);
+            
+            // Clean up
+            worker.terminate();
+            URL.revokeObjectURL(url);
+            
+            logWithEmoji('success', 'hasWorkerRestrictions', 'Worker creation test successful, no restrictions detected');
+            return false;
+        } catch (e) {
+            logWithEmoji('warning', 'hasWorkerRestrictions', `Worker creation failed: ${e.message}`);
+            window.__worker_restrictions_detected = true;
+            return true;
+        }
+    } catch (error) {
+        logWithEmoji('error', 'hasWorkerRestrictions', `Error checking worker restrictions: ${error.message}`);
+        return false; // Default to no restrictions on error
+    }
+}
+
+/**
+ * Checks if an element is visible and how much of it is in the viewport
+ * @param {HTMLElement} element - The element to check
+ * @returns {Object} Object with visibility information
+ */
+function getElementVisibility(element) {
+    logFunctionEntry('getElementVisibility');
+    
+    // Default return value for invalid elements
+    if (!element || !element.isConnected) {
+        return { isVisible: false, fullyVisible: false, visibilityRatio: 0 };
+    }
+    
+    try {
+        // Get element boundaries
+        const rect = element.getBoundingClientRect();
+        
+        // Check if element has size
+        if (rect.width === 0 || rect.height === 0) {
+            return { isVisible: false, fullyVisible: false, visibilityRatio: 0 };
+        }
+        
+        // Get viewport dimensions
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        
+        // Check if any part of the element is in the viewport
+        const isPartiallyVisible = (
+            rect.top < viewportHeight &&
+            rect.bottom > 0 &&
+            rect.left < viewportWidth &&
+            rect.right > 0
+        );
+        
+        // Check if element is fully visible
+        const isFullyVisible = (
+            rect.top >= 0 &&
+            rect.bottom <= viewportHeight &&
+            rect.left >= 0 &&
+            rect.right <= viewportWidth
+        );
+        
+        // Calculate what percentage of the element is visible
+        let visibilityRatio = 0;
+        
+        if (isPartiallyVisible) {
+            const visibleWidth = Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0);
+            const visibleHeight = Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0);
+            const visibleArea = visibleWidth * visibleHeight;
+            const totalArea = rect.width * rect.height;
+            
+            visibilityRatio = visibleArea / totalArea;
+        }
+        
+        // Check if element is hidden by CSS
+        const style = window.getComputedStyle(element);
+        const isStyleVisible = (
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            parseFloat(style.opacity) > 0
+        );
+        
+        const isVisible = isPartiallyVisible && isStyleVisible;
+        
+        return {
+            isVisible,
+            fullyVisible: isFullyVisible && isStyleVisible,
+            visibilityRatio: isVisible ? visibilityRatio : 0
+        };
+    } catch (error) {
+        logWithEmoji('error', 'getElementVisibility', `Error checking visibility: ${error.message}`);
+        return { isVisible: false, fullyVisible: false, visibilityRatio: 0 };
+    }
+}
+
+/**
+ * Checks if the current site has known restrictions that may affect extension functionality
+ * @returns {boolean} True if the site has known restrictions
+ */
+function checkIfRestrictedSite() {
+    logFunctionEntry('checkIfRestrictedSite');
+    
+    try {
+        const hostname = window.location.hostname;
+        
+        // List of sites with known CSP restrictions
+        const restrictedSites = [
+            'github.com',
+            'gitlab.com',
+            'bitbucket.org',
+            'stackoverflow.com',
+            'jira.atlassian.com',
+            'confluence.atlassian.com',
+            'docs.google.com',
+            'drive.google.com',
+            'mail.google.com',
+            'sheets.google.com',
+            'slides.google.com'
+        ];
+        
+        // Check if current site is in the restricted list
+        const isRestricted = restrictedSites.some(site => hostname.includes(site));
+        
+        if (isRestricted) {
+            logWithEmoji('warning', 'checkIfRestrictedSite', `Detected restricted site: ${hostname}`);
+            return true;
+        }
+        
+        return false;
+    } catch (error) {
+        logWithEmoji('error', 'checkIfRestrictedSite', `Error checking site restrictions: ${error.message}`);
+        return false;
+    }
+}
+
+/**
+ * Tracker to manage the processing state of images to prevent double-processing
+ */
+const processedImageTracker = {
+    // Map to store processed images with their state
+    processed: new Map(),
+    
+    /**
+     * Marks an image as processed with the given state
+     * @param {HTMLElement} img - The image element to mark
+     * @param {string} state - The processing state ('pending', 'complete', 'failed', 'skipped')
+     */
+    mark(img, state) {
+        if (!img) return;
+        
+        const id = this.getImageIdentifier(img);
+        this.processed.set(id, {
+            state,
+            timestamp: Date.now()
+        });
+        
+        // Also add a data attribute for quick checks
+        img.setAttribute('data-faceone-processed', state);
+        
+        // Debug log for tracking
+        logWithEmoji('debug', 'processedImageTracker', `Image marked as '${state}': ${id.substring(0, 50)}...`);
+    },
+    
+    /**
+     * Checks if an image has already been processed
+     * @param {HTMLElement} img - The image element to check
+     * @returns {boolean} True if the image has been processed or is being processed
+     */
+    isProcessed(img) {
+        if (!img) return false;
+        
+        // Quick check using attribute
+        if (img.hasAttribute('data-faceone-processed')) {
+            return true;
+        }
+        
+        // Full check using identifier
+        const id = this.getImageIdentifier(img);
+        const result = this.processed.has(id);
+        
+        if (result) {
+            const data = this.processed.get(id);
+            // Debug log for tracking
+            logWithEmoji('debug', 'processedImageTracker', `Image check: already ${data.state}: ${id.substring(0, 50)}...`);
+        }
+        
+        return result;
+    },
+    
+    /**
+     * Gets the processing state of an image
+     * @param {HTMLElement} img - The image element to check
+     * @returns {string|null} The processing state or null if not processed
+     */
+    getState(img) {
+        if (!img) return null;
+        
+        const id = this.getImageIdentifier(img);
+        const data = this.processed.get(id);
+        return data ? data.state : null;
+    },
+    
+    /**
+     * Generates a unique identifier for an image based on its attributes
+     * @param {HTMLElement} img - The image element
+     * @returns {string} A unique identifier string
+     */
+    getImageIdentifier(img) {
+        if (!img) return '';
+        
+        // For standard images, use src
+        if (img.tagName === 'IMG' && img.src) {
+            return `img_${img.src}`;
+        }
+        
+        // For SVG images, use xlink:href attribute
+        if (img.tagName === 'image' && img.getAttributeNS('http://www.w3.org/1999/xlink', 'href')) {
+            return `svg_${img.getAttributeNS('http://www.w3.org/1999/xlink', 'href')}`;
+        }
+        
+        // Use DOM path as fallback
+        return this.getElementPath(img);
+    },
+    
+    /**
+     * Generates a CSS path that uniquely identifies an element
+     * @param {HTMLElement} element - The element to get a path for
+     * @returns {string} The CSS path for the element
+     */
+    getElementPath(element) {
+        if (!element || !element.parentElement) return '';
+        
+        let path = '';
+        let current = element;
+        
+        while (current && current !== document.body) {
+            let selector = current.tagName.toLowerCase();
+            
+            // Add ID if present
+            if (current.id) {
+                selector += `#${current.id}`;
+            } else {
+                // Otherwise add position among siblings
+                let sibling = current;
+                let position = 1;
+                
+                while (sibling = sibling.previousElementSibling) {
+                    if (sibling.tagName === current.tagName) {
+                        position++;
+                    }
+                }
+                
+                if (position > 1 || !current.nextElementSibling || 
+                    current.nextElementSibling.tagName !== current.tagName) {
+                    selector += `:nth-of-type(${position})`;
+                }
+            }
+            
+            path = selector + (path ? '>' + path : '');
+            current = current.parentElement;
+        }
+        
+        return path;
+    },
+    
+    /**
+     * Clears the tracking data
+     */
+    clear() {
+        this.processed.clear();
+    }
+};
+
+/**
+ * Forces processing of all images on the page by clearing the tracker and reprocessing
+ * This is useful when auto-processing seems to be stuck
+ */
+async function forceProcessAllImages() {
+    logFunctionEntry('forceProcessAllImages');
+    logWithEmoji('info', 'forceProcessAllImages', 'Forcing reprocessing of all images on page');
+    
+    // Clear the tracker completely
+    if (processedImageTracker) {
+        processedImageTracker.clear();
+        logWithEmoji('success', 'forceProcessAllImages', 'Image tracker cleared');
+    }
+    
+    // Clear any data-faceone-processed attributes on images
+    const processedImages = document.querySelectorAll('[data-faceone-processed]');
+    let clearedCount = 0;
+    
+    processedImages.forEach(img => {
+        img.removeAttribute('data-faceone-processed');
+        clearedCount++;
+    });
+    
+    logWithEmoji('info', 'forceProcessAllImages', `Cleared ${clearedCount} processed image attributes`);
+    
+    // Now process all images again
+    await processExistingImages();
 }
