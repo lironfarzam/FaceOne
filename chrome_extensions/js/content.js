@@ -1045,8 +1045,8 @@ async function processTinyImage(img) {
     // Calculate dimensions that are multiples of 32
     const minSize = 32; // Minimum size required by TinyFaceDetector
     const scaleFactor = Math.max(2, Math.ceil(32 / Math.min(img.width, img.height)));
-    const targetWidth = Math.ceil(img.width * scaleFactor);
-    const targetHeight = Math.ceil(img.height * scaleFactor);
+    const targetWidth = roundToMultipleOf32(Math.ceil(img.width * scaleFactor));
+    const targetHeight = roundToMultipleOf32(Math.ceil(img.height * scaleFactor));
     
     canvas.width = targetWidth;
     canvas.height = targetHeight;
@@ -1078,7 +1078,8 @@ function selectFaceDetectionModel(img) {
 
     // For small images, use tinyFaceDetector with optimized settings
     if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
-        const inputSize = Math.max(32, minDimension);
+        // Ensure input size is divisible by 32 (required by TinyYolov2)
+        const inputSize = roundToMultipleOf32(Math.max(32, minDimension));
         return {
             model: 'tinyFaceDetector',
             options: new faceapi.TinyFaceDetectorOptions({
@@ -1122,7 +1123,8 @@ function selectFaceDetectionModel(img) {
         model: 'tinyFaceDetector',
         options: new faceapi.TinyFaceDetectorOptions({
             ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
-            inputSize: Math.max(32, minDimension),
+            // Ensure input size is divisible by 32 (required by TinyYolov2)
+            inputSize: roundToMultipleOf32(Math.max(32, minDimension)),
             minFaceSize: Math.max(16, Math.floor(minDimension * 0.15))
         })
     };
@@ -2760,8 +2762,8 @@ async function createScaledImage(img) {
         targetHeight = Math.round(originalHeight * scaleFactor);
         
         // Ensure dimensions are multiples of 32 for better model performance
-        targetWidth = Math.ceil(targetWidth / 32) * 32;
-        targetHeight = Math.ceil(targetHeight / 32) * 32;
+        targetWidth = roundToMultipleOf32(targetWidth);
+        targetHeight = roundToMultipleOf32(targetHeight);
     }
     
     // Set canvas dimensions

@@ -14,13 +14,17 @@
 const state = {
     initialized: false,
     processingCount: 0,
-    lastProcessingTime: 0
+    lastProcessingTime: 0,
+    startTimestamp: Date.now(),
+    memoryUsage: 0,
+    peakMemoryUsage: 0
 };
 
 const config = {
     maxImageSize: 1024,
     processingTimeout: 30000,
-    maxRetries: 2
+    maxRetries: 2,
+    memoryCheckInterval: 30000 // 30 seconds
 };
 
 //=============================================================================
@@ -31,6 +35,11 @@ const config = {
  */
 let sharedCanvas = null;
 let sharedCtx = null;
+
+// Resource management
+let memoryCheckInterval = null;
+let canvasPool = [];
+const MAX_CANVAS_POOL_SIZE = 3;
 
 /**
  * Initialize shared resources
@@ -43,6 +52,103 @@ function initializeSharedResources() {
             willReadFrequently: true
         });
     }
+    
+    // Start memory monitoring
+    startMemoryMonitoring();
+}
+
+/**
+ * Start monitoring memory usage
+ */
+function startMemoryMonitoring() {
+    if (memoryCheckInterval) {
+        clearInterval(memoryCheckInterval);
+    }
+    
+    // Check memory usage periodically
+    memoryCheckInterval = setInterval(() => {
+        checkMemoryUsage();
+    }, config.memoryCheckInterval);
+}
+
+/**
+ * Check current memory usage
+ */
+function checkMemoryUsage() {
+    try {
+        // Get current memory stats using performance API
+        if (self.performance && performance.memory) {
+            state.memoryUsage = performance.memory.usedJSHeapSize;
+            
+            if (state.memoryUsage > state.peakMemoryUsage) {
+                state.peakMemoryUsage = state.memoryUsage;
+            }
+            
+            // If memory usage is too high, clean up resources
+            if (state.memoryUsage > 100 * 1024 * 1024) { // 100MB threshold
+                cleanupResources();
+            }
+        }
+    } catch (error) {
+        // Ignore errors accessing memory API
+    }
+}
+
+/**
+ * Clean up resources when memory is high
+ */
+function cleanupResources() {
+    // Release canvas pool
+    while (canvasPool.length > 0) {
+        canvasPool.pop();
+    }
+    
+    // Run garbage collection if available
+    if (typeof gc === 'function') {
+        try {
+            gc();
+        } catch (e) {
+            // Ignore errors
+        }
+    }
+}
+
+/**
+ * Get or create a canvas from the pool
+ * @param {number} width - Canvas width
+ * @param {number} height - Canvas height
+ * @returns {OffscreenCanvas} A canvas of the requested size
+ */
+function getCanvasFromPool(width, height) {
+    // Try to find a canvas in the pool that is at least the requested size
+    for (let i = 0; i < canvasPool.length; i++) {
+        const canvas = canvasPool[i];
+        
+        if (canvas.width >= width && canvas.height >= height) {
+            // Remove from pool and return
+            canvasPool.splice(i, 1);
+            return canvas;
+        }
+    }
+    
+    // Create a new canvas if none found
+    return new OffscreenCanvas(width, height);
+}
+
+/**
+ * Return a canvas to the pool
+ * @param {OffscreenCanvas} canvas - The canvas to return
+ */
+function returnCanvasToPool(canvas) {
+    // Don't add if pool is full
+    if (canvasPool.length >= MAX_CANVAS_POOL_SIZE) return;
+    
+    // Clear the canvas
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Add to pool
+    canvasPool.push(canvas);
 }
 
 //=============================================================================
@@ -52,21 +158,45 @@ function initializeSharedResources() {
  * Main message handler for the worker
  * @param {MessageEvent} e - The message event containing the task data
  * @param {string} e.data.type - The type of operation to perform
- * @param {ImageData} e.data.imageData - The image data to process
+ * @param {ImageData} e.data.data - The image data to process
  * @param {number} e.data.width - The width of the image
  * @param {number} e.data.height - The height of the image
  */
 self.onmessage = async function(e) {
-    const { type, imageData, width, height } = e.data;
+    const { type, data, width, height } = e.data;
     
     try {
         switch (type) {
             case 'INIT':
+                // Store worker ID and config if provided
+                if (e.data.workerId !== undefined) {
+                    state.workerId = e.data.workerId;
+                }
+                
+                if (e.data.config) {
+                    Object.assign(config, e.data.config);
+                }
+                
                 await handleInit();
                 break;
 
             case 'PROCESS_IMAGE':
-                await handleImageProcessing(imageData, width, height);
+                await handleImageProcessing(data, width, height);
+                break;
+                
+            case 'GET_MEMORY_STATS':
+                // Update memory stats
+                checkMemoryUsage();
+                
+                // Send back the memory stats
+                self.postMessage({
+                    type: 'MEMORY_STATS',
+                    success: true,
+                    memoryUsage: state.memoryUsage,
+                    peakMemoryUsage: state.peakMemoryUsage,
+                    processingCount: state.processingCount,
+                    uptime: Date.now() - state.startTimestamp
+                });
                 break;
 
             default:
@@ -93,7 +223,9 @@ async function handleInit() {
         state.initialized = true;
         self.postMessage({
             type: 'WORKER_READY',
-            success: true
+            success: true,
+            workerId: state.workerId,
+            config: { ...config }
         });
     } catch (error) {
         state.initialized = false;
@@ -158,6 +290,9 @@ async function processImageOptimized(imageData, width, height) {
         )
     ]);
 
+    // Check memory usage after processing
+    checkMemoryUsage();
+
     return processed;
 }
 
@@ -165,15 +300,41 @@ async function processImageOptimized(imageData, width, height) {
  * Apply actual image processing with optimizations
  */
 async function applyImageProcessing(imageData) {
-    // Example processing - replace with actual implementation
-    const processed = new ImageData(
-        new Uint8ClampedArray(imageData.data),
-        imageData.width,
-        imageData.height
-    );
+    // Get a canvas to work with
+    const canvas = getCanvasFromPool(imageData.width, imageData.height);
+    const ctx = canvas.getContext('2d');
+    
+    try {
+        // Example processing - replace with actual implementation
+        // Here we just create a copy of the image data
+        ctx.putImageData(imageData, 0, 0);
+        
+        // Create a new ImageData from the canvas
+        const processed = ctx.getImageData(0, 0, imageData.width, imageData.height);
+        
+        // Add your image processing logic here
+        // This is where you'd implement face detection, etc.
+        
+        return processed;
+    } finally {
+        // Return the canvas to the pool for reuse
+        returnCanvasToPool(canvas);
+    }
+}
 
-    // Add your image processing logic here
-    // This is where you'd implement face detection, etc.
-
-    return processed;
-} 
+//=============================================================================
+// Cleanup Function
+//=============================================================================
+// Clean up resources when worker is terminating
+self.addEventListener('close', () => {
+    if (memoryCheckInterval) {
+        clearInterval(memoryCheckInterval);
+    }
+    
+    // Clean up canvas pool
+    canvasPool.length = 0;
+    
+    // Clean up shared resources
+    sharedCanvas = null;
+    sharedCtx = null;
+}); 

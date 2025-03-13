@@ -74,63 +74,282 @@ const initStatus = {
 };
 
 // Add cache for processed images
-const imageCache = {
-    images: new Map(), // Map to store image data
-    maxSize: 1000,
+const imageCache = (() => {
+    // Private state
+    const images = new Map(); // Map to store image data
+    const maxSize = 1000; // Maximum number of entries
+    const expiryTime = 5 * 60 * 1000; // 5 minutes in milliseconds
     
-    add(src, isProcessed = true, canDelete = false) {
-        if (this.images.size >= this.maxSize) {
-            // Remove oldest entry by converting to array and removing first element
-            const sources = Array.from(this.images.keys());
-            this.images.delete(sources[0]);
-        }
-        this.images.set(src, {
-            isProcessed,
-            canDelete,
-            timestamp: Date.now()
-        });
-    },
+    // Statistics for monitoring
+    const stats = {
+        hits: 0,
+        misses: 0,
+        additions: 0,
+        evictions: 0,
+        preserved: 0
+    };
     
-    has(src) {
-        return this.images.has(src);
-    },
+    // Flag important images (to be censored or preserved)
+    const importantImages = new Set();
+    
+    return {
+        /**
+         * Add an image to the cache
+         * @param {string} src - Image source URL
+         * @param {boolean} isProcessed - Whether the image has been processed
+         * @param {boolean} canDelete - Whether the image can be deleted
+         * @param {boolean} needsCensoring - Whether the image needs censoring (important)
+         */
+        add(src, isProcessed = true, canDelete = false, needsCensoring = false) {
+            // Skip invalid sources
+            if (!src || typeof src !== 'string') return;
+            
+            // Check if we need to evict entries
+            if (!this.has(src) && images.size >= maxSize) {
+                this.evictLRU();
+            }
+            
+            // Mark as important if it needs censoring
+            if (needsCensoring) {
+                importantImages.add(src);
+            }
+            
+            // Update or add entry
+            images.set(src, {
+                isProcessed,
+                canDelete,
+                needsCensoring,
+                timestamp: Date.now()
+            });
+            
+            stats.additions++;
+            
+            // For monitoring
+            if (stats.additions % 100 === 0) {
+                logWithEmoji('info', 'imageCache', `Cache size: ${images.size}, Important: ${importantImages.size}`);
+            }
+        },
+        
+        /**
+         * Check if an image is in the cache
+         * @param {string} src - Image source URL
+         * @returns {boolean} True if in cache
+         */
+        has(src) {
+            if (!src) return false;
+            
+            const exists = images.has(src);
+            
+            // Update stats
+            if (exists) {
+                stats.hits++;
+                // Update timestamp on access (LRU behavior)
+                this.touch(src);
+            } else {
+                stats.misses++;
+            }
+            
+            return exists;
+        },
 
-    isProcessed(src) {
-        const entry = this.images.get(src);
-        return entry ? entry.isProcessed : false;
-    },
+        /**
+         * Check if an image has been processed
+         * @param {string} src - Image source URL
+         * @returns {boolean} True if processed
+         */
+        isProcessed(src) {
+            const entry = images.get(src);
+            return entry ? entry.isProcessed : false;
+        },
 
-    canDelete(src) {
-        const entry = this.images.get(src);
-        return entry ? entry.canDelete : false;
-    },
+        /**
+         * Check if an image can be deleted
+         * @param {string} src - Image source URL
+         * @returns {boolean} True if can be deleted
+         */
+        canDelete(src) {
+            const entry = images.get(src);
+            return entry ? entry.canDelete : false;
+        },
+        
+        /**
+         * Check if an image needs censoring
+         * @param {string} src - Image source URL
+         * @returns {boolean} True if needs censoring
+         */
+        needsCensoring(src) {
+            const entry = images.get(src);
+            return entry ? entry.needsCensoring : false;
+        },
 
-    setProcessed(src, value = true) {
-        const entry = this.images.get(src);
-        if (entry) {
-            entry.isProcessed = value;
-            entry.timestamp = Date.now();
+        /**
+         * Update image processing status
+         * @param {string} src - Image source URL
+         * @param {boolean} value - New processing status
+         */
+        setProcessed(src, value = true) {
+            const entry = images.get(src);
+            if (entry) {
+                entry.isProcessed = value;
+                // Update LRU timestamp
+                entry.timestamp = Date.now();
+            }
+        },
+
+        /**
+         * Mark an image as deletable
+         * @param {string} src - Image source URL
+         * @param {boolean} value - Whether the image can be deleted
+         */
+        setDeletable(src, value = true) {
+            const entry = images.get(src);
+            if (entry) {
+                entry.canDelete = value;
+                // Update LRU timestamp
+                entry.timestamp = Date.now();
+            }
+        },
+        
+        /**
+         * Mark an image as needing censoring
+         * @param {string} src - Image source URL
+         * @param {boolean} value - Whether the image needs censoring
+         */
+        setCensoring(src, value = true) {
+            const entry = images.get(src);
+            if (entry) {
+                entry.needsCensoring = value;
+                
+                // Add to important set for preservation
+                if (value) {
+                    importantImages.add(src);
+                    stats.preserved++;
+                } else {
+                    importantImages.delete(src);
+                }
+                
+                // Update LRU timestamp
+                entry.timestamp = Date.now();
+            }
+        },
+        
+        /**
+         * Update timestamp to mark as recently used
+         * @param {string} src - Image source URL
+         */
+        touch(src) {
+            const entry = images.get(src);
+            if (entry) {
+                entry.timestamp = Date.now();
+            }
+        },
+        
+        /**
+         * Evict the least recently used non-important entry
+         */
+        evictLRU() {
+            // Get entries sorted by timestamp (oldest first)
+            const entries = Array.from(images.entries())
+                .filter(([src]) => !importantImages.has(src)) // Skip important images
+                .sort(([, a], [, b]) => a.timestamp - b.timestamp);
+            
+            // No entries to evict (all are important)
+            if (entries.length === 0) {
+                // In this case, we should consider evicting the oldest important image
+                // But for now, we'll just log a warning
+                logWithEmoji('warning', 'imageCache', 'Cannot evict - all entries are marked as important');
+                return;
+            }
+            
+            // Remove the oldest entry
+            const [srcToRemove] = entries[0];
+            images.delete(srcToRemove);
+            stats.evictions++;
+        },
+        
+        /**
+         * Clean expired entries
+         */
+        cleanExpired() {
+            const now = Date.now();
+            let expired = 0;
+            
+            // Find expired entries that are not important
+            for (const [src, entry] of images.entries()) {
+                if (!importantImages.has(src) && (now - entry.timestamp > expiryTime)) {
+                    images.delete(src);
+                    expired++;
+                }
+            }
+            
+            if (expired > 0) {
+                logWithEmoji('info', 'imageCache', `Cleaned ${expired} expired entries`);
+            }
+            
+            return expired;
+        },
+
+        /**
+         * Clear the entire cache
+         * @param {boolean} preserveImportant - Whether to preserve important images
+         */
+        clear(preserveImportant = true) {
+            if (preserveImportant && importantImages.size > 0) {
+                // Only keep important images
+                const toRemove = [];
+                
+                for (const [src] of images.entries()) {
+                    if (!importantImages.has(src)) {
+                        toRemove.push(src);
+                    }
+                }
+                
+                // Remove non-important images
+                toRemove.forEach(src => images.delete(src));
+                
+                logWithEmoji('info', 'imageCache', 
+                    `Cleared ${toRemove.length} entries, preserved ${importantImages.size} important images`);
+            } else {
+                // Clear everything
+                images.clear();
+                importantImages.clear();
+                
+                logWithEmoji('info', 'imageCache', 'Cleared entire cache');
+            }
+            
+            // Reset stats except preserved
+            stats.hits = 0;
+            stats.misses = 0;
+            stats.additions = 0;
+            stats.evictions = 0;
+        },
+        
+        /**
+         * Get cache statistics
+         * @returns {Object} Cache stats
+         */
+        getStats() {
+            return {
+                ...stats,
+                size: images.size,
+                importantCount: importantImages.size
+            };
         }
-    },
-
-    setDeletable(src, value = true) {
-        const entry = this.images.get(src);
-        if (entry) {
-            entry.canDelete = value;
-            entry.timestamp = Date.now();
-        }
-    },
-
-    clear() {
-        this.images.clear();
-    }
-};
+    };
+})();
 
 // Add reference to TensorMemoryManager
 let tensorMemoryManager = null;
 
 // Create a local implementation of TensorMemoryManager for the sandbox
 const localTensorMemoryManager = (() => {
+    // Check if a global TensorMemoryManager exists
+    const hasGlobalManager = () => {
+        return window.TensorMemoryManager !== undefined && 
+               typeof window.TensorMemoryManager === 'object' &&
+               typeof window.TensorMemoryManager.track === 'function';
+    };
+    
     // Set a memory budget
     const MAX_BYTES_MB = 200; // 200MB memory budget
     
@@ -151,6 +370,13 @@ const localTensorMemoryManager = (() => {
             logFunctionEntry('localTensorMemoryManager.initialize');
             logWithEmoji('setup', 'localTensorMemoryManager', 'Initializing tensor memory management');
             
+            // If a global manager exists, use it
+            if (hasGlobalManager()) {
+                logWithEmoji('info', 'localTensorMemoryManager', 'Using global TensorMemoryManager');
+                tensorMemoryManager = window.TensorMemoryManager;
+                return tensorMemoryManager;
+            }
+            
             // Start periodic memory checks
             this.startPeriodicChecks();
             
@@ -158,7 +384,7 @@ const localTensorMemoryManager = (() => {
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden) {
                     logWithEmoji('info', 'localTensorMemoryManager', 'Tab hidden, performing garbage collection');
-                    this.garbageCollect();
+                    this.garbageCollect(true); // Force aggressive cleanup
                 }
             });
             
@@ -174,6 +400,23 @@ const localTensorMemoryManager = (() => {
          * @returns {tf.Tensor} The same tensor for chaining
          */
         track(tensor) {
+            // If global manager exists, use it
+            if (hasGlobalManager()) {
+                return window.TensorMemoryManager.track(tensor);
+            }
+            
+            if (!tensor) return null;
+            
+            if (Array.isArray(tensor)) {
+                // Handle arrays of tensors
+                tensor.forEach(t => {
+                    if (t && !t.isDisposed) {
+                        trackedTensors.add(t);
+                    }
+                });
+                return tensor;
+            }
+            
             if (tensor && !tensor.isDisposed) {
                 trackedTensors.add(tensor);
             }
@@ -185,6 +428,19 @@ const localTensorMemoryManager = (() => {
          * @param {tf.Tensor} tensor - The tensor to dispose
          */
         dispose(tensor) {
+            // If global manager exists, use it
+            if (hasGlobalManager()) {
+                window.TensorMemoryManager.dispose(tensor);
+                return;
+            }
+            
+            if (!tensor) return;
+            
+            if (Array.isArray(tensor)) {
+                tensor.forEach(t => this.dispose(t));
+                return;
+            }
+            
             if (tensor && !tensor.isDisposed && tensor.dispose) {
                 try {
                     tensor.dispose();
@@ -199,6 +455,9 @@ const localTensorMemoryManager = (() => {
          * Start periodic memory checks
          */
         startPeriodicChecks() {
+            // If global manager exists, don't do duplicate checks
+            if (hasGlobalManager()) return;
+            
             if (memoryCheckInterval) {
                 clearInterval(memoryCheckInterval);
             }
@@ -222,6 +481,9 @@ const localTensorMemoryManager = (() => {
          * Check current memory usage and collect garbage if needed
          */
         checkMemory() {
+            // If global manager exists, let it handle this
+            if (hasGlobalManager()) return;
+            
             if (!window.tf || !tf.memory) return;
             
             try {
@@ -243,9 +505,17 @@ const localTensorMemoryManager = (() => {
         
         /**
          * Run a garbage collection cycle to free memory
+         * @param {boolean} aggressive - Whether to perform aggressive cleanup
          */
-        garbageCollect() {
-            logWithEmoji('loading', 'localTensorMemoryManager', 'Running garbage collection');
+        garbageCollect(aggressive = false) {
+            // If global manager exists, use it
+            if (hasGlobalManager()) {
+                window.TensorMemoryManager.garbageCollect(aggressive);
+                return;
+            }
+            
+            logWithEmoji('loading', 'localTensorMemoryManager', 'Running garbage collection' + 
+                (aggressive ? ' (aggressive)' : ''));
             
             // Dispose all tracked tensors
             let disposedCount = 0;
@@ -284,20 +554,54 @@ const localTensorMemoryManager = (() => {
          * Clean up resources when shutting down
          */
         cleanup() {
+            // If global manager exists, don't interfere with its lifecycle
+            if (hasGlobalManager()) return;
+            
             this.stopPeriodicChecks();
-            this.garbageCollect();
+            this.garbageCollect(true);
+            
+            // Remove event listener
+            document.removeEventListener('visibilitychange', () => {});
+        },
+        
+        /**
+         * Use TensorFlow's tidy function with tracking
+         * @param {Function} fn - Function to execute
+         * @returns {any} - Result of the function
+         */
+        tidy(fn) {
+            // If global manager exists, use it
+            if (hasGlobalManager()) {
+                return window.TensorMemoryManager.tidy(fn);
+            }
+            
+            if (!window.tf) {
+                return fn();
+            }
+            
+            return tf.tidy(() => {
+                const result = fn();
+                
+                // If result is a tensor or array of tensors, track it
+                if (result && (result instanceof tf.Tensor || 
+                    (Array.isArray(result) && result[0] instanceof tf.Tensor))) {
+                    this.track(result);
+                }
+                
+                return result;
+            });
         }
     };
 })();
 
-// Replace safeDisposeTensors with a function that uses local TensorMemoryManager
+// Replace safeDisposeTensors with a function that uses TensorMemoryManager
 function safeDisposeTensors() {
     try {
         if (!isTfEngineAvailable()) return;
         
-        // Use the local tensor memory manager
+        // Use the tensor memory manager if available
         if (tensorMemoryManager) {
-            tensorMemoryManager.garbageCollect();
+            tensorMemoryManager.garbageCollect(true);
             return;
         }
         
