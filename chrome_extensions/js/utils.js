@@ -456,4 +456,668 @@ function applyBlurEffect(element, shouldBlur) {
             }
             break;
     }
-} 
+}
+
+/**
+ * PHASE 1: PERFORMANCE OPTIMIZATIONS
+ */
+
+/**
+ * Enhanced tensor memory management to prevent memory leaks and improve performance
+ * This is a singleton that can be imported and reused throughout the application
+ */
+const TensorMemoryManager = (() => {
+    // Set a memory budget
+    const MAX_BYTES_MB = 200; // 200MB memory budget
+    
+    // Keep track of tensors
+    const trackedTensors = new Set();
+    
+    // Memory check interval in ms
+    const MEMORY_CHECK_INTERVAL = 30000; // 30 seconds
+    
+    // Setup periodic memory check
+    let memoryCheckInterval = null;
+    
+    return {
+        /**
+         * Initialize the memory manager
+         */
+        initialize() {
+            logFunctionEntry('TensorMemoryManager.initialize');
+            logWithEmoji('setup', 'TensorMemoryManager', 'Initializing tensor memory management');
+            
+            // Start periodic memory checks
+            this.startPeriodicChecks();
+            
+            // Listen for tab visibility changes to force GC when tab is hidden
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    logWithEmoji('info', 'TensorMemoryManager', 'Tab hidden, performing garbage collection');
+                    this.garbageCollect();
+                }
+            });
+            
+            return this;
+        },
+        
+        /**
+         * Track a tensor to ensure it gets disposed
+         * @param {tf.Tensor} tensor - The tensor to track
+         * @returns {tf.Tensor} The same tensor for chaining
+         */
+        track(tensor) {
+            if (tensor && !tensor.isDisposed) {
+                trackedTensors.add(tensor);
+            }
+            return tensor;
+        },
+        
+        /**
+         * Dispose a tensor and remove it from tracking
+         * @param {tf.Tensor} tensor - The tensor to dispose
+         */
+        dispose(tensor) {
+            if (tensor && !tensor.isDisposed && tensor.dispose) {
+                try {
+                    tensor.dispose();
+                    trackedTensors.delete(tensor);
+                } catch (e) {
+                    logError('TensorMemoryManager', 'Error disposing tensor', e);
+                }
+            }
+        },
+        
+        /**
+         * Start periodic memory checks
+         */
+        startPeriodicChecks() {
+            if (memoryCheckInterval) {
+                clearInterval(memoryCheckInterval);
+            }
+            
+            memoryCheckInterval = setInterval(() => {
+                this.checkMemory();
+            }, MEMORY_CHECK_INTERVAL);
+        },
+        
+        /**
+         * Stop periodic memory checks
+         */
+        stopPeriodicChecks() {
+            if (memoryCheckInterval) {
+                clearInterval(memoryCheckInterval);
+                memoryCheckInterval = null;
+            }
+        },
+        
+        /**
+         * Check current memory usage and collect garbage if needed
+         */
+        checkMemory() {
+            if (!window.tf || !tf.memory) return;
+            
+            try {
+                const memInfo = tf.memory();
+                const memUsageMB = Math.round(memInfo.numBytes / (1024 * 1024));
+                
+                logWithEmoji('info', 'TensorMemoryManager', 
+                    `Memory usage: ${memUsageMB}MB, Tensors: ${memInfo.numTensors}`);
+                    
+                if (memInfo.numBytes > MAX_BYTES_MB * 1024 * 1024) {
+                    logWithEmoji('warning', 'TensorMemoryManager', 
+                        `Memory usage exceeds ${MAX_BYTES_MB}MB limit, running garbage collection`);
+                    this.garbageCollect();
+                }
+            } catch (error) {
+                logError('TensorMemoryManager', 'Error checking memory', error);
+            }
+        },
+        
+        /**
+         * Run a garbage collection cycle to free memory
+         */
+        garbageCollect() {
+            logWithEmoji('loading', 'TensorMemoryManager', 'Running garbage collection');
+            
+            // Dispose all tracked tensors
+            let disposedCount = 0;
+            trackedTensors.forEach(tensor => {
+                try {
+                    if (tensor && !tensor.isDisposed) {
+                        tensor.dispose();
+                        disposedCount++;
+                    }
+                } catch (e) {
+                    // Ignore errors during disposal
+                }
+            });
+            
+            trackedTensors.clear();
+            
+            // Force tf garbage collection if available
+            if (window.tf && tf.engine) {
+                try {
+                    tf.tidy(() => {});
+                    if (tf.engine().state && tf.engine().state.numDataMovesStack && 
+                        tf.engine().state.numDataMovesStack.length > 0) {
+                        tf.engine().endScope();
+                        tf.engine().startScope();
+                    }
+                } catch (e) {
+                    logError('TensorMemoryManager', 'Error during TensorFlow GC', e);
+                }
+            }
+            
+            logWithEmoji('success', 'TensorMemoryManager', 
+                `Garbage collection complete. Disposed ${disposedCount} tracked tensors.`);
+        },
+        
+        /**
+         * Clean up resources when shutting down
+         */
+        cleanup() {
+            this.stopPeriodicChecks();
+            this.garbageCollect();
+        }
+    };
+})();
+
+/**
+ * Image queue for progressive image processing
+ * Processes images in order of visibility and priority
+ */
+class ImageQueue {
+    constructor(options = {}) {
+        logFunctionEntry('ImageQueue.constructor');
+        logWithEmoji('setup', 'ImageQueue', 'Creating new image queue');
+        
+        // Queue of pending images to process
+        this.queue = [];
+        
+        // Set of images already in queue or processed
+        this.processed = new Set();
+        
+        // Currently processing flag
+        this.isProcessing = false;
+        
+        // Maximum batch size to process at once
+        this.batchSize = options.batchSize || 5;
+        
+        // Processing interval
+        this.processingInterval = options.processingInterval || 300;
+        
+        // Interval timer reference
+        this.timer = null;
+        
+        // Start processing loop
+        this.startProcessing();
+    }
+    
+    /**
+     * Add an image to the processing queue
+     * @param {HTMLElement} element - The image element to process
+     * @param {number} priority - Priority level (lower means higher priority)
+     */
+    add(element, priority = 100) {
+        // Skip if already processed or in queue
+        if (this.processed.has(element)) {
+            return;
+        }
+        
+        // Mark as processed to avoid duplicates
+        this.processed.add(element);
+        
+        // Create queue item with priority
+        const queueItem = {
+            element,
+            priority,
+            timestamp: Date.now()
+        };
+        
+        // Add to queue
+        this.queue.push(queueItem);
+        
+        // Log the addition to queue if not too many items (to avoid console spam)
+        if (this.queue.length < 20) {
+            logWithEmoji('info', 'ImageQueue', `Added element to queue. Queue size: ${this.queue.length}`);
+        } else if (this.queue.length % 50 === 0) {
+            logWithEmoji('info', 'ImageQueue', `Queue size reached ${this.queue.length} items`);
+        }
+    }
+    
+    /**
+     * Start the processing loop
+     */
+    startProcessing() {
+        if (this.timer) {
+            clearInterval(this.timer);
+        }
+        
+        this.timer = setInterval(() => {
+            this.processNext();
+        }, this.processingInterval);
+    }
+    
+    /**
+     * Stop the processing loop
+     */
+    stopProcessing() {
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+        }
+    }
+    
+    /**
+     * Process the next batch of images in the queue
+     */
+    async processNext() {
+        // Skip if already processing or queue is empty
+        if (this.isProcessing || this.queue.length === 0) {
+            return;
+        }
+        
+        // Skip processing if tab is not active
+        if (typeof TabResourceManager !== 'undefined' && !TabResourceManager.isActive()) {
+            return;
+        }
+        
+        // Set processing flag
+        this.isProcessing = true;
+        
+        try {
+            // Sort queue by priority (lower number = higher priority)
+            this.queue.sort((a, b) => {
+                // First by priority
+                if (a.priority !== b.priority) {
+                    return a.priority - b.priority;
+                }
+                // Then by timestamp (older first)
+                return a.timestamp - b.timestamp;
+            });
+            
+            // Take a batch of items to process
+            const batch = this.queue.splice(0, this.batchSize);
+            
+            if (batch.length > 0) {
+                logWithEmoji('info', 'ImageQueue', `Processing batch of ${batch.length} images. Remaining: ${this.queue.length}`);
+            }
+            
+            // Process each item in the batch
+            for (const item of batch) {
+                const { element } = item;
+                
+                // Skip if element is no longer in the DOM
+                if (!element.isConnected) {
+                    continue;
+                }
+                
+                // Check if image is visible
+                const isVisible = this.isElementVisible(element);
+                
+                // If not visible, add back to queue with lower priority
+                if (!isVisible) {
+                    item.priority += 50; // Reduce priority for invisible elements
+                    this.queue.push(item);
+                    continue;
+                }
+                
+                // Process the element (this should call the actual image processing function)
+                try {
+                    if (typeof handleVisibleElement === 'function') {
+                        await handleVisibleElement(element);
+                    } else {
+                        logWithEmoji('warning', 'ImageQueue', 'handleVisibleElement function not available');
+                    }
+                } catch (error) {
+                    logError('ImageQueue', `Error processing element: ${error.message}`, error);
+                }
+            }
+        } catch (error) {
+            logError('ImageQueue', 'Error in processNext', error);
+        } finally {
+            this.isProcessing = false;
+        }
+    }
+    
+    /**
+     * Clear the queue and processed set
+     */
+    clear() {
+        this.queue = [];
+        this.processed.clear();
+        this.isProcessing = false;
+    }
+    
+    /**
+     * Pause the queue processing
+     */
+    pause() {
+        this.stopProcessing();
+    }
+    
+    /**
+     * Resume the queue processing
+     */
+    resume() {
+        this.startProcessing();
+    }
+    
+    /**
+     * Check if an element is currently visible in the viewport
+     * @param {HTMLElement} element - The element to check
+     * @returns {boolean} True if the element is visible
+     */
+    isElementVisible(element) {
+        // Check if element exists and is connected to DOM
+        if (!element || !element.isConnected) {
+            return false;
+        }
+        
+        // Get element boundaries
+        const rect = element.getBoundingClientRect();
+        
+        // Check if element has size
+        if (rect.width === 0 || rect.height === 0) {
+            return false;
+        }
+        
+        // Check if element is in viewport
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        
+        // Element must be at least partially visible in the viewport
+        const isInViewport = (
+            rect.top < viewportHeight &&
+            rect.bottom > 0 &&
+            rect.left < viewportWidth &&
+            rect.right > 0
+        );
+        
+        // Check if element is not hidden with CSS
+        const style = window.getComputedStyle(element);
+        const isStyleVisible = (
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            parseFloat(style.opacity) > 0
+        );
+        
+        return isInViewport && isStyleVisible;
+    }
+    
+    /**
+     * Get the current queue size
+     * @returns {number} Number of items in queue
+     */
+    size() {
+        return this.queue.length;
+    }
+    
+    /**
+     * Configure the queue settings
+     * @param {Object} options - Configuration options
+     */
+    configure(options = {}) {
+        if (options.batchSize) {
+            this.batchSize = options.batchSize;
+        }
+        if (options.processingInterval) {
+            this.processingInterval = options.processingInterval;
+            // Restart processing with new interval
+            this.stopProcessing();
+            this.startProcessing();
+        }
+    }
+}
+
+/**
+ * Tab-based resource manager that reduces processing when tab is inactive
+ * This is a singleton that can be imported and reused throughout the application
+ */
+const TabResourceManager = (() => {
+    // Track state and timers
+    let isTabActive = !document.hidden;
+    let documentObserver = null;
+    let suspensionTimer = null;
+    let resumptionTimer = null;
+    let statusCheckInterval = null;
+    
+    // Configuration settings
+    const CONFIG = {
+        // How long to wait after tab becomes inactive before suspending resources (ms)
+        suspensionDelay: 5000,
+        
+        // How long to wait after tab becomes active before fully resuming (ms)
+        resumptionDelay: 500,
+        
+        // How often to check processing status (ms)
+        statusCheckInterval: 10000,
+        
+        // Function to call when checking extension status (will be defined by user)
+        statusCheckCallback: null
+    };
+    
+    return {
+        /**
+         * Initialize the tab resource manager
+         * @param {Object} options - Configuration options
+         * @param {Function} options.statusCheckCallback - Function to call to check extension status
+         * @param {Object} options.documentObserver - MutationObserver instance to manage
+         * @param {number} options.suspensionDelay - Custom suspension delay (ms)
+         * @param {number} options.resumptionDelay - Custom resumption delay (ms)
+         */
+        initialize(options = {}) {
+            logFunctionEntry('TabResourceManager.initialize');
+            logWithEmoji('setup', 'TabResourceManager', 'Initializing tab resource management');
+            
+            // Apply custom options
+            if (options.statusCheckCallback) {
+                CONFIG.statusCheckCallback = options.statusCheckCallback;
+            }
+            if (options.documentObserver) {
+                documentObserver = options.documentObserver;
+            }
+            if (typeof options.suspensionDelay === 'number') {
+                CONFIG.suspensionDelay = options.suspensionDelay;
+            }
+            if (typeof options.resumptionDelay === 'number') {
+                CONFIG.resumptionDelay = options.resumptionDelay;
+            }
+            
+            // Set initial state based on tab visibility
+            isTabActive = !document.hidden;
+            logWithEmoji('info', 'TabResourceManager', `Initial tab state: ${isTabActive ? 'active' : 'inactive'}`);
+            
+            // Listen for visibility changes
+            document.addEventListener('visibilitychange', this.handleVisibilityChange.bind(this));
+            
+            // Start periodic status checks
+            this.startStatusChecks();
+            
+            // Return this instance for chaining
+            return this;
+        },
+        
+        /**
+         * Handle tab visibility changes
+         */
+        handleVisibilityChange() {
+            const wasActive = isTabActive;
+            isTabActive = !document.hidden;
+            
+            if (wasActive && !isTabActive) {
+                // Tab became inactive
+                logWithEmoji('info', 'TabResourceManager', 'Tab became inactive');
+                
+                // Clear any pending resumption
+                if (resumptionTimer) {
+                    clearTimeout(resumptionTimer);
+                    resumptionTimer = null;
+                }
+                
+                // Schedule suspension after delay
+                suspensionTimer = setTimeout(() => {
+                    this.suspendProcessing();
+                }, CONFIG.suspensionDelay);
+                
+            } else if (!wasActive && isTabActive) {
+                // Tab became active
+                logWithEmoji('info', 'TabResourceManager', 'Tab became active');
+                
+                // Clear any pending suspension
+                if (suspensionTimer) {
+                    clearTimeout(suspensionTimer);
+                    suspensionTimer = null;
+                }
+                
+                // Schedule resumption after delay
+                resumptionTimer = setTimeout(() => {
+                    this.resumeProcessing();
+                }, CONFIG.resumptionDelay);
+            }
+        },
+        
+        /**
+         * Suspend resource-intensive operations
+         */
+        suspendProcessing() {
+            logWithEmoji('lock', 'TabResourceManager', 'Suspending resource-intensive operations');
+            
+            // Pause mutation observers
+            if (documentObserver) {
+                try {
+                    documentObserver.disconnect();
+                    logWithEmoji('success', 'TabResourceManager', 'Suspended mutation observer');
+                } catch (error) {
+                    logError('TabResourceManager', 'Error suspending observer', error);
+                }
+            }
+            
+            // Release GPU resources when possible
+            if (window.tf && tf.engine) {
+                try {
+                    // Keep model in memory but release temporary tensors
+                    TensorMemoryManager.garbageCollect();
+                    logWithEmoji('success', 'TabResourceManager', 'Released TensorFlow resources');
+                } catch (error) {
+                    logError('TabResourceManager', 'Error releasing TensorFlow resources', error);
+                }
+            }
+            
+            // Emit a suspension event
+            window.dispatchEvent(new CustomEvent('faceone:suspended', {
+                detail: { timestamp: Date.now() }
+            }));
+        },
+        
+        /**
+         * Resume normal processing operations
+         */
+        resumeProcessing() {
+            logWithEmoji('unlock', 'TabResourceManager', 'Resuming normal operations');
+            
+            // Restart observers
+            if (documentObserver) {
+                try {
+                    documentObserver.observe(document.body, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        attributeFilter: ['src', 'xlink:href']
+                    });
+                    logWithEmoji('success', 'TabResourceManager', 'Resumed mutation observer');
+                } catch (error) {
+                    logError('TabResourceManager', 'Error resuming observer', error);
+                }
+            }
+            
+            // Check extension status
+            if (CONFIG.statusCheckCallback && typeof CONFIG.statusCheckCallback === 'function') {
+                try {
+                    CONFIG.statusCheckCallback();
+                } catch (error) {
+                    logError('TabResourceManager', 'Error in status check callback', error);
+                }
+            }
+            
+            // Emit a resumption event
+            window.dispatchEvent(new CustomEvent('faceone:resumed', {
+                detail: { timestamp: Date.now() }
+            }));
+        },
+        
+        /**
+         * Start periodic status checks
+         */
+        startStatusChecks() {
+            if (statusCheckInterval) {
+                clearInterval(statusCheckInterval);
+            }
+            
+            statusCheckInterval = setInterval(() => {
+                // Only run status checks when the tab is active
+                if (isTabActive && CONFIG.statusCheckCallback && typeof CONFIG.statusCheckCallback === 'function') {
+                    try {
+                        CONFIG.statusCheckCallback();
+                    } catch (error) {
+                        logError('TabResourceManager', 'Error in periodic status check', error);
+                    }
+                }
+            }, CONFIG.statusCheckInterval);
+        },
+        
+        /**
+         * Stop periodic status checks
+         */
+        stopStatusChecks() {
+            if (statusCheckInterval) {
+                clearInterval(statusCheckInterval);
+                statusCheckInterval = null;
+            }
+        },
+        
+        /**
+         * Update the document observer reference
+         * @param {MutationObserver} observer - The new observer instance
+         */
+        setDocumentObserver(observer) {
+            documentObserver = observer;
+        },
+        
+        /**
+         * Check if the tab is currently active
+         * @returns {boolean} True if tab is active, false otherwise
+         */
+        isActive() {
+            return isTabActive;
+        },
+        
+        /**
+         * Configure the tab resource manager
+         * @param {Object} options - Configuration options
+         */
+        configure(options = {}) {
+            Object.assign(CONFIG, options);
+        },
+        
+        /**
+         * Clean up resources when shutting down
+         */
+        cleanup() {
+            this.stopStatusChecks();
+            
+            if (suspensionTimer) {
+                clearTimeout(suspensionTimer);
+                suspensionTimer = null;
+            }
+            
+            if (resumptionTimer) {
+                clearTimeout(resumptionTimer);
+                resumptionTimer = null;
+            }
+            
+            document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+        }
+    };
+})(); 

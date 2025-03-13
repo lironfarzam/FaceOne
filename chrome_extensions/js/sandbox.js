@@ -126,6 +126,201 @@ const imageCache = {
     }
 };
 
+// Add reference to TensorMemoryManager
+let tensorMemoryManager = null;
+
+// Create a local implementation of TensorMemoryManager for the sandbox
+const localTensorMemoryManager = (() => {
+    // Set a memory budget
+    const MAX_BYTES_MB = 200; // 200MB memory budget
+    
+    // Keep track of tensors
+    const trackedTensors = new Set();
+    
+    // Memory check interval in ms
+    const MEMORY_CHECK_INTERVAL = 30000; // 30 seconds
+    
+    // Setup periodic memory check
+    let memoryCheckInterval = null;
+    
+    return {
+        /**
+         * Initialize the memory manager
+         */
+        initialize() {
+            logFunctionEntry('localTensorMemoryManager.initialize');
+            logWithEmoji('setup', 'localTensorMemoryManager', 'Initializing tensor memory management');
+            
+            // Start periodic memory checks
+            this.startPeriodicChecks();
+            
+            // Listen for tab visibility changes to force GC when tab is hidden
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    logWithEmoji('info', 'localTensorMemoryManager', 'Tab hidden, performing garbage collection');
+                    this.garbageCollect();
+                }
+            });
+            
+            // Set the global reference
+            tensorMemoryManager = this;
+            
+            return this;
+        },
+        
+        /**
+         * Track a tensor to ensure it gets disposed
+         * @param {tf.Tensor} tensor - The tensor to track
+         * @returns {tf.Tensor} The same tensor for chaining
+         */
+        track(tensor) {
+            if (tensor && !tensor.isDisposed) {
+                trackedTensors.add(tensor);
+            }
+            return tensor;
+        },
+        
+        /**
+         * Dispose a tensor and remove it from tracking
+         * @param {tf.Tensor} tensor - The tensor to dispose
+         */
+        dispose(tensor) {
+            if (tensor && !tensor.isDisposed && tensor.dispose) {
+                try {
+                    tensor.dispose();
+                    trackedTensors.delete(tensor);
+                } catch (e) {
+                    logError('localTensorMemoryManager', 'Error disposing tensor', e);
+                }
+            }
+        },
+        
+        /**
+         * Start periodic memory checks
+         */
+        startPeriodicChecks() {
+            if (memoryCheckInterval) {
+                clearInterval(memoryCheckInterval);
+            }
+            
+            memoryCheckInterval = setInterval(() => {
+                this.checkMemory();
+            }, MEMORY_CHECK_INTERVAL);
+        },
+        
+        /**
+         * Stop periodic memory checks
+         */
+        stopPeriodicChecks() {
+            if (memoryCheckInterval) {
+                clearInterval(memoryCheckInterval);
+                memoryCheckInterval = null;
+            }
+        },
+        
+        /**
+         * Check current memory usage and collect garbage if needed
+         */
+        checkMemory() {
+            if (!window.tf || !tf.memory) return;
+            
+            try {
+                const memInfo = tf.memory();
+                const memUsageMB = Math.round(memInfo.numBytes / (1024 * 1024));
+                
+                logWithEmoji('info', 'localTensorMemoryManager', 
+                    `Memory usage: ${memUsageMB}MB, Tensors: ${memInfo.numTensors}`);
+                    
+                if (memInfo.numBytes > MAX_BYTES_MB * 1024 * 1024) {
+                    logWithEmoji('warning', 'localTensorMemoryManager', 
+                        `Memory usage exceeds ${MAX_BYTES_MB}MB limit, running garbage collection`);
+                    this.garbageCollect();
+                }
+            } catch (error) {
+                logError('localTensorMemoryManager', 'Error checking memory', error);
+            }
+        },
+        
+        /**
+         * Run a garbage collection cycle to free memory
+         */
+        garbageCollect() {
+            logWithEmoji('loading', 'localTensorMemoryManager', 'Running garbage collection');
+            
+            // Dispose all tracked tensors
+            let disposedCount = 0;
+            trackedTensors.forEach(tensor => {
+                try {
+                    if (tensor && !tensor.isDisposed) {
+                        tensor.dispose();
+                        disposedCount++;
+                    }
+                } catch (e) {
+                    // Ignore errors during disposal
+                }
+            });
+            
+            trackedTensors.clear();
+            
+            // Force tf garbage collection if available
+            if (window.tf && tf.engine) {
+                try {
+                    tf.tidy(() => {});
+                    if (tf.engine().state && tf.engine().state.numDataMovesStack && 
+                        tf.engine().state.numDataMovesStack.length > 0) {
+                        tf.engine().endScope();
+                        tf.engine().startScope();
+                    }
+                } catch (e) {
+                    logError('localTensorMemoryManager', 'Error during TensorFlow GC', e);
+                }
+            }
+            
+            logWithEmoji('success', 'localTensorMemoryManager', 
+                `Garbage collection complete. Disposed ${disposedCount} tracked tensors.`);
+        },
+        
+        /**
+         * Clean up resources when shutting down
+         */
+        cleanup() {
+            this.stopPeriodicChecks();
+            this.garbageCollect();
+        }
+    };
+})();
+
+// Replace safeDisposeTensors with a function that uses local TensorMemoryManager
+function safeDisposeTensors() {
+    try {
+        if (!isTfEngineAvailable()) return;
+        
+        // Use the local tensor memory manager
+        if (tensorMemoryManager) {
+            tensorMemoryManager.garbageCollect();
+            return;
+        }
+        
+        // Fallback to basic implementation
+        const tensorsArray = Array.from(tensorsToDispose);
+        tensorsToDispose.clear(); // Clear first to prevent circular issues
+        
+        tf.tidy(() => {
+            tensorsArray.forEach(tensor => {
+                try {
+                    if (tensor && !tensor.isDisposed && tensor.dispose) {
+                        tensor.dispose();
+                    }
+                } catch (e) {
+                    // Silently ignore disposal errors
+                }
+            });
+        });
+    } catch (e) {
+        // Silently fail if cleanup isn't possible
+    }
+}
+
 // Modify waitForBackend to be more robust
 async function waitForBackend(timeout = INITIALIZATION_TIMEOUT) {
     const startTime = Date.now();
@@ -155,30 +350,6 @@ function isTfEngineAvailable() {
         return tf && tf.engine && tf.engine() && tf.engine().backend != null;
     } catch (e) {
         return false;
-    }
-}
-
-// Modify safeDisposeTensors to be more defensive
-function safeDisposeTensors() {
-    try {
-        if (!isTfEngineAvailable()) return;
-        
-        const tensorsArray = Array.from(tensorsToDispose);
-        tensorsToDispose.clear(); // Clear first to prevent circular issues
-        
-        tf.tidy(() => {
-            tensorsArray.forEach(tensor => {
-                try {
-                    if (tensor && !tensor.isDisposed && tensor.dispose) {
-                        tensor.dispose();
-                    }
-                } catch (e) {
-                    // Silently ignore disposal errors
-                }
-            });
-        });
-    } catch (e) {
-        // Silently fail if cleanup isn't possible
     }
 }
 
@@ -212,6 +383,10 @@ async function initTensorFlow(retryCount = 0) {
         initStatus.tfReady = false;
         initStatus.backendReady = false;
         initStatus.error = null;
+
+        // Initialize the local TensorMemoryManager
+        localTensorMemoryManager.initialize();
+        logWithEmoji('setup', 'initTensorFlow', 'Local TensorMemoryManager initialized');
 
         // Wait for TF to be ready
         await tf.ready();
@@ -475,23 +650,48 @@ async function generateEmbedding(imageData) {
 
     return tf.tidy(() => {
         try {
+            // Create tensors and track them
             const img = tf.tensor(imageData, [160, 160, 4]);
-            tensorsToDispose.add(img);
+            if (tensorMemoryManager) {
+                tensorMemoryManager.track(img);
+            } else {
+                tensorsToDispose.add(img);
+            }
             
             const rgb = img.slice([0, 0, 0], [-1, -1, 3]);
-            tensorsToDispose.add(rgb);
+            if (tensorMemoryManager) {
+                tensorMemoryManager.track(rgb);
+            } else {
+                tensorsToDispose.add(rgb);
+            }
             
             const processed = rgb.expandDims(0).toFloat().div(127.5).sub(1);
-            tensorsToDispose.add(processed);
+            if (tensorMemoryManager) {
+                tensorMemoryManager.track(processed);
+            } else {
+                tensorsToDispose.add(processed);
+            }
             
             const embedding = faceNetModel.predict(processed);
-            tensorsToDispose.add(embedding);
+            if (tensorMemoryManager) {
+                tensorMemoryManager.track(embedding);
+            } else {
+                tensorsToDispose.add(embedding);
+            }
             
             const embeddingData = embedding.squeeze();
-            tensorsToDispose.add(embeddingData);
+            if (tensorMemoryManager) {
+                tensorMemoryManager.track(embeddingData);
+            } else {
+                tensorsToDispose.add(embeddingData);
+            }
             
             const normalizedEmbedding = tf.div(embeddingData, tf.norm(embeddingData));
-            tensorsToDispose.add(normalizedEmbedding);
+            if (tensorMemoryManager) {
+                tensorMemoryManager.track(normalizedEmbedding);
+            } else {
+                tensorsToDispose.add(normalizedEmbedding);
+            }
             
             const finalEmbedding = normalizedEmbedding.dataSync();
             
@@ -759,22 +959,46 @@ class ModelManager {
         return tf.tidy(() => {
             try {
                 const img = tf.tensor(imageData, [160, 160, 4]);
-                tensorsToDispose.add(img);
+                if (tensorMemoryManager) {
+                    tensorMemoryManager.track(img);
+                } else {
+                    tensorsToDispose.add(img);
+                }
                 
                 const rgb = img.slice([0, 0, 0], [-1, -1, 3]);
-                tensorsToDispose.add(rgb);
+                if (tensorMemoryManager) {
+                    tensorMemoryManager.track(rgb);
+                } else {
+                    tensorsToDispose.add(rgb);
+                }
                 
                 const processed = rgb.expandDims(0).toFloat().div(127.5).sub(1);
-                tensorsToDispose.add(processed);
+                if (tensorMemoryManager) {
+                    tensorMemoryManager.track(processed);
+                } else {
+                    tensorsToDispose.add(processed);
+                }
                 
                 const embedding = this.models.faceNet.predict(processed);
-                tensorsToDispose.add(embedding);
+                if (tensorMemoryManager) {
+                    tensorMemoryManager.track(embedding);
+                } else {
+                    tensorsToDispose.add(embedding);
+                }
                 
                 const embeddingData = embedding.squeeze();
-                tensorsToDispose.add(embeddingData);
+                if (tensorMemoryManager) {
+                    tensorMemoryManager.track(embeddingData);
+                } else {
+                    tensorsToDispose.add(embeddingData);
+                }
                 
                 const normalizedEmbedding = tf.div(embeddingData, tf.norm(embeddingData));
-                tensorsToDispose.add(normalizedEmbedding);
+                if (tensorMemoryManager) {
+                    tensorMemoryManager.track(normalizedEmbedding);
+                } else {
+                    tensorsToDispose.add(normalizedEmbedding);
+                }
                 
                 const finalEmbedding = normalizedEmbedding.dataSync();
                 
@@ -1057,6 +1281,9 @@ function initOnLoad() {
         
         // Set up cleanup handlers
         setupCleanupHandlers();
+        
+        // Initialize the local TensorMemoryManager
+        localTensorMemoryManager.initialize();
         
         // Initialize the model manager
         modelManager.initialize().catch(error => {

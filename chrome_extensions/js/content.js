@@ -305,22 +305,16 @@ async function createSandboxFrame(attemptCount = 1) {
         sandboxFrame = null;
     }
 
-    // OPTIMIZATION: More efficient retry loop with proper error handling
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             logWithEmoji('loading', 'createSandboxFrame', `Creating new sandbox frame (attempt ${attempt}/${maxRetries})...`);
-            
-            // Create frame with defined timeout for faster response
-            const startTime = performance.now();
             await createFrame(timeout);
-            const endTime = performance.now();
-            
-            logWithEmoji('success', 'createSandboxFrame', `Sandbox frame created and initialized successfully in ${Math.round(endTime - startTime)}ms`);
+            logWithEmoji('success', 'createSandboxFrame', 'Sandbox frame created and TensorFlow initialized');
             return;
         } catch (error) {
             logWithEmoji('error', 'createSandboxFrame', `Failed to create sandbox frame on attempt ${attempt}/${maxRetries}: ${error.message}`);
             
-            // Cleanup before retry
+            // Cleanup on error
             if (sandboxFrame) {
                 try {
                     logWithEmoji('loading', 'createSandboxFrame', 'Removing existing sandbox frame during retry');
@@ -332,97 +326,93 @@ async function createSandboxFrame(attemptCount = 1) {
                 sandboxFrame = null;
             }
             
-            if (attempt === maxRetries) {
+            if (attempt < maxRetries) {
+                const retryDelay = 500 * attempt; // Exponential backoff
+                logWithEmoji('timer', 'createSandboxFrame', `Waiting ${retryDelay}ms before retrying...`);
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+            } else {
                 logWithEmoji('error', 'createSandboxFrame', `Failed to create sandbox frame after ${maxRetries} attempts: ${error.message}`);
-                throw new Error(`Failed to create sandbox frame after ${maxRetries} attempts: ${error.message}`);
+                throw error;
             }
-            
-            // Wait before retry with shorter delay for faster recovery
-            const delay = 500 * attempt; // 500ms, 1000ms, 1500ms (reduced from 1000ms base)
-            logWithEmoji('timer', 'createSandboxFrame', `Waiting ${delay}ms before retrying...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
+}
 
-    /**
-     * Creates a new sandbox iframe for TensorFlow operations
-     * @param {number} timeout - The timeout for the frame creation
-     * @returns {Promise<void>}
-     */
-    async function createFrame(timeout) {
-        logFunctionEntry('createFrame');
-        logWithEmoji('setup', 'createFrame', 'Creating new sandbox frame');
-        return new Promise((resolve, reject) => {
-            try {
-                logWithEmoji('loading', 'createFrame', 'Creating new sandbox iframe');
-                sandboxFrame = document.createElement('iframe');
-                sandboxFrame.src = chrome.runtime.getURL('sandbox.html');
-                sandboxFrame.style.display = 'none';
-                logWithEmoji('success', 'createFrame', 'New sandbox iframe created');
-                let frameLoadTimeout;
-                let tfInitTimeout;
-                
-                const cleanup = () => {
-                    logWithEmoji('loading', 'createFrame', 'Cleaning up frame');
-                    clearTimeout(frameLoadTimeout);
-                    clearTimeout(tfInitTimeout);
-                    sandboxFrame.removeEventListener('load', handleLoad);
-                    sandboxFrame.removeEventListener('error', handleError);
-                    window.removeEventListener('message', handleTfInit);
-                    logWithEmoji('success', 'createFrame', 'Frame cleaned up');
-                };
-                
-                const handleTfInit = (event) => {
-                    logWithEmoji('loading', 'createFrame', 'Handling TensorFlow initialization');
-                    if (event.data && event.data.type === 'TF_INITIALIZED') {
-                        cleanup();
-                        if (event.data.success) {
-                            logWithEmoji('success', 'createFrame', 'TensorFlow initialized successfully:', event.data.info);
-                            resolve();
-                        } else {
-                            logWithEmoji('error', 'createFrame', 'TF initialization failed:', event.data.error, 'Status:', event.data.status);
-                            reject(new Error('TF initialization failed: ' + (event.data.error || 'Unknown error')));
-                        }
-                    }
-                };
-                
-                const handleLoad = () => {
-                    logWithEmoji('loading', 'createFrame', 'Sandbox frame loaded, waiting for TF initialization...');
-                    window.addEventListener('message', handleTfInit);
-                    logWithEmoji('success', 'createFrame', 'TF initialization listener added');
-                    // OPTIMIZATION: Shorter TF init timeout for faster failure detection
-                    tfInitTimeout = setTimeout(() => {
-                        logWithEmoji('loading', 'createFrame', 'TF initialization timeout, cleaning up...');
-                        cleanup();
-                        reject(new Error(`TF initialization timeout after ${timeout}ms`));
-                    }, timeout);
-                };
-                
-                const handleError = (error) => {
-                    cleanup();
-                    logWithEmoji('error', 'createFrame', 'Sandbox frame failed to load: ' + (error.message || 'Unknown error'));
-                    reject(new Error('Sandbox frame failed to load: ' + (error.message || 'Unknown error')));
-                };
-                
-                sandboxFrame.addEventListener('load', handleLoad);
-                sandboxFrame.addEventListener('error', handleError);
-                logWithEmoji('success', 'createFrame', 'Sandbox frame event listeners added');
-                
-                // OPTIMIZATION: Shorter frame load timeout for faster failure detection
-                frameLoadTimeout = setTimeout(() => {
-                    cleanup();
-                    reject(new Error(`Sandbox frame load timeout after ${timeout/2}ms`));
-                }, timeout/2); // Half the timeout for frame loading
-                
-                // OPTIMIZATION: Append to document before other operations to start loading earlier
-                document.body.appendChild(sandboxFrame);
-                logWithEmoji('success', 'createFrame', 'Sandbox frame appended to document body');
-            } catch (error) {
-                logWithEmoji('error', 'createFrame', 'Failed to create sandbox frame: ' + (error.message || 'Unknown error'));
-                reject(new Error('Failed to create sandbox frame: ' + (error.message || 'Unknown error')));
+async function createFrame(timeout) {
+    logFunctionEntry('createFrame');
+    return new Promise((resolve, reject) => {
+        let loadTimeout = null;
+        let tfInitTimeout = null;
+        
+        const cleanup = () => {
+            if (loadTimeout) {
+                clearTimeout(loadTimeout);
+                loadTimeout = null;
             }
-        });
-    }
+            if (tfInitTimeout) {
+                clearTimeout(tfInitTimeout);
+                tfInitTimeout = null;
+            }
+            window.removeEventListener('message', handleTfInit);
+            if (sandboxFrame) {
+                sandboxFrame.removeEventListener('load', handleLoad);
+                sandboxFrame.removeEventListener('error', handleError);
+            }
+        };
+        
+        const handleTfInit = (event) => {
+            logWithEmoji('loading', 'createFrame', 'Handling TensorFlow initialization');
+            if (event.data && event.data.type === 'TF_INITIALIZED') {
+                cleanup();
+                if (event.data.success) {
+                    logWithEmoji('success', 'createFrame', 'TensorFlow initialized successfully:', event.data.info);
+                    resolve();
+                } else {
+                    logWithEmoji('error', 'createFrame', 'TF initialization failed:', event.data.error, 'Status:', event.data.status);
+                    reject(new Error('TF initialization failed: ' + (event.data.error || 'Unknown error')));
+                }
+            }
+        };
+        
+        const handleLoad = () => {
+            logWithEmoji('loading', 'createFrame', 'Sandbox frame loaded, waiting for TF initialization...');
+            window.addEventListener('message', handleTfInit);
+            logWithEmoji('success', 'createFrame', 'TF initialization listener added');
+            // OPTIMIZATION: Shorter TF init timeout for faster failure detection
+            tfInitTimeout = setTimeout(() => {
+                logWithEmoji('loading', 'createFrame', 'TF initialization timeout, cleaning up...');
+                cleanup();
+                reject(new Error(`TF initialization timeout after ${timeout}ms`));
+            }, timeout);
+        };
+        
+        const handleError = (error) => {
+            cleanup();
+            logWithEmoji('error', 'createFrame', 'Sandbox frame failed to load: ' + (error.message || 'Unknown error'));
+            reject(new Error('Sandbox frame failed to load: ' + (error.message || 'Unknown error')));
+        };
+        
+        // Create new iframe
+        sandboxFrame = document.createElement('iframe');
+        sandboxFrame.id = 'face-api-sandbox';
+        sandboxFrame.style.display = 'none';
+        sandboxFrame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+        
+        // Add load and error event listeners
+        sandboxFrame.addEventListener('load', handleLoad);
+        sandboxFrame.addEventListener('error', handleError);
+        
+        // Set load timeout
+        loadTimeout = setTimeout(() => {
+            logWithEmoji('loading', 'createFrame', 'Frame load timeout, cleaning up...');
+            cleanup();
+            reject(new Error(`Frame load timeout after ${timeout}ms`));
+        }, timeout);
+        
+        // Set source and append to document
+        sandboxFrame.src = chrome.runtime.getURL('sandbox.html');
+        document.body.appendChild(sandboxFrame);
+    });
 }
 
 /**
@@ -2133,39 +2123,51 @@ const imageObserver = new IntersectionObserver((entries) => {
 // Add function to start document observer
 function startDocumentObserver() {
     logFunctionEntry('startDocumentObserver');
-    logWithEmoji('search', 'startDocumentObserver', 'Starting document mutation observer');
-    if (documentObserver) return;
+    logWithEmoji('setup', 'startDocumentObserver', 'Starting document observer');
     
-    documentObserver = new MutationObserver((mutations) => {
-        mutations.forEach(mutation => {
+    // Create document observer instance
+    const documentObserver = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
             if (mutation.type === 'childList') {
-                mutation.addedNodes.forEach(node => {
-                    // Immediately process any new image nodes
-                    if ((node.tagName === 'IMG' || node.tagName === 'image') && isValidElement(node)) {
-                        handleVisibleElement(node);
-                        if (imageObserver) {
-                            imageObserver.observe(node);
-                        }
-                    }
-                    
-                    // Check for images within added nodes
-                    if (node.querySelectorAll) {
-                        ['IMG', 'image'].forEach(tagName => {
-                            const elements = Array.from(node.querySelectorAll(tagName))
-                                .filter(element => isValidElement(element));
-                            
-                            elements.forEach(element => {
-                                handleVisibleElement(element);
-                                if (imageObserver) {
-                                    imageObserver.observe(element);
-                                }
-                            });
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        const images = node.querySelectorAll('img:not(.face-detection-canvas)');
+                        images.forEach((img) => {
+                            if (isValidElement(img) && !img.closest('.face-detection-wrapper')) {
+                                imageQueue.add(img);
+                            }
+                        });
+                        
+                        // Handle SVG images with xlink:href
+                        const svgImages = node.querySelectorAll('image');
+                        svgImages.forEach((svgImage) => {
+                            if (svgImage.getAttributeNS('http://www.w3.org/1999/xlink', 'href') && 
+                                !svgImage.closest('.face-detection-wrapper')) {
+                                imageQueue.add(svgImage);
+                            }
                         });
                     }
                 });
+            } else if (mutation.type === 'attributes') {
+                const target = mutation.target;
+                if (target.nodeType === Node.ELEMENT_NODE) {
+                    if (target.tagName.toLowerCase() === 'img' && isValidElement(target) && 
+                        !target.closest('.face-detection-wrapper')) {
+                        imageQueue.add(target);
+                    } else if (target.tagName.toLowerCase() === 'image' && 
+                               target.getAttributeNS('http://www.w3.org/1999/xlink', 'href') && 
+                               !target.closest('.face-detection-wrapper')) {
+                        imageQueue.add(target);
+                    }
+                }
             }
         });
     });
+    
+    // Register the document observer with the Tab Resource Manager
+    if (typeof TabResourceManager !== 'undefined') {
+        TabResourceManager.setDocumentObserver(documentObserver);
+    }
     
     documentObserver.observe(document.body, {
         childList: true,
@@ -2173,6 +2175,8 @@ function startDocumentObserver() {
         attributes: true,
         attributeFilter: ['src', 'xlink:href']
     });
+    
+    return documentObserver;
 }
 
 // Add initialization helper functions
@@ -3131,21 +3135,93 @@ const workerPool = new EnhancedWorkerPool({
 // Initialize the worker pool during extension initialization
 async function initializeExtension() {
     logFunctionEntry('initializeExtension');
-    logWithEmoji('start', 'initializeExtension', 'Starting full extension initialization');
+    logWithEmoji('start', 'initializeExtension', 'Starting initialization');
+    
     try {
-        // Initialize worker pool
-        await workerPool.initialize();
+        // Initialize the Tab Resource Manager to improve performance
+        if (typeof TabResourceManager !== 'undefined') {
+            // Define the status check callback
+            const checkExtensionStatus = async () => {
+                await checkTensorFlowStatus().catch(error => {
+                    logError('initializeExtension', 'Status check error:', error);
+                });
+            };
+            
+            // Initialize with configuration options
+            TabResourceManager.initialize({
+                statusCheckCallback: checkExtensionStatus,
+                suspensionDelay: 10000,  // Wait 10 seconds before suspending
+                resumptionDelay: 500     // Resume quickly when tab becomes active
+            });
+            
+            logWithEmoji('success', 'initializeExtension', 'Tab Resource Manager initialized');
+        }
         
-        // Load models and other initialization
+        // Initialize the Tensor Memory Manager to prevent memory leaks
+        // Note: This is only for the content script, the sandbox will initialize its own
+        if (typeof TensorMemoryManager !== 'undefined') {
+            TensorMemoryManager.initialize();
+            logWithEmoji('success', 'initializeExtension', 'Tensor Memory Manager initialized');
+        }
+        
+        // Setup tab visibility handler
+        setupTabVisibilityHandler();
+        
+        // Initialize extension context
+        await initializeExtensionContext();
+        
+        // Create sandbox frame for TensorFlow operations
+        await createSandboxFrame();
+        
+        // Load all required face detection models
         await loadFaceApiModels();
+        
+        // Initialize the image queue and start processing
+        imageQueue = new ImageQueue();
+        
+        // Start document observer to detect new images
+        const observer = startDocumentObserver();
+        
+        // Process images that already exist in the page
+        await processExistingImages();
+        
+        // Load positive embeddings for similarity comparison
         await loadPositiveEmbeddings();
         
-        if (flagShowFrameonImage.autoProcessImages) {
-            await processExistingImages();
-            observeElements();
-        }
+        // Add event listener for document clicks to handle UI interactions
+        document.addEventListener('click', preventTextSelection);
+        
+        // Mark extension as initialized
+        isInitialized = true;
+        
+        window.addEventListener('beforeunload', () => {
+            // Cleanup resources on page unload
+            if (typeof TabResourceManager !== 'undefined') {
+                TabResourceManager.cleanup();
+            }
+            if (typeof TensorMemoryManager !== 'undefined') {
+                TensorMemoryManager.cleanup();
+            }
+            
+            // Remove event listeners
+            document.removeEventListener('click', preventTextSelection);
+            
+            // Disconnect observers
+            if (observer) {
+                observer.disconnect();
+            }
+            
+            // Clear queues and caches
+            if (imageQueue) {
+                imageQueue.clear();
+            }
+        });
+        
+        logWithEmoji('success', 'initializeExtension', 'Extension fully initialized');
+        
     } catch (error) {
-        logWithEmoji('error', 'initializeExtension', 'Extension initialization failed: ' + error.message);
+        logError('initializeExtension', 'Initialization failed', error);
+        throw error;
     }
 }
 
@@ -3315,4 +3391,40 @@ document.addEventListener('DOMContentLoaded', function() {
 // This function is also available in utils.js (duplicated here for now)
 function roundToMultipleOf32(num) {
     return Math.ceil(num / 32) * 32;
+}
+
+function setupTabVisibilityHandler() {
+    logFunctionEntry('setupTabVisibilityHandler');
+    logWithEmoji('setup', 'setupTabVisibilityHandler', 'Setting up tab visibility handler');
+    
+    // The TabResourceManager already handles this functionality,
+    // but we'll add our own event listeners for enhanced functionality
+    
+    // Listen for custom events from TabResourceManager
+    window.addEventListener('faceone:suspended', () => {
+        logWithEmoji('lock', 'tabVisibility', 'Tab became inactive, extension processing suspended');
+        
+        // Additional tab-specific handling
+        if (imageQueue) {
+            imageQueue.pause();
+            logWithEmoji('success', 'tabVisibility', 'Image queue processing paused');
+        }
+    });
+    
+    window.addEventListener('faceone:resumed', () => {
+        logWithEmoji('unlock', 'tabVisibility', 'Tab became active, extension processing resumed');
+        
+        // Additional tab-specific handling
+        if (imageQueue) {
+            imageQueue.resume();
+            logWithEmoji('success', 'tabVisibility', 'Image queue processing resumed');
+        }
+        
+        // Process any images that became visible while tab was inactive
+        if (isInitialized && flagShowFrameonImage.autoProcessImages) {
+            setTimeout(() => {
+                processExistingImages();
+            }, 1000);
+        }
+    });
 }
