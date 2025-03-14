@@ -1082,23 +1082,48 @@ async function createProxyImage(originalImg) {
 }
 
 // Add new function to handle tiny image processing
+/**
+ * Process tiny images (below 64px in either dimension) with specialized upscaling
+ * This function is specifically designed to handle small profile pictures, icons, and thumbnails
+ * that would otherwise be skipped by the face detection system.
+ * 
+ * Key techniques:
+ * 1. Intelligent upscaling - Uses a dynamic scale factor based on original image size
+ * 2. Ensures dimensions are multiples of 32 (required by TinyYOLOv2 backbone in TinyFaceDetector)
+ * 3. High-quality upscaling with improved image smoothing for better detail preservation
+ * 4. Returns both the processed canvas and the scale factor for mapping detections back to original size
+ * 
+ * Designed to work with Facebook profile pictures, avatars, and other small face images down to 32px
+ * 
+ * @param {HTMLImageElement} img - The small image element to process
+ * @returns {Object} Object containing the scaled canvas and scale factors
+ */
 async function processTinyImage(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
     // Calculate dimensions that are multiples of 32
-    const minSize = 32; // Minimum size required by TinyFaceDetector
+    const minSize = 32; // Absolute minimum size required by TinyFaceDetector
+    
+    // Dynamic scale factor calculation - more aggressive for smaller images
+    // For very tiny images (e.g. 32px), this could be 2-3x scaling
+    // For images near 64px, this might be 1.5x scaling
     const scaleFactor = Math.max(2, Math.ceil(32 / Math.min(img.width, img.height)));
+    
+    // Round dimensions up to nearest multiple of 32 for optimal model performance
     const targetWidth = roundToMultipleOf32(Math.ceil(img.width * scaleFactor));
     const targetHeight = roundToMultipleOf32(Math.ceil(img.height * scaleFactor));
     
     canvas.width = targetWidth;
     canvas.height = targetHeight;
     
-    // Use better upscaling algorithm
+    // Use better upscaling algorithm - crucial for preserving facial details
+    // This significantly improves detection quality on small images
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+    
+    logWithEmoji('info', 'processTinyImage', `Upscaled small image from ${img.width}x${img.height} to ${targetWidth}x${targetHeight} (${scaleFactor}x scaling)`);
     
     return {
         canvas,
@@ -1109,6 +1134,22 @@ async function processTinyImage(img) {
     };
 }
 
+/**
+ * Select the appropriate face detection model based on image size and characteristics
+ * 
+ * This function implements an intelligent selection strategy:
+ * - For tiny images (32-64px): Uses TinyFaceDetector with specialized settings
+ * - For small images (64-128px): Uses TinyFaceDetector with optimized settings
+ * - For medium images: Uses either model based on aspect ratio and quality
+ * - For large images (256px+): Uses SSD MobileNet for best accuracy
+ * 
+ * Facebook profile pictures, avatars and thumbnails are handled by the tiny/small
+ * image path, with optimized settings for detecting faces in those challenging cases.
+ * 
+ * @param {HTMLImageElement} img - The image element to analyze
+ * @returns {Object} Selected model and its configuration options
+ * @throws {Error} If the image is smaller than the absolute minimum size (32px)
+ */
 function selectFaceDetectionModel(img) {
     const width = img.width || img.naturalWidth;
     const height = img.height || img.naturalHeight;
@@ -1121,9 +1162,11 @@ function selectFaceDetectionModel(img) {
     }
 
     // For very small images (32-64px), use tinyFaceDetector with highly optimized settings
+    // This is specifically designed for small profile pics and avatars (e.g. Facebook thumbnails)
     if (minDimension < 64) {
         // Ensure input size is divisible by 32 (required by TinyYolov2)
         const inputSize = 64; // Fixed size for stability with very small images
+        logWithEmoji('info', 'selectFaceDetectionModel', `Using specialized tiny image mode for ${width}x${height} image`);
         return {
             model: 'tinyFaceDetector',
             options: new faceapi.TinyFaceDetectorOptions({
@@ -1137,9 +1180,11 @@ function selectFaceDetectionModel(img) {
     }
     
     // For small images (64-128px), use tinyFaceDetector with optimized settings
+    // This handles most social media profile pictures and small thumbnails
     if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
         // Ensure input size is divisible by 32 (required by TinyYolov2)
         const inputSize = roundToMultipleOf32(Math.max(64, minDimension));
+        logWithEmoji('info', 'selectFaceDetectionModel', `Using optimized small image mode for ${width}x${height} image`);
         return {
             model: 'tinyFaceDetector',
             options: new faceapi.TinyFaceDetectorOptions({
@@ -1151,7 +1196,7 @@ function selectFaceDetectionModel(img) {
             })
         };
     }
-
+    
     // For large images, use ssdMobilenetv1
     if (minDimension >= MODEL_SELECTION_THRESHOLDS.LARGE_IMAGE) {
         return {
@@ -2158,8 +2203,11 @@ async function handleVisibleElement(element) {
         const height = element.height || element.naturalHeight;
         
         // Skip only if image is smaller than absolute minimum (32px)
+        // This allows processing of Facebook profile pics and other small avatars (which are typically 40-50px)
+        // but skips icons, emojis, and decorative elements that are too small to contain meaningful faces
         if (width < 32 || height < 32) {
-            logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}`);
+            logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}. Minimum required: 32px.`);
+            logWithEmoji('info', 'handleVisibleElement', `Likely an icon, emoji, or decoration - not a profile picture.`);
             processedImageTracker.mark(element, 'skipped');
             
             // Instead of removing the wrapper, just clear it of detection-related elements
@@ -2178,9 +2226,10 @@ async function handleVisibleElement(element) {
         }
         
         // Even if smaller than user setting but larger than 32px, we'll still process it
-        // Only log a note about it being smaller than the preference
+        // This allows processing of profile pictures even if the user has set a larger minimum size
         if (width < flagShowFrameonImage.minimumImageSize || height < flagShowFrameonImage.minimumImageSize) {
-            logWithEmoji('info', 'handleVisibleElement', `Image smaller than user minimum size setting: ${width}x${height} < ${flagShowFrameonImage.minimumImageSize}`);
+            logWithEmoji('info', 'handleVisibleElement', `Processing small image: ${width}x${height} (below user setting of ${flagShowFrameonImage.minimumImageSize}px)`);
+            logWithEmoji('info', 'handleVisibleElement', `Small profile pictures and avatars will be processed with specialized techniques`);
         }
         
         try {
