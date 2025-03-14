@@ -2061,6 +2061,12 @@ async function handleVisibleElement(element) {
     logFunctionEntry('handleVisibleElement');
     logWithEmoji('image', 'handleVisibleElement', 'Processing visible image element');
     
+    // Store the original element properties for recovery if needed
+    const originalDisplay = element.style.display;
+    const originalVisibility = element.style.visibility;
+    const originalOpacity = element.style.opacity;
+    let wrapper = null;
+    
     try {
         // Skip if already processed or being processed
         if (processedImageTracker.isProcessed(element)) {
@@ -2072,7 +2078,7 @@ async function handleVisibleElement(element) {
         processedImageTracker.mark(element, 'pending');
         
         // Create the detection wrapper first
-        const wrapper = createWrapper(element);
+        wrapper = createWrapper(element);
         
         // Only proceed if image meets size requirements
         const width = element.width || element.naturalWidth;
@@ -2081,8 +2087,18 @@ async function handleVisibleElement(element) {
         if (width < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE || height < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
             logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}`);
             processedImageTracker.mark(element, 'skipped');
+            
+            // Instead of removing the wrapper, just clear it of detection-related elements
             if (wrapper && wrapper.isConnected) {
-                cleanupWrapper(wrapper);
+                const canvas = wrapper.querySelector('.face-detection-canvas');
+                const indicator = wrapper.querySelector('.processing-indicator');
+                if (canvas) canvas.remove();
+                if (indicator) indicator.remove();
+                
+                // Don't call cleanupWrapper - instead ensure image is visible
+                element.style.display = originalDisplay;
+                element.style.visibility = 'visible';
+                element.style.opacity = '1';
             }
             return;
         }
@@ -2091,8 +2107,18 @@ async function handleVisibleElement(element) {
         if (width < flagShowFrameonImage.minimumImageSize || height < flagShowFrameonImage.minimumImageSize) {
             logWithEmoji('info', 'handleVisibleElement', `Image smaller than minimum size setting: ${width}x${height} < ${flagShowFrameonImage.minimumImageSize}`);
             processedImageTracker.mark(element, 'skipped');
+            
+            // Instead of removing the wrapper, just clear it of detection-related elements
             if (wrapper && wrapper.isConnected) {
-                cleanupWrapper(wrapper);
+                const canvas = wrapper.querySelector('.face-detection-canvas');
+                const indicator = wrapper.querySelector('.processing-indicator');
+                if (canvas) canvas.remove();
+                if (indicator) indicator.remove();
+                
+                // Don't call cleanupWrapper - instead ensure image is visible
+                element.style.display = originalDisplay;
+                element.style.visibility = 'visible';
+                element.style.opacity = '1';
             }
             return;
         }
@@ -2106,7 +2132,7 @@ async function handleVisibleElement(element) {
                 await loadPositiveEmbeddings();
             }
             
-            // Process with face detection
+            // Process with face detection - this now handles its own errors and ensures image visibility
             await detectFacesWithFaceApi(element);
             
             // Mark as complete
@@ -2128,24 +2154,37 @@ async function handleVisibleElement(element) {
                 } catch (fallbackError) {
                     logWithEmoji('error', 'handleVisibleElement', `Fallback processing also failed: ${fallbackError.message}`);
                     
-                    // Clean up wrapper to avoid leaving artifacts
-                    if (wrapper && wrapper.isConnected) {
-                        cleanupWrapper(wrapper);
+                    // IMPORTANT: Don't cleanup wrapper, just ensure image is visible
+                    if (element) {
+                        element.style.display = originalDisplay || '';
+                        element.style.visibility = 'visible';
+                        element.style.opacity = '1';
                     }
                     
                     processedImageTracker.mark(element, 'failed');
                 }
             } else {
-                // Critical models not available, just clean up
-                if (wrapper && wrapper.isConnected) {
-                    cleanupWrapper(wrapper);
+                // Critical models not available, ensure image visibility
+                if (element) {
+                    element.style.display = originalDisplay || '';
+                    element.style.visibility = 'visible';
+                    element.style.opacity = '1';
                 }
+                
+                // Don't call cleanupWrapper as it might remove the image
                 processedImageTracker.mark(element, 'failed');
-                throw error; // Re-throw the original error
             }
         }
     } catch (error) {
         logWithEmoji('error', 'handleVisibleElement', `Error processing element: ${error.message}`);
+        
+        // CRITICAL: Always ensure image visibility on errors
+        if (element) {
+            element.style.display = originalDisplay || '';
+            element.style.visibility = 'visible';
+            element.style.opacity = '1';
+        }
+        
         processedImageTracker.mark(element, 'failed');
     }
 }
