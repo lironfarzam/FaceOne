@@ -143,7 +143,7 @@ let flagShowFrameonImage = {
     frameFaceDetected: true,    
     addLabel: true,
     autoProcessImages: true,
-    minimumImageSize: 100,
+    minimumImageSize: 32,
     confidenceThreshold: 70,
     processingMode: 'face_detection'
 };
@@ -153,8 +153,8 @@ let flagShowFrameonImage = {
 //=============================================================================
 const MODEL_SELECTION_THRESHOLDS = {
     get MINIMUM_SIZE() {
-        // More lenient minimum - 16px or user setting, whichever is smaller
-        return Math.min(16, flagShowFrameonImage.minimumImageSize || 16);
+        // Change minimum size to 32px (or user setting, whichever is smaller)
+        return Math.min(32, flagShowFrameonImage.minimumImageSize || 32);
     },
     get SMALL_IMAGE() {
         return Math.max(64, this.MINIMUM_SIZE * 2);
@@ -937,6 +937,50 @@ const imageTracker = {
 };
 
 /**
+ * Checks if an element is a social media profile picture
+ * @param {Element} element - The element to check
+ * @returns {boolean} True if element is likely a profile picture
+ */
+function isProfilePicture(element) {
+    if (!element) return false;
+
+    // Check based on classes and attributes
+    const isProfileByClass = element.classList && (
+        element.classList.contains('profile-picture') ||
+        element.classList.contains('avatar') ||
+        element.classList.contains('user-photo') ||
+        element.classList.contains('user-image') ||
+        element.classList.contains('profile-img') ||
+        element.classList.contains('user-img') ||
+        element.classList.contains('x1lq5wgf') || // Facebook profile photo class
+        element.classList.contains('xgqcy7u') ||
+        element.classList.contains('x30kzoy')
+    );
+
+    // Check based on parent element attribute or class
+    const parentHasProfileIndicator = element.parentElement && (
+        element.parentElement.classList.contains('profile-pic-container') ||
+        element.parentElement.classList.contains('avatar-container') ||
+        element.parentElement.getAttribute('data-testid') === 'user-avatar' ||
+        element.parentElement.getAttribute('aria-label')?.toLowerCase().includes('profile')
+    );
+
+    // Check if image has specific dimensions (common for profile pics)
+    const hasProfileDimensions = (element.width === element.height) && 
+                               (element.width === 36 || element.width === 40 || 
+                                element.width === 48 || element.width === 64);
+    
+    // Check alt text
+    const altTextIsProfile = element.alt && (
+        element.alt.toLowerCase().includes('profile') ||
+        element.alt.toLowerCase().includes('avatar') ||
+        element.alt.toLowerCase().includes('user')
+    );
+
+    return isProfileByClass || parentHasProfileIndicator || hasProfileDimensions || altTextIsProfile;
+}
+
+/**
  * Checks if an element is valid for processing
  * @param {Element} element - The element to validate
  * @returns {boolean} True if the element is valid for processing
@@ -968,7 +1012,20 @@ function isValidElement(element) {
 
     if (!src || src.startsWith('data:') || src.includes('emoji')) return false;
 
-    // Remove size validation - we'll handle any size
+    // Check if it's a profile picture - relax size requirements
+    const isProfile = isProfilePicture(element);
+
+    // For profile pictures, only check if hidden or processed
+    if (isProfile) {
+        const isHidden = element.offsetParent === null || 
+                      window.getComputedStyle(element).display === 'none' ||
+                      window.getComputedStyle(element).visibility === 'hidden';
+        const isProcessed = element.closest('.face-detection-wrapper');
+        
+        return !isHidden && !isProcessed;
+    }
+
+    // For non-profile images, do regular checks
     const isHidden = element.offsetParent === null || 
                     window.getComputedStyle(element).display === 'none' ||
                     window.getComputedStyle(element).visibility === 'hidden';
@@ -1058,15 +1115,31 @@ function selectFaceDetectionModel(img) {
     const minDimension = Math.min(width, height);
     const maxDimension = Math.max(width, height);
     
-    // Skip images smaller than minimum size
-    if (minDimension < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
-        throw new Error(`Image too small for face detection (${width}x${height}). Minimum size required: ${MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE}px`);
+    // Skip images smaller than absolute minimum size
+    if (minDimension < 32) {
+        throw new Error(`Image too small for face detection (${width}x${height}). Minimum size required: 32px`);
     }
 
-    // For small images, use tinyFaceDetector with optimized settings
+    // For very small images (32-64px), use tinyFaceDetector with highly optimized settings
+    if (minDimension < 64) {
+        // Ensure input size is divisible by 32 (required by TinyYolov2)
+        const inputSize = 64; // Fixed size for stability with very small images
+        return {
+            model: 'tinyFaceDetector',
+            options: new faceapi.TinyFaceDetectorOptions({
+                ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
+                inputSize: inputSize,
+                scoreThreshold: 0.01,  // Very lenient threshold for tiny images
+                minFaceSize: 16, // Absolute minimum face size
+                scaleFactor: 0.5  // More granular scale steps
+            })
+        };
+    }
+    
+    // For small images (64-128px), use tinyFaceDetector with optimized settings
     if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
         // Ensure input size is divisible by 32 (required by TinyYolov2)
-        const inputSize = roundToMultipleOf32(Math.max(32, minDimension));
+        const inputSize = roundToMultipleOf32(Math.max(64, minDimension));
         return {
             model: 'tinyFaceDetector',
             options: new faceapi.TinyFaceDetectorOptions({
@@ -2084,7 +2157,8 @@ async function handleVisibleElement(element) {
         const width = element.width || element.naturalWidth;
         const height = element.height || element.naturalHeight;
         
-        if (width < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE || height < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
+        // Skip only if image is smaller than absolute minimum (32px)
+        if (width < 32 || height < 32) {
             logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}`);
             processedImageTracker.mark(element, 'skipped');
             
@@ -2103,24 +2177,10 @@ async function handleVisibleElement(element) {
             return;
         }
         
-        // Check if we should skip this image
+        // Even if smaller than user setting but larger than 32px, we'll still process it
+        // Only log a note about it being smaller than the preference
         if (width < flagShowFrameonImage.minimumImageSize || height < flagShowFrameonImage.minimumImageSize) {
-            logWithEmoji('info', 'handleVisibleElement', `Image smaller than minimum size setting: ${width}x${height} < ${flagShowFrameonImage.minimumImageSize}`);
-            processedImageTracker.mark(element, 'skipped');
-            
-            // Instead of removing the wrapper, just clear it of detection-related elements
-            if (wrapper && wrapper.isConnected) {
-                const canvas = wrapper.querySelector('.face-detection-canvas');
-                const indicator = wrapper.querySelector('.processing-indicator');
-                if (canvas) canvas.remove();
-                if (indicator) indicator.remove();
-                
-                // Don't call cleanupWrapper - instead ensure image is visible
-                element.style.display = originalDisplay;
-                element.style.visibility = 'visible';
-                element.style.opacity = '1';
-            }
-            return;
+            logWithEmoji('info', 'handleVisibleElement', `Image smaller than user minimum size setting: ${width}x${height} < ${flagShowFrameonImage.minimumImageSize}`);
         }
         
         try {
@@ -3033,8 +3093,8 @@ async function createScaledImage(img) {
     const originalWidth = img.width || img.naturalWidth;
     const originalHeight = img.height || img.naturalHeight;
     
-    // Calculate minimum required size
-    const minRequiredSize = MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
+    // Calculate minimum required size - for profile images, ensure at least 64px
+    const minRequiredSize = 64; // Minimum size for reliable face detection
     const smallestDimension = Math.min(originalWidth, originalHeight);
     
     let targetWidth = originalWidth;
@@ -3043,13 +3103,21 @@ async function createScaledImage(img) {
     
     // Scale up if image is too small
     if (smallestDimension < minRequiredSize) {
-        scaleFactor = Math.ceil(minRequiredSize / smallestDimension);
+        // For very small images, use a more aggressive scaling factor
+        if (smallestDimension < 40) {
+            scaleFactor = Math.ceil(minRequiredSize / smallestDimension) * 2; // More aggressive for tiny images
+        } else {
+            scaleFactor = Math.ceil(minRequiredSize / smallestDimension);
+        }
+        
         targetWidth = Math.round(originalWidth * scaleFactor);
         targetHeight = Math.round(originalHeight * scaleFactor);
         
         // Ensure dimensions are multiples of 32 for better model performance
         targetWidth = roundToMultipleOf32(targetWidth);
         targetHeight = roundToMultipleOf32(targetHeight);
+        
+        logWithEmoji('info', 'createScaledImage', `Scaling small image up by ${scaleFactor}x: ${originalWidth}x${originalHeight} → ${targetWidth}x${targetHeight}`);
     }
     
     // Set canvas dimensions
@@ -3365,7 +3433,7 @@ chrome.storage.sync.get({
     frameFaceDetected: true,
     addLabel: true,
     autoProcessImages: true,
-    minimumImageSize: 100,
+    minimumImageSize: 32, // Changed from 100 to 32 to allow profile photos
     confidenceThreshold: 70,
     processingMode: 'face_detection'  // Add default mode
 }, function(items) {
