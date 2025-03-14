@@ -13,6 +13,13 @@ FaceOne is a powerful Chrome extension that provides real-time face detection an
 7. [User Interface](#user-interface)
 8. [Performance Optimizations](#performance-optimizations)
 9. [Behind the Scenes: Code Execution Flow](#behind-the-scenes-code-execution-flow)
+10. [Advanced Techniques: Image Processing](#advanced-techniques-image-processing)
+11. [Deep Dive: Face Detection and Recognition](#deep-dive-face-detection-and-recognition)
+12. [Storage and Persistence](#storage-and-persistence)
+13. [Security and Privacy Considerations](#security-and-privacy-considerations)
+14. [Development and Contribution](#development-and-contribution)
+15. [Scientific Foundations](#scientific-foundations)
+16. [Recent Improvements: Enhanced Blur Persistence](#recent-improvements-enhanced-blur-persistence)
 
 ## Overview
 
@@ -34,6 +41,8 @@ FaceOne uses a multi-layered architecture to ensure performance, security, and r
 2. **Worker Layer**: Handles image processing in separate threads to maintain UI responsiveness
 3. **Sandbox Layer**: Executes TensorFlow.js models in an isolated environment for security
 4. **UI Layer**: Provides user controls through a popup interface
+5. **Storage Layer**: Manages persistent data for blurred images and settings
+6. **Mutation Observer Layer**: Monitors DOM changes to handle dynamically loaded content
 
 ## Core Components
 
@@ -98,6 +107,17 @@ The popup interface allows users to:
 - Control visualization options (labels, face frames)
 - Trigger manual reprocessing of images
 - View status updates
+- Clear blurred images list
+
+### 7. Blur Tracker (blurTracker.js)
+
+The blur tracker is a lightweight system for managing blurred images:
+
+- Stores URLs of images that need to be blurred
+- Normalizes URLs to handle dynamic parameters
+- Provides persistent storage using Chrome's storage API
+- Implements timestamp-based cleanup for old entries
+- Monitors DOM changes to apply blur effects to newly added images
 
 ## File Structure
 
@@ -113,7 +133,8 @@ chrome_extensions/
 │   ├── content.js      # Main content script
 │   ├── workerPool.js   # Worker management
 │   ├── imageWorker.js  # Image processing worker
-│   └── sandboxInit.js  # TensorFlow initialization
+│   ├── sandboxInit.js  # TensorFlow initialization
+│   └── blurTracker.js  # Blurred image management
 ├── lib/
 │   ├── face-api.min.js # Face detection library
 │   ├── tf.min.js       # TensorFlow.js core
@@ -138,6 +159,8 @@ The extension follows this workflow for processing images:
 7. **Similarity Comparison**: Embeddings are compared against known faces
 8. **Visualization**: Results are displayed on the page (frames, labels)
 9. **Action Application**: Based on settings, actions like blurring may be applied
+10. **Result Storage**: Blurred image information is stored for persistence
+11. **DOM Monitoring**: MutationObserver watches for new content and applies saved settings
 
 ## Technical Details
 
@@ -146,681 +169,844 @@ The extension follows this workflow for processing images:
 FaceOne uses a multi-stage approach for face detection:
 
 1. **Initial Detection**: Uses FaceAPI.js to locate faces in images
+
+   - SSD MobileNet for large images (>300px)
+   - TinyFaceDetector for smaller images
+   - Detection parameters tuned for optimal performance/accuracy balance
+
 2. **Landmark Detection**: Identifies 68 facial landmarks for precise face alignment
+
+   - Eye positions for rotation normalization
+   - Facial contours for accurate boundary detection
+   - Landmark points used to calculate face orientation
+
 3. **Face Alignment**: Normalizes face orientation for consistent embedding generation
+
+   - Rotation correction based on eye positions
+   - Scale normalization to standardized size (160x160 pixels)
+   - Multiple orientation attempts for challenging angles (0°, ±45°, ±90°)
+
 4. **Face Extraction**: Crops and prepares the face region for the embedding model
+   - Canvas-based extraction for efficient memory usage
+   - Padding to capture complete facial features
+   - Resolution adaptations based on original image quality
 
 ### Embedding Generation
 
 Face embeddings are generated using a FaceNet model:
 
 1. **Image Normalization**: Converts image to RGB and normalizes pixel values
+
+   - Pixel values scaled to [-1, 1] range
+   - RGB channel extraction and optimization
+   - Tensor conversion with appropriate dimensions [1, 160, 160, 3]
+
 2. **Model Inference**: Passes the normalized image through FaceNet
+
+   - WebGL acceleration when available
+   - CPU fallback for compatibility
+   - Batch processing optimization
+
 3. **Embedding Extraction**: Extracts the 512-dimensional face embedding
+
+   - Dense vector representation of facial features
+   - Float32Array for efficient storage
+   - Compact numerical representation of facial identity
+
 4. **Embedding Normalization**: Normalizes the embedding for consistent comparison
+   - L2 normalization to unit vector
+   - Ensures consistent similarity comparison regardless of image conditions
+   - Reduces effects of lighting and pose variations
 
 ### Similarity Comparison
 
 Face similarity is computed using:
 
 1. **Vector Comparison**: Computes cosine similarity between embeddings
+
+   - Dot product of normalized embeddings
+   - Range from -1 (opposite) to 1 (identical)
+   - Adjusted to 0-100% scale for user interface
+
 2. **Threshold Application**: Applies user-defined confidence threshold
+
+   - Configurable via UI slider (0-100%)
+   - Default threshold set to 70% for balanced results
+   - Dynamically adjustable for different sensitivity needs
+
 3. **Result Classification**: Determines if faces match based on similarity score
+   - Binary decision (match/no match) based on threshold
+   - Confidence score displayed to user
+   - Multi-face handling for images with multiple detections
+
+### Blurring Mechanism
+
+The blurring process follows these steps:
+
+1. **Blur Decision**: Determines if an image should be blurred
+
+   - Based on similarity comparison results
+   - User-defined confidence threshold
+   - Previously stored blur decisions
+
+2. **Blur Application**: Applies blur effect using multiple methods
+
+   - CSS filter property (primary method)
+   - HTML class-based targeting
+   - Attribute-based selectors for persistence
+
+3. **Blur Persistence**: Ensures blur effect remains consistent
+
+   - URL-based tracking with normalization
+   - Timestamp-based freshness management
+   - Multi-level targeting for DOM structure changes
+
+4. **DOM Monitoring**: Applies blur to dynamically added content
+   - MutationObserver to detect new images
+   - URL matching against stored blur list
+   - Dynamic CSS rule injection for comprehensive targeting
 
 ## User Interface
 
 The popup UI provides several controls:
 
 1. **Mode Selection**: Choose between face detection and blur modes
+
+   - Face Detection: Visualizes faces with similarity indicators
+   - Blur: Automatically blurs matched faces
+
 2. **Auto-Processing**: Toggle automatic processing of images
+
+   - Background processing of visible images
+   - On-demand processing when scrolling
+   - Performance-optimized to avoid browser slowdowns
+
 3. **Show Labels**: Toggle display of detection results and similarity scores
+
+   - Overlaid information on processed images
+   - Color-coded confidence indicators
+   - Descriptive text for user feedback
+
 4. **Show Face Frames**: Toggle colored frames around detected faces
+
+   - Bounding box visualization
+   - Color coding based on similarity scores
+   - Adjustable frame visibility
+
 5. **Confidence Threshold**: Adjust the minimum similarity percentage for matches
+
+   - Slider control from 0% to 100%
+   - Real-time threshold adjustment
+   - Visual feedback on current setting
+
 6. **Reprocess Button**: Manually trigger reprocessing of all images
+
+   - Force refresh all analysis
+   - Clear existing results
+   - Apply current settings to all images
+
+7. **Clear Blur List**: Remove all stored blur information
+   - Reset all blurring decisions
+   - Counter for number of cleared entries
+   - Confirmation feedback
 
 ## Performance Optimizations
 
 FaceOne implements several optimizations for smooth operation:
 
 1. **Worker Threading**: Offloads image processing to separate threads
+
+   - Prevents UI thread blocking
+   - Parallelizes computations based on CPU cores
+   - Prioritizes visible content
+
 2. **Batch Processing**: Groups similar operations for efficiency
+
+   - Processes images in batches of optimal size
+   - Reduces overhead of model initialization
+   - Prioritizes visible content first
+
 3. **Priority Queuing**: Processes important images first
+
+   - Visibility-based prioritization
+   - Size-based optimization (smaller images first)
+   - User interaction responsiveness
+
 4. **Model Caching**: Reuses loaded models to reduce memory usage
+
+   - Single instance of TensorFlow models
+   - Incremental model loading
+   - Memory-aware model management
+
 5. **Embedding Caching**: Stores computed embeddings to avoid redundant processing
+
+   - URL-based caching for repeated images
+   - Session-based persistence
+   - LRU cache implementation for memory efficiency
+
 6. **Lazy Loading**: Loads resources only when needed
+
+   - On-demand model loading
+   - Progressive feature availability
+   - Reduced startup time
+
 7. **Memory Management**: Implements automatic cleanup of unused resources
+
+   - Tensor disposal after processing
+   - Periodic garbage collection
+   - Memory threshold monitoring
+
 8. **Throttling**: Limits processing rate to maintain browser responsiveness
+
+   - Request animation frame synchronization
+   - Idle callback utilization
+   - Processing queue rate limiting
+
 9. **Incremental Processing**: Processes images in stages as they become visible
 
-## Behind the Scenes: Code Execution Flow
+   - Intersection Observer API integration
+   - Viewport prioritization
+   - Background processing of off-screen content
 
-This section explains the detailed execution flow of the FaceOne Chrome extension, including the loading sequence, initialization process, and key functions in each file.
+10. **URL Normalization**: Efficiently handles changing URL parameters
+    - Extraction of essential URL components
+    - Parameter filtering for consistency
+    - Pattern matching for similar resources
 
-### Loading Sequence
+## Advanced Techniques: Image Processing
 
-When the Chrome extension is installed and activated, the following loading sequence occurs:
+### Image Preprocessing Pipeline
 
-1. **manifest.json**: Chrome reads this file first to understand the extension's structure, permissions, and resources.
-2. **content.js**: Injected into web pages based on the manifest's content_scripts configuration.
-3. **workerPool.js**: Loaded by content.js to set up the worker infrastructure.
-4. **popup.html/popup.js**: Loaded when the user clicks the extension icon in the toolbar.
-5. **sandbox.html**: Loaded in an isolated context for secure TensorFlow.js execution.
+The extension implements a sophisticated image preprocessing pipeline to optimize face detection:
 
-### Initialization Process
+1. **Image Acquisition**:
 
-The initialization process follows these steps:
+   - Direct image element access via DOM
+   - Proxy image creation for cross-origin resources
+   - Canvas-based image data extraction
 
-1. **Extension Startup**:
+2. **Size Analysis and Adaptation**:
 
-   - Chrome loads the manifest and registers the extension
-   - Content scripts are injected into matching web pages
-   - Extension icon and popup are configured
+   - Dynamic resizing based on image dimensions
+   - Aspect ratio preservation
+   - Resolution optimization for model performance
 
-2. **Content Script Initialization** (content.js):
+3. **Orientation Detection and Correction**:
+
+   - EXIF metadata extraction when available
+   - Multi-angle attempt strategy (0°, ±45°, ±90°)
+   - Rotation correction using canvas transformations
+
+4. **Color Space Optimization**:
+
+   - RGB channel extraction and normalization
+   - Alpha channel handling for transparent images
+   - Color profile adaptation
+
+5. **Canvas Management**:
+
+   - Efficient canvas reuse
+   - Memory-optimized drawing operations
+   - Web worker offloading when possible
+
+6. **Image Enhancement**:
+   - Contrast normalization
+   - Brightness adaptation
+   - Edge enhancement for improved detection
+
+### Dynamic Content Handling
+
+The extension has been engineered to handle the challenges of modern web applications:
+
+1. **Virtual DOM Detection**:
+
+   - Recognition of framework-specific DOM patterns
+   - Adaptation to React, Angular, and Vue rendering cycles
+   - Special handling for SPAs (Single Page Applications)
+
+2. **Mutation Observation Strategy**:
+
+   - Efficient DOM mutation tracking
+   - Subtree modifications monitoring
+   - Attribute change detection for dynamic styling
+
+3. **Lazy-loaded Image Handling**:
+
+   - Intersection Observer for detecting newly visible images
+   - Event listeners for dynamic content loading
+   - Scroll position tracking for timely processing
+
+4. **Responsive Design Adaptation**:
+
+   - Media query monitoring
+   - Viewport size change detection
+   - Responsive image srcset handling
+
+5. **Cross-origin Resource Management**:
+   - CORS policy handling
+   - Proxy methods for cross-domain images
+   - Fallback strategies for restricted content
+
+## Deep Dive: Face Detection and Recognition
+
+### Model Architecture Details
+
+FaceOne leverages multiple neural network models for its core functionality:
+
+1. **Face Detection Models**:
+
+   - SSD MobileNet v1: Optimized for larger images and accuracy
+   - TinyFaceDetector: Optimized for speed and smaller images
+   - Model selection based on image size and processing requirements
+
+2. **FaceNet Architecture**:
+
+   - 512-dimensional embedding output
+   - Input size of 160x160 pixels
+   - Inception ResNet v1 backbone
+   - Triplet loss function training
+
+3. **Custom Similarity Model**:
+   - Fine-tuned for web image comparison
+   - Optimized for browser execution
+   - Enhanced robustness against lighting and pose variations
+
+### Feature Extraction Process
+
+The feature extraction process involves several technical steps:
+
+1. **Face Region Normalization**:
+
+   - Scale normalization to fixed dimensions
+   - Alignment based on facial landmarks
+   - Background removal and masking
+
+2. **Deep Feature Extraction**:
+
+   - Convolutional layer activation extraction
+   - Progressive feature map generation
+   - Dimensionality reduction
+
+3. **Embedding Generation**:
+
+   - Non-linear transformations through deep network
+   - L2 normalization for vector standardization
+   - Euclidean embedding space representation
+
+4. **Quality Assessment**:
+   - Confidence score calculation
+   - Blur and lighting quality estimation
+   - Pose angle estimation
+
+### Multi-face Handling
+
+The extension implements sophisticated algorithms for handling multiple faces in a single image:
+
+1. **Detection Clustering**:
+
+   - Non-maximum suppression for overlapping detections
+   - Intersection over Union (IoU) calculation
+   - Threshold-based merging of similar detections
+
+2. **Face Prioritization**:
+
+   - Size-based ranking (larger faces prioritized)
+   - Central position prioritization
+   - Confidence score weighting
+
+3. **Batch Processing Strategy**:
+
+   - Efficient processing of multiple faces
+   - Parallel embedding generation
+   - Resource-aware batch size adjustment
+
+4. **Result Aggregation**:
+   - Multiple detection visualization
+   - Individual face similarity scoring
+   - Composite blurring decision logic
+
+## Storage and Persistence
+
+### Chrome Storage Implementation
+
+FaceOne uses Chrome's storage APIs for data persistence:
+
+1. **Storage Types**:
+
+   - `chrome.storage.local`: For large data storage (blurred image URLs)
+   - `chrome.storage.sync`: For user settings synchronization
+
+2. **Data Structures**:
+
+   - URL maps with timestamps for blurred images
+   - Settings objects for user preferences
+   - Processing statistics for performance monitoring
+
+3. **Storage Optimization**:
+
+   - URL normalization to reduce duplicate entries
+   - Timestamp-based data expiration
+   - Chunked storage for large datasets
+
+4. **Error Handling**:
+   - Storage limit management
+   - Error recovery mechanisms
+   - Data validation before storage
+
+### BlurTracker Implementation
+
+The `blurTracker.js` module provides a sophisticated system for managing blurred images:
+
+1. **Data Structure**:
+
+   - Map-based storage with URLs as keys and timestamps as values
+   - Efficient O(1) lookup performance
+   - Memory-optimized representation
+
+2. **URL Normalization**:
+
+   - Parameter filtering for dynamic URLs
+   - Path-based normalization
+   - Domain-specific handling (e.g., Facebook image URLs)
+
+3. **Timestamp Management**:
+
+   - Automatic refreshing of accessed URLs
+   - Age-based cleanup (default: 30 minutes)
+   - Periodic pruning to manage size
+
+4. **Persistence Strategy**:
+
+   - Periodic automatic saving (every 5 minutes)
+   - On-demand saving when changes occur
+   - Page unload saving to prevent data loss
+
+5. **MutationObserver Integration**:
+   - DOM change monitoring
+   - Dynamic image blur application
+   - Efficient node filtering
+
+### Dynamic CSS Implementation
+
+For ensuring blur persistence, the extension implements dynamic CSS injection:
+
+1. **Rule Generation**:
+
+   - URL-based selector creation
+   - Specificity optimization
+   - Platform-specific targeting
+
+2. **Style Application**:
+
+   - `!important` rule usage for override guarantee
+   - Multiple selector strategies for resilience
+   - Class and attribute-based targeting
+
+3. **Update Mechanism**:
+   - Periodic style sheet refreshing
+   - On-demand rule regeneration
+   - DOM-change triggered updates
+
+## Security and Privacy Considerations
+
+### Local Processing
+
+FaceOne prioritizes user privacy through local processing:
+
+1. **Client-side Execution**:
+
+   - All face detection and recognition occurs locally in the browser
+   - No image data sent to external servers
+   - No communication with third-party services
+
+2. **Sandbox Isolation**:
+
+   - TensorFlow.js execution in isolated context
+   - Content Security Policy restrictions
+   - Cross-origin resource protection
+
+3. **Permission Minimization**:
+   - Limited to essential Chrome APIs
+   - No unnecessary permissions requested
+   - Clear separation of privilege contexts
+
+### Data Protection
+
+User data is protected through several mechanisms:
+
+1. **Scoped Storage**:
+
+   - Data accessible only by the extension itself
+   - No exposure to websites or other extensions
+   - Chrome's built-in storage encryption
+
+2. **Minimal Persistence**:
+
+   - Only essential data stored (URLs and timestamps)
+   - No personal information or image content stored
+   - Configurable data cleanup policies
+
+3. **Memory Management**:
+   - Immediate disposal of sensitive data after processing
+   - Tensor memory clearing after model inference
+   - Garbage collection optimization
+
+### Ethical Considerations
+
+The extension is designed with ethical use in mind:
+
+1. **User Control**:
+
+   - Full transparency of all processing
+   - User-configurable confidence thresholds
+   - Easy disabling of features
+
+2. **Processing Indicators**:
+
+   - Visual feedback during detection
+   - Clear status messaging
+   - Result explanation
+
+3. **Performance Impact**:
+   - Resource usage monitoring
+   - Adaptive processing based on device capabilities
+   - Background processing throttling
+
+## Development and Contribution
+
+### Building From Source
+
+To build the extension from source:
+
+1. Clone the repository
+2. Install dependencies: `npm install`
+3. Build the extension: `npm run build`
+4. Load the unpacked extension in Chrome
+
+### Testing
+
+The extension includes testing infrastructure:
+
+1. **Unit Tests**:
+
+   - Model functionality tests
+   - URL normalization tests
+   - Storage implementation tests
+
+2. **Integration Tests**:
+
+   - End-to-end processing workflow tests
+   - DOM manipulation tests
+   - Chrome API interaction tests
+
+3. **Performance Testing**:
+   - Memory usage benchmarks
+   - Processing time measurements
+   - Storage efficiency tests
+
+### Contributing
+
+Contributions are welcome! Please follow these guidelines:
+
+1. Fork the repository
+2. Create a feature branch
+3. Implement your changes
+4. Add tests for new functionality
+5. Submit a pull request
+
+### Code Structure Guidelines
+
+When contributing, please follow these code organization principles:
+
+1. **Modularity**: Keep components isolated and focused
+2. **Error Handling**: Implement robust error recovery
+3. **Performance**: Consider resource usage and efficiency
+4. **Documentation**: Comment complex algorithms and approaches
+5. **Compatibility**: Ensure broad browser support
+
+## Scientific Foundations
+
+FaceOne is built on solid scientific principles from computer vision, deep learning, and human-computer interaction. This section explains the foundational science behind the extension's capabilities.
+
+### Neural Network Architectures
+
+#### Convolutional Neural Networks (CNNs)
+
+The face detection and recognition systems are powered by Convolutional Neural Networks:
+
+1. **Hierarchical Feature Learning**:
+
+   - Low-level features (edges, corners) in early layers
+   - Mid-level features (textures, patterns) in middle layers
+   - High-level features (facial components) in deep layers
+   - Final layer provides complete facial identity encoding
+
+2. **Architectural Innovations**:
+
+   - Inception modules for multi-scale feature extraction
+   - Residual connections for gradient propagation in deep networks
+   - Depth-wise separable convolutions for efficiency
+   - Feature pyramid networks for scale invariance
+
+3. **Transfer Learning Application**:
+   - Pre-trained models fine-tuned for face detection
+   - Domain adaptation techniques for web image variations
+   - Knowledge distillation for model compression
+
+#### Embedding Spaces and Metric Learning
+
+The facial recognition system operates on principles of metric learning:
+
+1. **Embedding Space Properties**:
+
+   - 512-dimensional Euclidean space representation
+   - Faces of the same person cluster together
+   - Different identities form separate clusters
+   - Distance metrics correlate with visual similarity
+
+2. **Loss Function Formulation**:
+
+   - Triplet loss minimizes distance between same identity
+   - Contrastive loss maximizes distance between different identities
+   - Center loss enforces tighter clusters
+   - Hyperparameter tuning for optimal separation margins
+
+3. **Mathematical Foundations**:
+   - L2 normalization: $\hat{v} = \frac{v}{||v||_2}$
+   - Cosine similarity: $similarity(A,B) = \frac{A \cdot B}{||A||_2 \times ||B||_2}$
+   - Threshold application: $match = similarity(A,B) \geq threshold$
+
+### Computer Vision Techniques
+
+#### Image Processing Pipeline
+
+The image preprocessing pipeline applies several scientific techniques:
+
+1. **Multi-scale Processing**:
+
+   - Scale-space theory application
+   - Pyramid representations for efficiency
+   - Resolution-adaptive processing thresholds
+
+2. **Illumination Normalization**:
+
+   - Gamma correction: $I_{out} = I_{in}^{\gamma}$
+   - Histogram equalization for contrast enhancement
+   - Local contrast normalization for lighting invariance
+
+3. **Geometric Transformations**:
+   - Affine transformations for pose correction
+   - Homography estimation for perspective handling
+   - Procrustes analysis for landmark alignment
+
+#### Face Detection Algorithms
+
+The face detection system combines multiple algorithmic approaches:
+
+1. **Cascaded Detection**:
+
+   - Multi-stage classification process
+   - Early rejection of non-face regions
+   - Progressive refinement of candidate regions
+
+2. **Anchor-based Detection**:
+
+   - Pre-defined box generation at multiple scales
+   - Regression for bounding box refinement
+   - Non-maximum suppression for overlapping detections
+
+3. **Landmark Localization**:
+   - Shape regression techniques
+   - Heatmap-based keypoint prediction
+   - 68-point facial landmark model
+
+### Human-Computer Interaction Principles
+
+The extension applies HCI research for optimal user experience:
+
+1. **Visual Perception Considerations**:
+
+   - Blur radius optimized for human visual processing
+   - Color coding aligned with perceptual understanding
+   - Visual indicators positioned for optimal scanpath efficiency
+
+2. **Cognitive Load Management**:
+
+   - Progressive disclosure of complex information
+   - Minimized configuration requirements
+   - Predictable system behavior
+
+3. **Interaction Design**:
+   - Direct manipulation principles
+   - Immediate visual feedback
+   - Undo capability for all actions
+
+## Recent Improvements: Enhanced Blur Persistence
+
+The latest version implements significant enhancements to the blur persistence system, addressing challenges with dynamic DOM manipulation in modern web applications.
+
+### Technical Challenges Addressed
+
+1. **Virtual DOM Reconciliation**:
+   Modern web frameworks like React often completely recreate DOM elements during updates, destroying applied styles and blur effects. Our solution tackles this through multiple persistence mechanisms:
 
    ```javascript
-   // Core initialization function
-   async function initialize() {
-     // Set up mutation observers to detect new images
-     setupImageObservers();
-     // Load user settings from storage
-     await loadSettings();
-     // Initialize the worker pool for parallel processing
-     initializeWorkerPool();
-     // Set up the sandbox for TensorFlow operations
-     await setupSandbox();
-     // Load ML models
-     await loadModels();
-   }
+   // Multiple persistence mechanisms
+   img.style.filter = "blur(10px)"; // Inline CSS (Level 1)
+   img.classList.add("blurred-image"); // Class-based (Level 2)
+   img.setAttribute("data-faceone-processed", "blurred"); // Attribute-based (Level 3)
    ```
 
-3. **Worker Pool Setup** (workerPool.js):
+2. **URL Normalization for Dynamic Content**:
+   Social media platforms often serve the same image with different URL parameters. Our advanced URL normalization algorithm addresses this:
 
    ```javascript
-   // Worker pool initialization
-   async function initialize() {
-     // Create workers based on hardware capabilities
-     for (let i = 0; i < this.options.maxWorkers; i++) {
-       const worker = await this.createWorker(i);
-       this.workers.set(i, worker);
-       this.idleWorkers.add(worker);
-     }
-     // Warm up workers with dummy tasks
-     await this.warmup();
-     // Start task processor
-     this.startTaskProcessor();
-   }
-   ```
-
-4. **Sandbox Initialization** (sandbox.html, via sandboxInit.js):
-
-   ```javascript
-   // TensorFlow initialization
-   async function initTensorFlow() {
-     // Wait for TF to be ready
-     await tf.ready();
-     // Initialize backend
-     await waitForBackend();
-     // Set up WebGL backend if available
-     if (tf.findBackend("webgl")) {
-       await tf.setBackend("webgl");
-       // Configure WebGL for optimal performance
-       const backend = tf.backend();
-       if (backend && backend.setWebGLFlag) {
-         backend.setWebGLFlag("WEBGL_FORCE_F16_TEXTURES", true);
-         backend.setWebGLFlag("WEBGL_VERSION", 2);
-         backend.setWebGLFlag("WEBGL_PACK", true);
-       }
-     } else {
-       // Fall back to CPU if WebGL is not available
-       await tf.setBackend("cpu");
-     }
-   }
-   ```
-
-5. **Model Loading** (sandbox.html):
-
-   ```javascript
-   // Model loading function
-   async function loadModel(modelPath) {
-     // Load model with timeout protection
-     const modelLoadPromise = tf.loadGraphModel(modelPath);
-     const timeoutPromise = new Promise((_, reject) =>
-       setTimeout(
-         () => reject(new Error("Model load timeout")),
-         MODEL_LOAD_TIMEOUT
-       )
-     );
-     // Race to ensure loading doesn't hang
-     faceNetModel = await Promise.race([modelLoadPromise, timeoutPromise]);
-
-     // Warm up model with dummy inputs
-     const dummyInputs = tf.tidy(() => tf.zeros([1, 160, 160, 3]));
-     const warmupResult = await faceNetModel.predict(dummyInputs);
-     await warmupResult.data();
-
-     // Dispose warmup tensors
-     dummyInputs.dispose();
-     warmupResult.dispose();
-
-     modelWarmedUp = true;
-   }
-   ```
-
-6. **Popup UI Initialization** (popup.js):
-   ```javascript
-   // Popup initialization
-   document.addEventListener("DOMContentLoaded", async () => {
-     // Cache DOM elements
-     UI.init();
-     // Set up event handlers
-     EventHandler.init();
-     // Load and apply user settings
-     await Settings.init();
-   });
-   ```
-
-### Key Functions by File
-
-#### 1. content.js - Main Content Script
-
-```javascript
-// Process an image to detect faces
-async function processImage(img) {
-  if (state.isProcessing || !state.modelsLoaded) return;
-
-  state.isProcessing = true;
-  try {
-    // Create canvas and get image data
-    const imageData = await getImageData(img);
-    // Detect faces using FaceAPI
-    const detections = await detectFaces(imageData);
-    // For each detected face
-    for (const detection of detections) {
-      // Extract face region
-      const faceData = extractFace(imageData, detection);
-      // Generate face embedding
-      const embedding = await generateEmbedding(faceData);
-      // Compare with known faces
-      const matches = await compareFaces(embedding);
-      // Visualize results
-      visualizeResults(img, detection, matches);
-      // Apply actions (blur, etc.) based on settings
-      applyActions(img, detection, matches);
-    }
-  } catch (error) {
-    console.error("Image processing error:", error);
-  } finally {
-    state.isProcessing = false;
-  }
-}
-
-// Detect faces in an image
-async function detectFaces(imageData) {
-  return new Promise((resolve, reject) => {
-    // Send message to sandbox for face detection
-    sandbox.postMessage({
-      type: "DETECT_FACES",
-      imageData: imageData,
-    });
-
-    // Set up one-time message handler for response
-    const handleMessage = (event) => {
-      if (event.data.type === "FACES_DETECTED") {
-        window.removeEventListener("message", handleMessage);
-        if (event.data.success) {
-          resolve(event.data.detections);
-        } else {
-          reject(new Error(event.data.error));
-        }
-      }
-    };
-
-    window.addEventListener("message", handleMessage);
-  });
-}
-
-// Generate embedding for a face
-async function generateEmbedding(faceData) {
-  // Use worker pool to distribute processing
-  return workerPool.processImage(faceData);
-}
-```
-
-#### 2. workerPool.js - Worker Management
-
-```javascript
-// Process an image using an available worker
-async function processImage(imageData, priority = 0) {
-  const task = {
-    imageData,
-    attempts: 0,
-    startTime: Date.now(),
-  };
-
-  return new Promise((resolve, reject) => {
-    // Add task to queue with priority
-    this.taskQueue.add({
-      task,
-      resolve,
-      reject,
-      priority,
-    });
-    // Start processing
-    this.processNextTask();
-  });
-}
-
-// Process next task in queue
-async function processNextTask() {
-  if (this.idleWorkers.size === 0 || this.taskQueue.items.length === 0) {
-    return;
-  }
-
-  // Get next available worker and task
-  const worker = this.idleWorkers.values().next().value;
-  const task = this.taskQueue.next();
-
-  if (!task) return;
-
-  // Mark worker as busy
-  this.idleWorkers.delete(worker);
-
-  try {
-    // Execute task on worker
-    const result = await this.executeTask(worker, task);
-    task.resolve(result);
-
-    // Update performance stats
-    this.updateStats(task);
-  } catch (error) {
-    // Retry logic for failed tasks
-    if (task.attempts < this.options.retryAttempts) {
-      task.attempts++;
-      this.taskQueue.add(task, task.priority + 1);
-    } else {
-      task.reject(error);
-      this.stats.errors++;
-    }
-  } finally {
-    // Return worker to idle pool
-    this.idleWorkers.add(worker);
-    // Process next task
-    this.processNextTask();
-  }
-}
-```
-
-#### 3. imageWorker.js - Image Processing Worker
-
-```javascript
-// Main message handler for the worker
-self.onmessage = async function (e) {
-  const { type, imageData, width, height } = e.data;
-
-  try {
-    switch (type) {
-      case "INIT":
-        await handleInit();
-        break;
-
-      case "PROCESS_IMAGE":
-        await handleImageProcessing(imageData, width, height);
-        break;
-
-      default:
-        throw new Error(`Unknown message type: ${type}`);
-    }
-  } catch (error) {
-    self.postMessage({
-      type: `${type}_FAILED`,
-      success: false,
-      error: error.message,
-    });
-  }
-};
-
-// Process image with performance optimizations
-async function handleImageProcessing(imageData, width, height) {
-  if (!state.initialized) {
-    throw new Error("Worker not initialized");
-  }
-
-  const startTime = performance.now();
-  state.processingCount++;
-
-  try {
-    // Resize canvas if needed
-    if (sharedCanvas.width < width || sharedCanvas.height < height) {
-      sharedCanvas.width = width;
-      sharedCanvas.height = height;
-    }
-
-    // Process image
-    const processedData = await processImageOptimized(imageData, width, height);
-
-    // Track performance
-    state.lastProcessingTime = performance.now() - startTime;
-
-    self.postMessage({
-      type: "IMAGE_PROCESSED",
-      success: true,
-      data: processedData,
-      stats: {
-        processingTime: state.lastProcessingTime,
-        totalProcessed: state.processingCount,
-      },
-    });
-  } catch (error) {
-    throw error;
-  }
-}
-```
-
-#### 4. sandbox.html - TensorFlow Execution Environment
-
-```javascript
-// Generate embedding for a face image
-async function generateEmbedding(imageData) {
-  if (!isTfBackendReady()) {
-    throw new Error("TensorFlow not initialized or ready");
-  }
-
-  if (!faceNetModel) {
-    throw new Error("Model not loaded");
-  }
-
-  return tf.tidy(() => {
-    try {
-      // Convert image data to tensor
-      const img = tf.tensor(imageData, [160, 160, 4]);
-
-      // Extract RGB channels
-      const rgb = img.slice([0, 0, 0], [-1, -1, 3]);
-
-      // Preprocess for model input
-      const processed = rgb.expandDims(0).toFloat().div(127.5).sub(1);
-
-      // Generate embedding
-      const embedding = faceNetModel.predict(processed);
-      const embeddingData = embedding.squeeze();
-
-      // Normalize embedding
-      const normalizedEmbedding = tf.div(embeddingData, tf.norm(embeddingData));
-
-      // Convert to regular array
-      const finalEmbedding = normalizedEmbedding.dataSync();
-
-      return {
-        type: "EMBEDDING_GENERATED",
-        success: true,
-        embedding: Array.from(finalEmbedding),
-        fromCache: false,
-      };
-    } catch (error) {
-      return {
-        type: "EMBEDDING_GENERATED",
-        success: false,
-        error: error.message,
-      };
-    }
-  });
-}
-
-// Compare two face embeddings
-async function compareFaceEmbeddings(embedding1, embedding2) {
-  if (!this.isReady("myModel")) {
-    throw new Error("Similarity model not ready");
-  }
-
-  return tf.tidy(() => {
-    try {
-      // Convert embeddings to tensors
-      const tensor1 = tf.tensor2d([embedding1], [1, 512]);
-      const tensor2 = tf.tensor2d([embedding2], [1, 512]);
-
-      // Run inference
-      const similarity = this.models.myModel.predict([tensor1, tensor2]);
-      const result = similarity.dataSync()[0];
-
-      return {
-        type: "SIMILARITY_COMPUTED",
-        success: true,
-        similarity: result,
-      };
-    } catch (error) {
-      return {
-        type: "SIMILARITY_COMPUTED",
-        success: false,
-        error: error.message,
-      };
-    }
-  });
-}
-```
-
-#### 5. popup.js - User Interface Management
-
-```javascript
-// Settings management
-const Settings = {
-  async init() {
-    const defaults = {
-      processingMode: "face_detection",
-      autoProcessImages: true,
-      addLabel: true,
-      frameFaceDetected: true,
-      confidenceThreshold: 70,
-    };
-
-    try {
-      // Load saved settings or use defaults
-      const saved = await chrome.storage.sync.get(defaults);
-      this.applySettings(saved);
-      UI.cache.set("settings", saved);
-    } catch (error) {
-      console.error("Settings initialization failed:", error);
-      this.applySettings(defaults);
-    }
-  },
-
-  // Apply settings to UI elements
-  applySettings(settings) {
-    // Update mode selection
-    const modeButtons = document.querySelectorAll(".mode-button");
-    modeButtons.forEach((button) => {
-      button.classList.toggle(
-        "active",
-        button.id === `${settings.processingMode}Mode`
-      );
-    });
-
-    // Update checkboxes
-    document.getElementById("autoProcessImages").checked =
-      settings.autoProcessImages;
-    document.getElementById("addLabel").checked = settings.addLabel;
-    document.getElementById("frameFaceDetected").checked =
-      settings.frameFaceDetected;
-
-    // Update slider
-    const slider = document.getElementById("confidenceThreshold");
-    slider.value = settings.confidenceThreshold;
-    document.getElementById(
-      "confidenceValue"
-    ).textContent = `${settings.confidenceThreshold}%`;
-
-    // Update UI visibility based on mode
-    updateUIForMode(settings.processingMode);
-  },
-
-  // Update a setting and save it
-  async update(key, value) {
-    const settings = UI.cache.get("settings") || {};
-    settings[key] = value;
-
-    try {
-      // Save to Chrome storage
-      await chrome.storage.sync.set({ [key]: value });
-      // Notify content script of changes
-      await this.notifyContentScript(settings);
-      // Update cache
-      UI.cache.set("settings", settings);
-    } catch (error) {
-      console.error("Settings update failed:", error);
-      StatusManager.show("Settings update failed", "error");
-    }
-  },
-};
-
-// Update UI based on selected mode
-function updateUIForMode(mode) {
-  // Show/hide settings based on mode
-  document.querySelectorAll("[data-mode]").forEach((el) => {
-    const modes = el.dataset.mode.split(",");
-    el.classList.toggle(
-      "hidden",
-      !modes.includes(mode) && !modes.includes("both")
-    );
-  });
-}
-```
-
-### Data Flow Between Components
-
-The extension components communicate through several mechanisms:
-
-1. **Content Script ↔ Sandbox**:
-
-   - Uses `window.postMessage()` for bidirectional communication
-   - Sends image data for processing
-   - Receives detection results and embeddings
-
-2. **Content Script ↔ Worker Pool**:
-
-   - Direct function calls to queue tasks
-   - Promise-based interface for results
-
-3. **Worker Pool ↔ Image Workers**:
-
-   - Uses the Web Worker `postMessage()` API
-   - Sends image data for preprocessing
-   - Receives processed results
-
-4. **Popup ↔ Content Script**:
-
-   - Uses Chrome's messaging API (`chrome.tabs.sendMessage()`)
-   - Sends user settings and commands
-   - Receives status updates
-
-5. **Settings Storage**:
-   - Uses Chrome's storage API (`chrome.storage.sync`)
-   - Persists user preferences across browser sessions
-
-### Memory Management
-
-The extension implements sophisticated memory management to prevent leaks:
-
-1. **TensorFlow.js Memory**:
-
-   ```javascript
-   // Safely dispose tensors
-   function safeDisposeTensors() {
+   normalizeImageUrl(url) {
      try {
-       if (!isTfEngineAvailable()) return;
+       // For Facebook images, strip out changing parameters but keep essential ones
+       if (url.includes('fbcdn.net') || url.includes('facebook.com')) {
+         const urlObj = new URL(url);
 
-       const tensorsArray = Array.from(tensorsToDispose);
-       tensorsToDispose.clear(); // Clear first to prevent circular issues
+         // Keep only essential parameters
+         const essentialParams = ['stp', 'dst-jpg', 'set'];
+         const searchParams = new URLSearchParams();
 
-       tf.tidy(() => {
-         tensorsArray.forEach((tensor) => {
-           try {
-             if (tensor && !tensor.isDisposed && tensor.dispose) {
-               tensor.dispose();
-             }
-           } catch (e) {
-             // Silently ignore disposal errors
+         for (const param of essentialParams) {
+           if (urlObj.searchParams.has(param)) {
+             searchParams.set(param, urlObj.searchParams.get(param));
            }
-         });
-       });
-     } catch (e) {
-       // Silently fail if cleanup isn't possible
-     }
-   }
-
-   // Periodic memory cleanup
-   const memoryCleanupInterval = setInterval(() => {
-     try {
-       if (!isTfEngineAvailable()) return;
-
-       tf.tidy(() => {
-         try {
-           const memoryInfo = tf.memory();
-           if (memoryInfo.numTensors > 100 || memoryInfo.numBytes > 50000000) {
-             console.warn("Memory usage:", {
-               tensors: memoryInfo.numTensors,
-               bytes: Math.round(memoryInfo.numBytes / (1024 * 1024)) + " MB",
-               gpu:
-                 Math.round((memoryInfo.numBytesInGPU || 0) / (1024 * 1024)) +
-                 " MB",
-             });
-
-             if (memoryInfo.numTensors > 1000) {
-               safeDisposeTensors();
-               if (isTfEngineAvailable()) {
-                 try {
-                   tf.engine().endScope();
-                   tf.engine().startScope();
-                 } catch (e) {
-                   // Silently ignore scope errors
-                 }
-               }
-             }
-           }
-         } catch (e) {
-           // Silently ignore memory info errors
          }
-       });
-     } catch (error) {
-       console.warn("Memory cleanup:", error);
-     }
-   }, 30000);
-   ```
 
-2. **Image Cache Management**:
+         // Build normalized URL
+         let normalizedUrl = urlObj.origin + urlObj.pathname;
+         if (searchParams.toString()) {
+           normalizedUrl += '?' + searchParams.toString();
+         }
 
-   ```javascript
-   // Add cache for processed images
-   const imageCache = {
-     images: new Map(), // Map to store image data
-     maxSize: 1000,
-
-     add(src, isProcessed = true, canDelete = false) {
-       if (this.images.size >= this.maxSize) {
-         // Remove oldest entry by converting to array and removing first element
-         const sources = Array.from(this.images.keys());
-         this.images.delete(sources[0]);
+         return normalizedUrl;
        }
-       this.images.set(src, {
-         isProcessed,
-         canDelete,
-         timestamp: Date.now(),
-       });
-     },
 
-     // Additional cache management methods...
-   };
-   ```
-
-3. **Worker Resource Management**:
-   ```javascript
-   // Clean up resources
-   function terminate() {
-     this.workers.forEach((worker) => worker.terminate());
-     this.workers.clear();
-     this.idleWorkers.clear();
-     this.taskQueue = new PriorityQueue();
+       return url;
+     } catch (e) {
+       return url; // Return original if parsing fails
+     }
    }
    ```
+
+3. **Dynamic CSS Rule Injection**:
+   To overcome limitations of direct DOM manipulation, we implemented dynamic CSS rule injection:
+
+   ```javascript
+   function injectDynamicCssRules() {
+     // Create selectors from stored URLs
+     let cssRules = "";
+     for (const [url, _] of blurTracker.blurredImages.entries()) {
+       try {
+         const urlObj = new URL(url);
+         const pathParts = urlObj.pathname.split("/");
+         const filename = pathParts[pathParts.length - 1].split(".")[0];
+
+         if (filename && filename.length > 5) {
+           cssRules += `img[src*="${filename}"] { filter: blur(10px) !important; }\n`;
+         }
+       } catch (e) {
+         console.error("Error generating CSS for URL", url, e);
+       }
+     }
+
+     // Apply the rules
+     styleEl.textContent = cssRules;
+   }
+   ```
+
+### Multi-layered Persistence Architecture
+
+The enhanced blur persistence system uses a multi-layered approach:
+
+1. **Layer 1: Direct DOM Modification**
+
+   - Applied immediately to visible images
+   - Provides immediate visual feedback
+   - Most vulnerable to DOM changes
+
+2. **Layer 2: MutationObserver-based Reapplication**
+
+   - Monitors DOM for newly added images
+   - Checks URLs against blur list
+   - Reapplies blur effects as needed
+
+   ```javascript
+   setupMutationObserver() {
+     const observer = new MutationObserver((mutations) => {
+       for (const mutation of mutations) {
+         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+           this.processAddedNodes(mutation.addedNodes);
+         }
+       }
+     });
+
+     observer.observe(document.body, {
+       childList: true,
+       subtree: true,
+       attributes: false
+     });
+   }
+   ```
+
+3. **Layer 3: Dynamic CSS Rules**
+
+   - Pattern-based URL matching via CSS selectors
+   - Survives complete DOM replacement
+   - Updated periodically to catch new entries
+
+4. **Layer 4: Persistent Storage**
+   - Chrome storage API for cross-session persistence
+   - Automatic saving on page unload
+   - Periodic backup during browsing session
+
+### Time-based Management System
+
+The system implements sophisticated time-based data management:
+
+1. **Timestamp-based Freshness**:
+
+   - Each URL stores a last-accessed timestamp
+   - Automatic refreshing when URLs are accessed
+   - Gradual decay of unused entries
+
+2. **Configurable Retention Policies**:
+
+   - Default 30-minute retention for blurred URLs
+   - Automatic cleanup of expired entries
+   - Size-based pruning (max 10,000 entries)
+
+3. **Prioritized Storage**:
+   - Most recently used entries preserved
+   - Least recently used entries removed first
+   - Background cleanup to maintain performance
+
+### Virtual DOM Compatibility
+
+Special considerations were implemented for modern framework compatibility:
+
+1. **React-specific Optimizations**:
+
+   - Component re-render detection
+   - Key-based element tracking
+   - Efficient prop comparison
+
+2. **Framework-agnostic Selectors**:
+
+   - Attribute selectors resilient to class changes
+   - Multiple selector strategies for redundancy
+   - High-specificity CSS rules to override framework styles
+
+3. **Performance Considerations**:
+   - Throttled DOM operations
+   - Batched style updates
+   - Optimized selector generation
+
+The enhanced blur persistence system ensures that once an image is marked for blurring, it remains blurred even through page navigation, scrolling, or dynamic content updates, providing a seamless user experience while maintaining performance and privacy.
 
 ---
 

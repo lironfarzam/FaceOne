@@ -862,8 +862,7 @@ const imageTracker = {
     images: new Map(), // Map<string, ImageInfo>
     maxSize: 1000,
     cleanupInterval: 60000, // Cleanup every minute
-    // maxAge: 5 * 60 * 1000, // Keep items for 5 minutes
-    maxAge: 1 * 10 * 1000, // Keep items for 10 seconds
+    maxAge: 3 * 60 * 1000, // Keep items for 180 seconds (3 minutes)
 
     
     constructor() {
@@ -927,6 +926,13 @@ const imageTracker = {
     
     clear() {
         this.images.clear();
+    },
+    
+    normalizeImageUrl(url) {
+        // This method should be implemented to normalize image URLs
+        // For example, you can use a URL normalization library or custom logic
+        // Return a normalized URL string
+        return url;
     }
 };
 
@@ -1170,7 +1176,69 @@ async function normalizeImageRotation(img) {
 
 // Update the detectFacesWithFaceApi function to use the helper
 async function detectFacesWithFaceApi(img) {
-    const wrapper = createWrapper(img);
+    // Rest of the code...
+    
+    // Get wrapper and check if it exists
+    const wrapper = findOrCreateWrapper(img);
+    if (!wrapper) return false;
+    
+    // Get image source
+    const src = img.src || img.getAttribute('xlink:href');
+    
+    // Check if source exists
+    if (!src) return false;
+    
+    // Check if this image is already in our blur tracker
+    if (blurTracker && blurTracker.shouldBlur(src)) {
+        // Apply blur effect directly
+        img.style.filter = 'blur(10px)';
+        img.classList.add('blurred-image');
+        img.setAttribute('data-faceone-processed', 'blurred');
+        
+        if (flagShowFrameonImage.addLabel) {
+            addResultIndicator(wrapper, 'Image blurred - From saved list');
+        }
+        
+        // Mark as processed but don't run further detection
+        try {
+            imageTracker.markProcessed(src, true, true);
+            // Also mark in processedImageTracker
+            processedImageTracker.mark(img, 'blurred');
+        } catch (error) {
+            console.error('Error marking image as processed:', error);
+        }
+        return;
+    }
+    
+    // Check if this image was previously blurred but has expired
+    if (blurTracker && blurTracker.wasBlurredBefore(src)) {
+        console.log('Detected previously blurred image, automatically renewing:', src.substring(0, 50) + '...');
+        
+        // Automatically reactivate blur
+        blurTracker.markForBlur(src);
+        
+        // Apply blur effect
+        img.style.filter = 'blur(10px)';
+        img.classList.add('blurred-image');
+        img.setAttribute('data-faceone-processed', 'blurred');
+        img.setAttribute('data-auto-renewed', 'true');
+        
+        if (flagShowFrameonImage.addLabel) {
+            addResultIndicator(wrapper, 'Image auto-reblurred - Previously detected');
+        }
+        
+        // Mark as processed but don't run further detection
+        try {
+            imageTracker.markProcessed(src, true, true);
+            // Also mark in processedImageTracker
+            processedImageTracker.mark(img, 'blurred');
+        } catch (error) {
+            console.error('Error marking image as processed:', error);
+        }
+        return;
+    }
+    
+    // Continue with regular processing for new images...
     const processingKey = `processing_${Date.now()}`;
     wrapper.setAttribute('data-processing-key', processingKey);
     
@@ -1179,8 +1247,6 @@ async function detectFacesWithFaceApi(img) {
             ensureModelsLoaded(),
             loadPositiveEmbeddings()
         ]);
-        
-        const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
         
         if (flagShowFrameonImage.addLabel) {
             addLoadingIndicator(wrapper);
@@ -1202,7 +1268,7 @@ async function detectFacesWithFaceApi(img) {
         // Try multiple angles if initial detection fails
         let detections = [];
         // Expanded angles array to handle more orientations
-        const angles = [0, -15, 15, -30, 30, -45, 45, 90, -90]; 
+        const angles = [0, -45, 45, 90, -90]; 
         
         for (const angle of angles) {
             if (detections.length === 0) {
@@ -1279,13 +1345,30 @@ async function detectFacesWithFaceApi(img) {
                 if (shouldBlur) {
                     // Apply blur effect to the image
                     img.style.filter = 'blur(10px)';
+                    img.classList.add('blurred-image');
+                    img.setAttribute('data-faceone-processed', 'blurred');
+                    
                     if (flagShowFrameonImage.addLabel) {
                         addResultIndicator(wrapper, 'Image blurred - Similar faces detected');
                     }
+                    
+                    // Store in blurTracker for persistence
+                    if (blurTracker) {
+                        blurTracker.markForBlur(src);
+                        console.log('Added to blur list:', src.substring(0, 50) + '...');
+                    }
                 } else {
                     img.style.filter = 'none';
+                    img.classList.remove('blurred-image');
+                    img.setAttribute('data-faceone-processed', 'normal');
+                    
                     if (flagShowFrameonImage.addLabel) {
                         addResultIndicator(wrapper, 'No matching faces detected');
+                    }
+                    
+                    // Remove from blur tracker if it was previously blurred
+                    if (blurTracker && blurTracker.shouldBlur(src)) {
+                        blurTracker.unmarkForBlur(src);
                     }
                 }
             }
@@ -1303,11 +1386,17 @@ async function detectFacesWithFaceApi(img) {
             // Ensure no blur is applied when no faces are detected
             if (flagShowFrameonImage.processingMode === 'blur') {
                 img.style.filter = 'none';
+                
+                // Remove from blur tracker if it was previously blurred
+                if (blurTracker && blurTracker.shouldBlur(src)) {
+                    blurTracker.unmarkForBlur(src);
+                }
             }
         }
         
         // Mark image as processed
         imageTracker.markProcessed(src, true);
+        processedImageTracker.mark(img, 'complete');
         
         // Verify wrapper still exists and matches our processing key
         if (!wrapper.isConnected || wrapper.getAttribute('data-processing-key') !== processingKey) {
@@ -3145,17 +3234,90 @@ async function computeImageSimilarities(src) {
 
 // Add message listener for settings updates
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'SETTINGS_UPDATED') {
-        flagShowFrameonImage = {
-            ...flagShowFrameonImage,
-            ...message.settings
-        };
-        
-        // Reprocess visible images with new settings
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
+    try {
+        if (message.type === 'SETTINGS_UPDATED') {
+            flagShowFrameonImage = {
+                ...flagShowFrameonImage,
+                ...message.settings
+            };
+            
+            // Reprocess visible images with new settings
+            if (flagShowFrameonImage.autoProcessImages) {
+                processExistingImages();
+            }
+            
+            sendResponse({ success: true });
         }
+        else if (message.type === 'REPROCESS_IMAGES') {
+            // Update settings if provided
+            if (message.settings) {
+                flagShowFrameonImage = {
+                    ...flagShowFrameonImage,
+                    ...message.settings
+                };
+            }
+            
+            // Clear processed status to allow reprocessing
+            imageTracker.clear();
+            processedImageTracker.clear();
+            
+            // Reprocess visible images
+            processExistingImages();
+            
+            sendResponse({ success: true });
+        }
+        else if (message.type === 'CLEAR_BLUR_LIST') {
+            // Handle clearing blur list
+            let count = 0;
+            if (blurTracker) {
+                count = blurTracker.clear();
+            }
+            
+            // Refresh all images after a short delay
+            setTimeout(() => {
+                forceProcessAllImages();
+            }, 500);
+            
+            // Return the count of cleared images
+            sendResponse({
+                success: true,
+                count: count
+            });
+        }
+        else if (message.type === 'GET_BLUR_COUNT') {
+            // Get count of blurred images
+            let count = 0;
+            let historicalCount = 0;
+            let autoRenewedCount = 0;
+            
+            if (blurTracker) {
+                count = blurTracker.count();
+                
+                // Get historical count if available
+                if (typeof blurTracker.historicalCount === 'function') {
+                    historicalCount = blurTracker.historicalCount();
+                }
+                
+                // Count auto-renewed images
+                document.querySelectorAll('[data-auto-renewed="true"]').forEach(() => {
+                    autoRenewedCount++;
+                });
+            }
+            
+            sendResponse({
+                success: true,
+                count: count,
+                historicalCount: historicalCount,
+                autoRenewedCount: autoRenewedCount
+            });
+        }
+    } catch (error) {
+        console.error('Error handling message:', error);
+        sendResponse({ success: false, error: error.message });
     }
+    
+    // Keep the message channel open for async response
+    return true;
 });
 
 // Load initial settings
@@ -3304,93 +3466,48 @@ async function initializeExtension() {
         // 0. Preload critical resources
         preloadCriticalResources();
         
-        // 1. Check if the site is restricted
-        const isRestricted = checkIfRestrictedSite() || hasWorkerRestrictions();
-        if (isRestricted) {
-            logWithEmoji('warning', 'initializeExtension', 'Detected restricted site, some features may be limited');
-        }
-        
-        // 2. Initialize image tracker for processing state
-        if (!window.processedImageTracker) {
-            logWithEmoji('setup', 'initializeExtension', 'Initializing image tracker');
-            window.processedImageTracker = processedImageTracker;
-        }
-        
-        // 3. Initialize worker pool with optimal settings
-        const workerPoolInitialized = await initializeWorkerPool();
-        
-        const workerPoolTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Worker pool initialization took ${workerPoolTime.toFixed(0)}ms`);
+        const preloadTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Resource preloading took ${preloadTime.toFixed(0)}ms`);
         stepStartTime = performance.now();
         
-        // 4. Initialize image queue
-        imageQueue = new ImageQueue({
-            batchSize: 5,
-            processingInterval: 300
-        });
-        
-        const queueTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Image queue initialization took ${queueTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 5. Initialize sandbox for TensorFlow (if not restricted)
-        if (!isRestricted) {
-            try {
-                await createSandboxFrame();
-                sandboxInitialized = true;
-                logWithEmoji('success', 'initializeExtension', 'Sandbox initialized successfully');
-            } catch (error) {
-                logWithEmoji('error', 'initializeExtension', `Failed to initialize sandbox: ${error.message}`);
-                sandboxInitialized = false;
-            }
-        } else {
-            logWithEmoji('warning', 'initializeExtension', 'Restricted site, skipping sandbox initialization');
-        }
-        
-        const sandboxTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Sandbox initialization took ${sandboxTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 6. Set up mutation observer
-        setupMutationObserver();
-        
-        const observerTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Mutation observer setup took ${observerTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 7. Set up memory monitoring
-        const memoryMonitoringTimer = setInterval(() => {
-            try {
-                if (typeof TensorMemoryManager !== 'undefined') {
-                    TensorMemoryManager.checkMemory();
-                }
-                
-                // Also check worker pool memory if available
-                if (workerPoolInitialized && workerPool) {
-                    workerPool.checkWorkerMemoryUsage();
-                }
-            } catch (error) {
-                console.error('Memory monitoring error:', error);
-            }
-        }, 30000); // Check every 30 seconds
-        
-        // 8. Load models progressively instead of all at once
-        await loadModelsOnDemand();
+        // 1. Initialize the models
+        await ensureModelsLoaded();
         
         const modelLoadTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Initial model loading took ${modelLoadTime.toFixed(0)}ms`);
+        logWithEmoji('timer', 'initializeExtension', `Model loading took ${modelLoadTime.toFixed(0)}ms`);
         stepStartTime = performance.now();
         
-        // 9. Set up message listeners
-        setupMessageListeners();
+        // 2. Initialize worker pool (if available)
+        if (!hasWorkerRestrictions()) {
+            try {
+                await initializeWorkerPool();
+                workerPoolInitialized = true;
+            } catch (error) {
+                logWithEmoji('warning', 'initializeExtension', `Worker pool initialization failed: ${error.message}`);
+            }
+        } else {
+            logWithEmoji('warning', 'initializeExtension', 'Worker pool disabled due to restrictions');
+        }
         
-        // 10. Process existing images if auto-processing is enabled
+        const workerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Worker initialization took ${workerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 3. Set up image observers
+        observeElements();
+        
+        const observerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Observer setup took ${observerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 4. Set up dynamic CSS updater for Facebook images
+        setupDynamicCssUpdater();
+        logWithEmoji('setup', 'initializeExtension', 'Dynamic CSS updater initialized');
+        
+        // 5. Process existing images
         if (flagShowFrameonImage.autoProcessImages) {
             processExistingImages();
         }
-        
-        // Mark as initialized
-        extensionInitialized = true;
         
         // Total initialization time
         const totalTime = performance.now() - startTime;
@@ -3399,10 +3516,6 @@ async function initializeExtension() {
         return true;
     } catch (error) {
         logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
-        
-        // Even with errors, mark as initialized with limited functionality
-        extensionInitialized = true;
-        
         return false;
     }
 }
@@ -3685,93 +3798,48 @@ async function initializeExtension() {
         // 0. Preload critical resources
         preloadCriticalResources();
         
-        // 1. Check if the site is restricted
-        const isRestricted = checkIfRestrictedSite() || hasWorkerRestrictions();
-        if (isRestricted) {
-            logWithEmoji('warning', 'initializeExtension', 'Detected restricted site, some features may be limited');
-        }
-        
-        // 2. Initialize image tracker for processing state
-        if (!window.processedImageTracker) {
-            logWithEmoji('setup', 'initializeExtension', 'Initializing image tracker');
-            window.processedImageTracker = processedImageTracker;
-        }
-        
-        // 3. Initialize worker pool with optimal settings
-        const workerPoolInitialized = await initializeWorkerPool();
-        
-        const workerPoolTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Worker pool initialization took ${workerPoolTime.toFixed(0)}ms`);
+        const preloadTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Resource preloading took ${preloadTime.toFixed(0)}ms`);
         stepStartTime = performance.now();
         
-        // 4. Initialize image queue
-        imageQueue = new ImageQueue({
-            batchSize: 5,
-            processingInterval: 300
-        });
-        
-        const queueTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Image queue initialization took ${queueTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 5. Initialize sandbox for TensorFlow (if not restricted)
-        if (!isRestricted) {
-            try {
-                await createSandboxFrame();
-                sandboxInitialized = true;
-                logWithEmoji('success', 'initializeExtension', 'Sandbox initialized successfully');
-            } catch (error) {
-                logWithEmoji('error', 'initializeExtension', `Failed to initialize sandbox: ${error.message}`);
-                sandboxInitialized = false;
-            }
-        } else {
-            logWithEmoji('warning', 'initializeExtension', 'Restricted site, skipping sandbox initialization');
-        }
-        
-        const sandboxTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Sandbox initialization took ${sandboxTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 6. Set up mutation observer
-        setupMutationObserver();
-        
-        const observerTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Mutation observer setup took ${observerTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 7. Set up memory monitoring
-        const memoryMonitoringTimer = setInterval(() => {
-            try {
-                if (typeof TensorMemoryManager !== 'undefined') {
-                    TensorMemoryManager.checkMemory();
-                }
-                
-                // Also check worker pool memory if available
-                if (workerPoolInitialized && workerPool) {
-                    workerPool.checkWorkerMemoryUsage();
-                }
-            } catch (error) {
-                console.error('Memory monitoring error:', error);
-            }
-        }, 30000); // Check every 30 seconds
-        
-        // 8. Load models progressively instead of all at once
-        await loadModelsOnDemand();
+        // 1. Initialize the models
+        await ensureModelsLoaded();
         
         const modelLoadTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Initial model loading took ${modelLoadTime.toFixed(0)}ms`);
+        logWithEmoji('timer', 'initializeExtension', `Model loading took ${modelLoadTime.toFixed(0)}ms`);
         stepStartTime = performance.now();
         
-        // 9. Set up message listeners
-        setupMessageListeners();
+        // 2. Initialize worker pool (if available)
+        if (!hasWorkerRestrictions()) {
+            try {
+                await initializeWorkerPool();
+                workerPoolInitialized = true;
+            } catch (error) {
+                logWithEmoji('warning', 'initializeExtension', `Worker pool initialization failed: ${error.message}`);
+            }
+        } else {
+            logWithEmoji('warning', 'initializeExtension', 'Worker pool disabled due to restrictions');
+        }
         
-        // 10. Process existing images if auto-processing is enabled
+        const workerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Worker initialization took ${workerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 3. Set up image observers
+        observeElements();
+        
+        const observerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Observer setup took ${observerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 4. Set up dynamic CSS updater for Facebook images
+        setupDynamicCssUpdater();
+        logWithEmoji('setup', 'initializeExtension', 'Dynamic CSS updater initialized');
+        
+        // 5. Process existing images
         if (flagShowFrameonImage.autoProcessImages) {
             processExistingImages();
         }
-        
-        // Mark as initialized
-        extensionInitialized = true;
         
         // Total initialization time
         const totalTime = performance.now() - startTime;
@@ -3780,10 +3848,6 @@ async function initializeExtension() {
         return true;
     } catch (error) {
         logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
-        
-        // Even with errors, mark as initialized with limited functionality
-        extensionInitialized = true;
-        
         return false;
     }
 }
@@ -4334,4 +4398,206 @@ async function forceProcessAllImages() {
     
     // Now process all images again
     await processExistingImages();
+}
+
+// Find the handleImageVisible function and modify it to check blurTracker first
+function handleImageVisible(entry) {
+    const img = entry.target;
+    
+    if (!img || !isValidElement(img)) {
+        return;
+    }
+    
+    // Get image source
+    const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
+    
+    // Skip if no source
+    if (!src) {
+        return;
+    }
+    
+    // Check if this image is currently in the blur list
+    if (blurTracker && blurTracker.shouldBlur(src)) {
+        // Create wrapper for the image if it doesn't exist
+        const wrapper = findOrCreateWrapper(img);
+        if (wrapper) {
+            // Immediately apply blur without needing to process again
+            img.style.filter = 'blur(10px)';
+            img.classList.add('blurred-image');
+            img.classList.add('blurred-by-url'); // Add this class for CSS targeting
+            img.setAttribute('data-faceone-processed', 'blurred');
+            
+            // Set a custom attribute with the normalized URL for debugging
+            try {
+                const normalizedUrl = blurTracker.normalizeImageUrl(src);
+                img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
+            } catch (e) {
+                // Ignore errors in URL normalization
+            }
+            
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, 'Image blurred - From saved list');
+            }
+        }
+        
+        // Mark as processed in imageTracker to prevent redundant processing
+        if (imageTracker) {
+            try {
+                imageTracker.markProcessed(src, true, true);
+            } catch (error) {
+                console.error('Error marking image as processed:', error);
+            }
+        }
+        
+        // Also mark in processedImageTracker
+        if (processedImageTracker && typeof processedImageTracker.mark === 'function') {
+            processedImageTracker.mark(img, 'blurred');
+        }
+        
+        return; // Skip processing - we already know it needs blurring
+    }
+    
+    // Check if this image was previously blurred but has expired
+    if (blurTracker && blurTracker.wasBlurredBefore(src)) {
+        console.log('Found previously blurred image that expired, automatically renewing:', src.substring(0, 50) + '...');
+        
+        // Create wrapper for the image if it doesn't exist
+        const wrapper = findOrCreateWrapper(img);
+        if (wrapper) {
+            // Automatically reactivate blur
+            blurTracker.markForBlur(src);
+            
+            // Apply blur effect
+            img.style.filter = 'blur(10px)';
+            img.classList.add('blurred-image');
+            img.classList.add('blurred-by-url');
+            img.setAttribute('data-faceone-processed', 'blurred');
+            img.setAttribute('data-auto-renewed', 'true');
+            
+            // Set a custom attribute with the normalized URL for debugging
+            try {
+                const normalizedUrl = blurTracker.normalizeImageUrl(src);
+                img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
+            } catch (e) {
+                // Ignore errors in URL normalization
+            }
+            
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, 'Image auto-reblurred - Previously detected');
+            }
+        }
+        
+        // Mark as processed
+        if (imageTracker) {
+            try {
+                imageTracker.markProcessed(src, true, true);
+            } catch (error) {
+                console.error('Error marking image as processed:', error);
+            }
+        }
+        
+        // Also mark in processedImageTracker
+        if (processedImageTracker && typeof processedImageTracker.mark === 'function') {
+            processedImageTracker.mark(img, 'blurred');
+        }
+        
+        return; // Skip further processing
+    }
+    
+    // Continue with normal processing for unrecognized images
+    if (shouldProcessImage(img) && !processedImageTracker.isProcessed(img)) {
+        processImage(img);
+    }
+}
+
+/**
+ * Finds an existing wrapper for an image or creates a new one
+ * @param {HTMLElement} img - The image element
+ * @returns {HTMLElement|null} - The wrapper element or null if not found/created
+ */
+function findOrCreateWrapper(img) {
+    if (!img) return null;
+    
+    // Check if there's already a wrapper for this image
+    if (img.parentElement && img.parentElement.classList.contains('faceone-wrapper')) {
+        return img.parentElement;
+    }
+    
+    // If not, create a new wrapper
+    try {
+        return createWrapper(img);
+    } catch (error) {
+        console.error('Error creating wrapper:', error);
+        return null;
+    }
+}
+
+// Inject dynamic CSS rules for specific URLs
+function injectDynamicCssRules() {
+    // Don't inject if blurTracker isn't available
+    if (!blurTracker || blurTracker.blurredImages.size === 0) return;
+    
+    try {
+        // Create a style element if it doesn't exist yet
+        let styleEl = document.getElementById('faceone-dynamic-styles');
+        if (!styleEl) {
+            styleEl = document.createElement('style');
+            styleEl.id = 'faceone-dynamic-styles';
+            document.head.appendChild(styleEl);
+        }
+        
+        // Generate CSS rules for each blurred URL
+        let cssRules = '';
+        for (const [url, _] of blurTracker.blurredImages.entries()) {
+            // Create a safe selector from the URL
+            try {
+                // Extract just the filename part of the URL
+                const urlObj = new URL(url);
+                const pathParts = urlObj.pathname.split('/');
+                const filename = pathParts[pathParts.length - 1].split('.')[0];
+                
+                if (filename && filename.length > 5) {
+                    // Create a selector that targets images with this filename in their src
+                    cssRules += `img[src*="${filename}"] { filter: blur(10px) !important; }\n`;
+                }
+            } catch (e) {
+                console.error('Error generating CSS for URL', url, e);
+            }
+        }
+        
+        // Add the rules to the style element
+        styleEl.textContent = cssRules;
+        
+        console.log(`Injected ${blurTracker.blurredImages.size} dynamic CSS rules for blurring`);
+    } catch (error) {
+        console.error('Error injecting dynamic CSS rules:', error);
+    }
+}
+
+// Setup function to periodically update dynamic CSS
+function setupDynamicCssUpdater() {
+    // Initial injection
+    injectDynamicCssRules();
+    
+    // Periodically update the CSS rules
+    setInterval(() => {
+        injectDynamicCssRules();
+    }, 5000); // Every 5 seconds
+}
+
+// Add this to the initialization process
+async function initializeExtension() {
+    const startTime = performance.now();
+    logWithEmoji('start', 'initializeExtension', 'Starting extension initialization');
+    
+    if (extensionInitialized) {
+        logWithEmoji('info', 'initializeExtension', 'Extension already initialized, skipping');
+        return true;
+    }
+    
+    // ...existing initialization code...
+    
+    setupDynamicCssUpdater(); // Add this line to set up the dynamic CSS updater
+    
+    // ...rest of the initialization code...
 }

@@ -31,6 +31,7 @@
       "js": [
         "js/utils.js",
         "lib/face-api.min.js",
+        "js/blurTracker.js",
         "js/workerPool.js",
         "js/content.js"
       ],

@@ -10,6 +10,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const confidenceSlider = document.getElementById('confidenceThreshold');
     const confidenceValue = document.getElementById('confidenceValue');
     const reprocessButton = document.getElementById('reprocessButton');
+    const clearBlurListButton = document.getElementById('clearBlurListButton');
+    const blurredCount = document.getElementById('blurredCount');
     const statusIndicator = document.getElementById('statusIndicator');
 
     // Verify elements are found
@@ -39,6 +41,9 @@ document.addEventListener('DOMContentLoaded', function() {
         frameFaceCheckbox.checked = items.frameFaceDetected;
         confidenceSlider.value = items.confidenceThreshold;
         confidenceValue.textContent = `${items.confidenceThreshold}%`;
+        
+        // Check for blurred images count
+        updateBlurredImagesCount();
     });
 
     // Mode switching
@@ -130,6 +135,62 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    // Clear blur list button
+    clearBlurListButton.addEventListener('click', function() {
+        if (this.disabled) return;
+        
+        this.disabled = true;
+        showStatus('Clearing blurred images list...');
+
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+            if (tabs[0]) {
+                chrome.tabs.sendMessage(tabs[0].id, {
+                    type: 'CLEAR_BLUR_LIST'
+                }, function(response) {
+                    clearBlurListButton.disabled = false;
+                    if (response && response.success) {
+                        showStatus(`Cleared ${response.count} blurred images`);
+                        updateBlurredImagesCount();
+                    } else {
+                        showStatus('Error clearing blur list');
+                    }
+                });
+
+                // Fallback in case content script doesn't respond
+                setTimeout(() => {
+                    if (clearBlurListButton.disabled) {
+                        clearBlurListButton.disabled = false;
+                        showStatus('Clear timeout - please try again');
+                    }
+                }, 5000);
+            }
+        });
+    });
+    
+    // Function to update the number of blurred images
+    function updateBlurredImagesCount() {
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+            if (tabs[0]) {
+                chrome.tabs.sendMessage(tabs[0].id, {
+                    type: 'GET_BLUR_COUNT'
+                }, function(response) {
+                    if (response && response.success) {
+                        const blurredCount = document.getElementById('blurredCount');
+                        if (response.historicalCount !== undefined) {
+                            blurredCount.textContent = `Active: ${response.count} | Auto-renewed: ${response.autoRenewedCount || 0} | Historical: ${response.historicalCount}`;
+                            blurredCount.title = 'Active: Currently blurred images\nAuto-renewed: Images that were automatically reblurred\nHistorical: Previously blurred images';
+                        } else {
+                            blurredCount.textContent = `Blurred images: ${response.count}`;
+                        }
+                    } else {
+                        const blurredCount = document.getElementById('blurredCount');
+                        blurredCount.textContent = 'Blurred images: unavailable';
+                    }
+                });
+            }
+        });
+    }
 
     // Helper function to update UI based on mode
     function updateUIForMode(mode) {

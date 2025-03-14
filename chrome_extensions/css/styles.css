@@ -267,3 +267,49 @@ input:checked + .slider-toggle:before {
     font-family: 'Material Icons';
     font-size: 20px;
 }
+
+.blur-count {
+    font-size: 12px;
+    color: #666;
+    text-align: center;
+    margin: 10px 0;
+    padding: 5px;
+    background-color: #f5f5f5;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+}
+
+/* Enhanced CSS for persistent image blurring */
+img[data-faceone-processed="blurred"] {
+    filter: blur(10px) !important;
+}
+
+.blurred-image {
+    filter: blur(10px) !important;
+}
+
+.faceone-wrapper img.blurred-image {
+    filter: blur(10px) !important;
+}
+
+/* Facebook-specific targeting */
+.xzg4506[data-faceone-processed="blurred"],
+.x4xrfw5[data-faceone-processed="blurred"],
+.x30kzoy[data-faceone-processed="blurred"],
+img.xzg4506.blurred-image,
+img.x4xrfw5.blurred-image,
+img.x30kzoy.blurred-image {
+    filter: blur(10px) !important;
+}
+
+/* Super aggressive targeting - this makes all images that match our blur list get blurred */
+img.blurred-by-url {
+    filter: blur(10px) !important;
+}
+
+/* Target Facebook's various image containers */
+[role="img"] .blurred-image,
+[data-visualcompletion="media-vc-image"] .blurred-image,
+[data-type="profile_picture"] .blurred-image {
+    filter: blur(10px) !important;
+}
