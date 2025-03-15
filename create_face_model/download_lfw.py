@@ -134,7 +134,10 @@ def download_via_kagglehub(output_dir):
 
             if image_count > 0:
                 print_green(f"Found {image_count}+ images in the downloaded dataset")
-                return lfw_dir
+                return (
+                    lfw_dir,
+                    True,
+                )  # Return True as second value to indicate it's a kagglehub download
             else:
                 print_warning("Downloaded directory exists but contains no images")
                 # No need to remove it, we'll use the path as is
@@ -149,14 +152,17 @@ def download_via_kagglehub(output_dir):
             ]
             if image_files:
                 print_green(f"Found {len(image_files)} images in {root}")
-                return root
+                return (
+                    root,
+                    True,
+                )  # Return True as second value to indicate it's a kagglehub download
 
         print_red("Could not find any face images in Kaggle download")
-        return None
+        return None, False
 
     except Exception as e:
         print_red(f"Error downloading via kagglehub: {str(e)}")
-        return None
+        return None, False
 
 
 def download_file(url, destination):
@@ -322,7 +328,9 @@ def main():
     os.makedirs(temp_dir, exist_ok=True)
 
     # First try using kagglehub (preferred method)
-    kaggle_lfw_dir = download_via_kagglehub(temp_dir)
+    kaggle_result = download_via_kagglehub(temp_dir)
+    kaggle_lfw_dir = kaggle_result[0]
+    is_kaggle_download = kaggle_result[1] if len(kaggle_result) > 1 else False
 
     if kaggle_lfw_dir:
         # Successfully downloaded via kagglehub
@@ -337,10 +345,27 @@ def main():
             )
 
             # Clean up temporary files
-            print_blue("Cleaning up temporary files...")
+            print_blue("Cleaning up downloaded files...")
             try:
-                # We don't remove kaggle_dir because kagglehub manages its own cache
-                pass
+                # Clean up kaggle files if possible
+                if is_kaggle_download:
+                    # For kagglehub downloads, we can try to clear cache
+                    # But this might not be necessary as kagglehub manages its own cache
+                    try:
+                        import kagglehub
+
+                        # Try to use the experimental clear_cache feature if available
+                        if hasattr(kagglehub, "clear_cache"):
+                            kagglehub.clear_cache()
+                            print_green("Cleared kagglehub cache")
+                    except Exception as e:
+                        print_warning(f"Could not clear kagglehub cache: {str(e)}")
+
+                # Delete the temporary directory
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    print_green("Temporary download directory removed")
+
             except Exception as e:
                 print_red(f"Error during cleanup: {str(e)}")
 
@@ -404,7 +429,9 @@ def main():
 
                 # Clean up temp directory
                 try:
-                    shutil.rmtree(temp_dir)
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        print_green("Temporary download directory removed")
                 except Exception as e:
                     print_red(f"Error removing temporary files: {str(e)}")
 
@@ -413,6 +440,15 @@ def main():
                 # Create minimal negative examples
                 print_warning("Creating minimal synthetic negative examples...")
                 create_synthetic_negative_examples(negative_path)
+
+                # Clean up temp directory
+                try:
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        print_green("Temporary download directory removed")
+                except Exception as e:
+                    print_red(f"Error removing temporary files: {str(e)}")
+
                 return 0  # Return success to continue the pipeline
 
     # Continue with extraction if download was successful
@@ -421,6 +457,15 @@ def main():
         extract_path = os.path.join(temp_dir, "extracted")
         if not extract_archive(archive_path, extract_path):
             print_red("Failed to extract LFW dataset")
+            # Clean up failed extraction
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    print_green(
+                        "Temporary download directory removed after failed extraction"
+                    )
+            except Exception as e:
+                print_red(f"Error removing temporary files: {str(e)}")
             return 1
 
         # Find the LFW directory
@@ -432,6 +477,15 @@ def main():
 
         if not lfw_dir:
             print_red("Could not find LFW directory in extracted files")
+            # Clean up failed process
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    print_green(
+                        "Temporary download directory removed after failed directory lookup"
+                    )
+            except Exception as e:
+                print_red(f"Error removing temporary files: {str(e)}")
             return 1
 
         # Copy images to negative path
@@ -439,13 +493,23 @@ def main():
 
         if image_count == 0:
             print_red("No images were copied to the negative examples directory")
+            # Clean up failed process
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    print_green(
+                        "Temporary download directory removed after failed image copy"
+                    )
+            except Exception as e:
+                print_red(f"Error removing temporary files: {str(e)}")
             return 1
 
-        # Clean up temporary files (optional)
-        print_blue("Cleaning up temporary files...")
+        # Clean up all temporary files
+        print_blue("Cleaning up all downloaded files...")
         try:
-            shutil.rmtree(temp_dir)
-            print_green("Temporary files removed")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+                print_green("All temporary files and downloads removed")
         except Exception as e:
             print_red(f"Error removing temporary files: {str(e)}")
 
