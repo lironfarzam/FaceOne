@@ -20,6 +20,9 @@ FaceOne is a powerful Chrome extension that provides real-time face detection an
 14. [Development and Contribution](#development-and-contribution)
 15. [Scientific Foundations](#scientific-foundations)
 16. [Recent Improvements: Enhanced Blur Persistence](#recent-improvements-enhanced-blur-persistence)
+17. [Error Handling and Recovery](#error-handling-and-recovery)
+18. [State Management](#state-management)
+19. [Debugging and Troubleshooting](#debugging-and-troubleshooting)
 
 ## Overview
 
@@ -43,6 +46,7 @@ FaceOne uses a multi-layered architecture to ensure performance, security, and r
 4. **UI Layer**: Provides user controls through a popup interface
 5. **Storage Layer**: Manages persistent data for blurred images and settings
 6. **Mutation Observer Layer**: Monitors DOM changes to handle dynamically loaded content
+7. **Image Tracking Layer**: Maintains processing state of images to prevent redundant processing and ensure consistency
 
 ## Core Components
 
@@ -119,22 +123,45 @@ The blur tracker is a lightweight system for managing blurred images:
 - Implements timestamp-based cleanup for old entries
 - Monitors DOM changes to apply blur effects to newly added images
 
+### 8. Image Processing Tracker (processedImageTracker)
+
+The image processing tracker manages the state of processed images:
+
+- Tracks which images have been processed and their current state ('pending', 'complete', 'failed', 'skipped', 'blurred')
+- Prevents redundant processing of images that have already been handled
+- Maintains processing state between DOM updates and page navigation
+- Uses efficient hashing of image properties for fast lookups
+- Provides attribute-based marking for quick visual checks in the DOM
+
+### 9. Embeddings Storage (models/embeddings)
+
+The embeddings directory stores generated face embeddings for later comparison:
+
+- Contains pre-processed face embeddings in a compact format
+- Enables faster face recognition through pre-computed representations
+- Supports persistent storage of known faces for consistent recognition
+- Organizes embeddings in an efficient format for quick similarity comparisons
+- Reduces computation needs by avoiding regeneration of common embeddings
+
 ## File Structure
 
 ```
 chrome_extensions/
 ├── manifest.json       # Extension configuration
 ├── popup.html          # User interface HTML
-├── popup.js            # UI interaction logic
 ├── sandbox.html        # Isolated TensorFlow environment
 ├── css/
-│   └── styles.css      # UI styling
+│   ├── styles.css      # UI styling
+│   └── popup.css       # Popup-specific styling
 ├── js/
 │   ├── content.js      # Main content script
 │   ├── workerPool.js   # Worker management
 │   ├── imageWorker.js  # Image processing worker
 │   ├── sandboxInit.js  # TensorFlow initialization
-│   └── blurTracker.js  # Blurred image management
+│   ├── sandbox.js      # TensorFlow sandbox operations
+│   ├── blurTracker.js  # Blurred image management
+│   ├── popup.js        # UI interaction logic
+│   └── utils.js        # Shared utility functions
 ├── lib/
 │   ├── face-api.min.js # Face detection library
 │   ├── tf.min.js       # TensorFlow.js core
@@ -142,7 +169,11 @@ chrome_extensions/
 ├── models/
 │   ├── FaceAPI/        # Face detection models
 │   ├── FaceNet/        # Face embedding models
-│   └── myModel/        # Custom similarity model
+│   ├── myModel/        # Custom similarity model
+│   ├── embeddings/     # Stored face embeddings
+│   ├── face_recognition_model-shard1 # Face recognition model
+│   ├── face_landmark_68_model-shard1 # Facial landmark model
+│   └── face_expression_model-shard1 # Expression analysis model
 └── icons/              # Extension icons
 ```
 
@@ -150,17 +181,78 @@ chrome_extensions/
 
 The extension follows this workflow for processing images:
 
-1. **Image Detection**: The content script observes the DOM for new images
-2. **Queue Management**: Images are added to a processing queue with priority
-3. **Worker Assignment**: The worker pool assigns images to available workers
-4. **Pre-processing**: Workers prepare images for model input
-5. **Face Detection**: The sandbox detects faces using FaceAPI.js
-6. **Embedding Generation**: For detected faces, embeddings are generated using FaceNet
-7. **Similarity Comparison**: Embeddings are compared against known faces
-8. **Visualization**: Results are displayed on the page (frames, labels)
-9. **Action Application**: Based on settings, actions like blurring may be applied
-10. **Result Storage**: Blurred image information is stored for persistence
-11. **DOM Monitoring**: MutationObserver watches for new content and applies saved settings
+1. **Extension Initialization**:
+
+   - Preloads critical resources to optimize performance
+   - Initializes machine learning models with proper error handling
+   - Sets up worker pool for parallel processing if available
+   - Configures dynamic CSS updater for persistent styling
+   - Initializes image tracking system
+
+2. **Image Detection**:
+
+   - The content script observes the DOM for new images
+   - Images are filtered based on size and validity
+   - Valid images are added to the processing queue
+
+3. **Queue Management**:
+
+   - Images are added to a processing queue with priority
+   - Visible images are prioritized over off-screen images
+   - Queue is processed based on resource availability
+
+4. **Worker Assignment**:
+
+   - The worker pool assigns images to available workers
+   - Tasks are distributed evenly among workers
+   - Worker health and performance are monitored
+
+5. **Pre-processing**:
+
+   - Workers prepare images for model input
+   - Images are resized to optimal dimensions
+   - Color normalization and format conversion is applied
+
+6. **Face Detection**:
+
+   - The sandbox detects faces using FaceAPI.js
+   - Different models are used based on image size
+   - Multiple detection attempts with different orientations if needed
+
+7. **Embedding Generation**:
+
+   - For detected faces, embeddings are generated using FaceNet
+   - 512-dimensional vector represents each face's features
+   - Embeddings are normalized for consistent comparison
+
+8. **Similarity Comparison**:
+
+   - Embeddings are compared against known faces
+   - Cosine similarity determines match confidence
+   - Threshold application determines final match/no-match decision
+
+9. **Visualization**:
+
+   - Results are displayed on the page (frames, labels)
+   - Color coding indicates match confidence
+   - Text labels show similarity percentages
+
+10. **Action Application**:
+
+    - Based on settings, actions like blurring may be applied
+    - CSS filters apply blur effects to matching images
+    - Visual indicators show processing status
+
+11. **Result Storage**:
+
+    - Blurred image information is stored for persistence
+    - Processing state is tracked to prevent redundant work
+    - URL normalization ensures consistent recognition
+
+12. **DOM Monitoring**:
+    - MutationObserver watches for new content
+    - Newly added images are processed automatically
+    - Dynamic content changes trigger reapplication of settings
 
 ## Technical Details
 
@@ -354,8 +446,9 @@ FaceOne implements several optimizations for smooth operation:
 4. **Model Caching**: Reuses loaded models to reduce memory usage
 
    - Single instance of TensorFlow models
-   - Incremental model loading
-   - Memory-aware model management
+   - Incremental model loading with dependency awareness
+   - Memory-aware model management with automatic cleanup
+   - State tracking to prevent redundant load attempts
 
 5. **Embedding Caching**: Stores computed embeddings to avoid redundant processing
 
@@ -391,6 +484,67 @@ FaceOne implements several optimizations for smooth operation:
     - Extraction of essential URL components
     - Parameter filtering for consistency
     - Pattern matching for similar resources
+
+## Behind the Scenes: Code Execution Flow
+
+Understanding the extension's execution flow helps developers and advanced users troubleshoot issues:
+
+1. **Extension Load**
+
+   - Chrome loads extension based on manifest.json
+   - Content scripts are injected into web pages
+   - Background scripts initialize if specified
+
+2. **DOM Ready Event**
+
+   - Extension waits for DOMContentLoaded event
+   - Initial configuration is loaded from storage
+   - UI initialization begins
+
+3. **Resource Preloading**
+
+   - Critical resources are preloaded
+   - Libraries like TensorFlow.js and FaceAPI.js are prepared
+   - Model paths and configurations are resolved
+
+4. **Sandbox Creation**
+
+   - Sandbox iframe is created for isolated execution
+   - Security policies are applied
+   - Message channels are established for communication
+
+5. **Model Loading Sequence**
+
+   - TensorFlow.js backend is initialized
+   - Face detection models are loaded
+   - FaceNet embedding model is loaded and warmed up
+   - Similarity model is prepared if available
+
+6. **DOM Observation Setup**
+
+   - MutationObserver is configured for DOM changes
+   - Intersection Observer watches for visible images
+   - Event listeners register for user interactions
+
+7. **Image Processing Pipeline**
+
+   - Images are discovered through DOM traversal
+   - Processing queue manages image prioritization
+   - Worker pool distributes tasks to available workers
+   - Face detection and embedding generation execute in sandbox
+   - Results are applied to the UI based on mode settings
+
+8. **UI Interactions**
+
+   - User changes settings via popup interface
+   - Settings are stored in Chrome storage
+   - Content script receives updates via messaging
+   - Visual changes apply immediately where possible
+
+9. **Cleanup and Shutdown**
+   - Resources are released when tabs close
+   - Memory is freed when processing completes
+   - State is saved for persistence across sessions
 
 ## Advanced Techniques: Image Processing
 
@@ -738,10 +892,12 @@ Contributions are welcome! Please follow these guidelines:
 When contributing, please follow these code organization principles:
 
 1. **Modularity**: Keep components isolated and focused
-2. **Error Handling**: Implement robust error recovery
+2. **Error Handling**: Implement robust error recovery with graceful degradation
 3. **Performance**: Consider resource usage and efficiency
-4. **Documentation**: Comment complex algorithms and approaches
+4. **Documentation**: Use JSDoc-style comments for all functions and complex algorithms
 5. **Compatibility**: Ensure broad browser support
+6. **State Management**: Maintain clear state transitions and initialization procedures
+7. **Testing**: Include unit tests for new functionality
 
 ## Scientific Foundations
 
@@ -1026,6 +1182,87 @@ Special considerations were implemented for modern framework compatibility:
    - Optimized selector generation
 
 The enhanced blur persistence system ensures that once an image is marked for blurring, it remains blurred even through page navigation, scrolling, or dynamic content updates, providing a seamless user experience while maintaining performance and privacy.
+
+## Error Handling and Recovery
+
+FaceOne implements comprehensive error handling to ensure reliability:
+
+1. **Graceful Initialization Failures**:
+
+   - Progressive initialization of components with check points
+   - Fallback modes for when specific components fail
+   - Clear error reporting with diagnostic information
+
+2. **Model Loading Recovery**:
+
+   - Automatic retry mechanism for failed model loading
+   - Fallback to simplified models when advanced models fail
+   - State tracking to prevent repeated failure loops
+
+3. **Processing Error Isolation**:
+
+   - Individual image processing errors don't affect other images
+   - Failed images are marked to prevent repeated failures
+   - Error state clearing during reprocessing requests
+
+4. **Memory Management Safety**:
+   - Checks for memory leaks and high usage patterns
+   - Automatic cleanup of unused resources
+   - Worker recycling to prevent memory accumulation
+
+## State Management
+
+FaceOne implements a robust state management system:
+
+1. **Extension State**:
+
+   - Tracks overall initialization status
+   - Monitors model loading progress
+   - Manages processing queues and active tasks
+
+2. **Image Tracking**:
+
+   - `processedImageTracker` maintains image processing states
+   - Efficient state lookups using image identifiers
+   - Persistent state across DOM updates
+
+3. **Model State**:
+
+   - Tracks loading status of ML models
+   - Monitors warmup state for optimal performance
+   - Manages fallback modes for unavailable models
+
+4. **Worker State**:
+   - Monitors worker health and performance
+   - Tracks tasks assigned to each worker
+   - Manages worker recycling for memory optimization
+
+## Debugging and Troubleshooting
+
+FaceOne includes built-in tools to aid in troubleshooting:
+
+1. **Debug Mode**:
+
+   - Enables verbose console logging
+   - Shows detailed processing steps and timing information
+   - Accessible through the extension popup UI
+
+2. **Processing Indicators**:
+
+   - Visual indicators show current processing state
+   - Error states are clearly displayed for troubleshooting
+   - Processing completion indicators with success/failure status
+
+3. **State Inspection**:
+
+   - Image processing states can be inspected via data attributes
+   - DOM element wrappers provide visual state information
+   - Console logging of key processing events
+
+4. **Common Error Resolution**:
+   - Refreshing the page resets extension state
+   - "Reprocess Images" button forces clean reprocessing
+   - Clear settings option for complete reset
 
 ---
 
