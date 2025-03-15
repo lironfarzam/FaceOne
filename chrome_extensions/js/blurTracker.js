@@ -1,26 +1,72 @@
 /**
- * blurTracker.js - Lightweight URL-based image blurring system
- * Only stores URLs of images that need to be blurred, without keeping embeddings
+ * @fileoverview blurTracker.js - Lightweight URL-based image blurring system
+ * 
+ * @author Liron Farzam
+ * @version 1.0.0
+ * @license MIT
+ * 
+ * A lightweight system for tracking and managing image URLs that need to be blurred.
+ * This module only stores URLs of images that require blurring, without keeping embeddings,
+ * making it memory and storage efficient. It handles DOM mutations to catch dynamically 
+ * added images, normalizes URLs (especially for Facebook images), and manages the 
+ * lifecycle of blurred image URLs with automatic expiration and historical tracking.
  */
 
-// Lightweight blurred image tracker
+//==============================================================================
+// MAIN BLUR TRACKER OBJECT
+//==============================================================================
+
 const blurTracker = {
-    // Store URLs with timestamps
+    //--------------------------------------------------------------------------
+    // PROPERTIES
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Map that stores active image URLs with their timestamp of when they were marked
+     * @type {Map<string, number>} - Map of normalized URL to timestamp
+     */
     blurredImages: new Map(),
     
-    // Store historical records of previously blurred images
+    /**
+     * Map that stores historical records of previously blurred images
+     * @type {Map<string, Object>} - Map of normalized URL to historical data object
+     */
     historicalBlurs: new Map(),
     
-    // Minimum age to keep entries (30 minutes in milliseconds)
+    /**
+     * Minimum age to keep entries in active list (30 minutes in milliseconds)
+     * @type {number}
+     * @constant
+     */
     MIN_AGE_MS: 30 * 60 * 1000,
     
-    // History retention (7 days in milliseconds)
+    /**
+     * Maximum age to keep historical entries (7 days in milliseconds)
+     * @type {number}
+     * @constant
+     */
     HISTORY_MAX_AGE: 7 * 24 * 60 * 60 * 1000,
     
-    // Flag to track if we need to save
+    /**
+     * Flag indicating whether data needs to be saved to storage
+     * @type {boolean}
+     */
     needsSave: false,
     
-    // Initialize from storage
+    //--------------------------------------------------------------------------
+    // INITIALIZATION METHODS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Initializes the blur tracker by loading stored data and setting up observers
+     * 
+     * This method:
+     * 1. Loads previously saved blur data from chrome.storage.local
+     * 2. Sets up periodic save timers
+     * 3. Initializes the mutation observer for DOM changes
+     * 
+     * @returns {void}
+     */
     init() {
         logWithEmoji('setup', 'blurTracker.init', 'Initializing blurTracker');
         chrome.storage.local.get(['blurredImageData', 'historicalBlurData'], (result) => {
@@ -43,6 +89,7 @@ const blurTracker = {
                         { count: this.blurredImages.size });
                 } catch (error) {
                     logWithEmoji('error', 'blurTracker.init', 'Error loading blurred image data', error);
+                    // Reset to empty Map on error
                     this.blurredImages = new Map();
                 }
             }
@@ -66,6 +113,7 @@ const blurTracker = {
                         { count: this.historicalBlurs.size });
                 } catch (error) {
                     logWithEmoji('error', 'blurTracker.init', 'Error loading historical blur data', error);
+                    // Reset to empty Map on error
                     this.historicalBlurs = new Map();
                 }
             }
@@ -78,7 +126,16 @@ const blurTracker = {
         this.setupMutationObserver();
     },
     
-    // Start a timer to periodically save data
+    /**
+     * Sets up timers to periodically save blur data to storage
+     * 
+     * Sets up three mechanisms for saving:
+     * 1. Every minute if changes are detected
+     * 2. Every 5 minutes regardless of changes
+     * 3. On page unload if changes are detected
+     * 
+     * @returns {void}
+     */
     startSaveTimer() {
         // Save every minute if needed
         setInterval(() => {
@@ -100,7 +157,15 @@ const blurTracker = {
         });
     },
     
-    // Set up mutation observer to catch newly added images (especially after scrolling)
+    /**
+     * Sets up a MutationObserver to detect and process newly added images in the DOM
+     * 
+     * This method is critical for catching dynamically loaded images, especially
+     * in infinite scrolling scenarios or when content is loaded after initial page load.
+     * 
+     * @returns {void}
+     * @throws Will silently fail if MutationObserver is not supported or document is not available
+     */
     setupMutationObserver() {
         // Only set up if we're in a browser environment with MutationObserver
         if (typeof MutationObserver !== 'undefined' && document && document.body) {
@@ -114,16 +179,24 @@ const blurTracker = {
             
             // Start observing the document with the configured parameters
             observer.observe(document.body, {
-                childList: true,
-                subtree: true,
-                attributes: false
+                childList: true,  // Watch for changes to the direct children
+                subtree: true,    // Watch for changes to the entire subtree
+                attributes: false // Don't track attribute changes (optimized for performance)
             });
             
             logWithEmoji('setup', 'blurTracker.setupMutationObserver', 'MutationObserver setup complete');
         }
     },
     
-    // Process nodes added to the DOM, looking for images that need blurring
+    /**
+     * Processes nodes added to the DOM, identifying and blurring images as needed
+     * 
+     * Recursively checks all newly added DOM nodes for images and processes them
+     * for potential blurring based on stored URLs.
+     * 
+     * @param {NodeList} nodes - Collection of DOM nodes to process
+     * @returns {void}
+     */
     processAddedNodes(nodes) {
         for (const node of nodes) {
             // Skip non-element nodes
@@ -144,12 +217,26 @@ const blurTracker = {
         }
     },
     
-    // Apply blur to image if it's in our list
+    //--------------------------------------------------------------------------
+    // IMAGE PROCESSING METHODS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Applies blur to an image element if its URL is in the blur list
+     * 
+     * Checks if an image should be blurred based on its URL, and applies
+     * CSS blur effect if necessary. Also handles auto-renewal of previously
+     * blurred images.
+     * 
+     * @param {HTMLImageElement} img - The image element to check and potentially blur
+     * @returns {void}
+     */
     applyBlurIfNeeded(img) {
         if (!img || !img.src) return;
         
         const normalizedUrl = this.normalizeImageUrl(img.src);
         if (this.shouldBlur(normalizedUrl)) {
+            // Apply blur to actively tracked images
             logWithEmoji('image', 'blurTracker.applyBlurIfNeeded', 'Applying blur to dynamically added image', 
                 { url: normalizedUrl.substring(0, 50) + '...' });
             img.style.filter = 'blur(10px)';
@@ -167,7 +254,16 @@ const blurTracker = {
         }
     },
     
-    // Normalize URL to handle Facebook's changing parameters
+    /**
+     * Normalizes an image URL to handle platform-specific quirks
+     * 
+     * Particularly focused on Facebook image URLs which often contain changing
+     * parameters while the core image remains the same. Strips out changing
+     * parameters but keeps essential ones.
+     * 
+     * @param {string} url - The original image URL to normalize
+     * @returns {string} - The normalized URL, or original URL if normalization fails
+     */
     normalizeImageUrl(url) {
         try {
             // For Facebook images, strip out changing parameters but keep essential ones
@@ -201,7 +297,19 @@ const blurTracker = {
         }
     },
     
-    // Mark an image for blurring
+    //--------------------------------------------------------------------------
+    // BLUR STATE MANAGEMENT METHODS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Marks an image URL for blurring
+     * 
+     * Adds the image URL to the active blur list with the current timestamp.
+     * If the URL was previously in the historical list, it's removed from there.
+     * 
+     * @param {string} imageUrl - The URL of the image to mark for blurring
+     * @returns {void}
+     */
     markForBlur(imageUrl) {
         if (!imageUrl || typeof imageUrl !== 'string') return;
         
@@ -219,7 +327,15 @@ const blurTracker = {
             { url: normalizedUrl.substring(0, 50) + '...' });
     },
     
-    // Check if an image should be blurred
+    /**
+     * Checks if an image URL should be blurred
+     * 
+     * Determines if an image URL is in the active blur list. If it is,
+     * updates its timestamp to extend its life in the active list.
+     * 
+     * @param {string} imageUrl - The URL of the image to check
+     * @returns {boolean} - True if the image should be blurred, false otherwise
+     */
     shouldBlur(imageUrl) {
         if (!imageUrl || typeof imageUrl !== 'string') return false;
         
@@ -240,7 +356,15 @@ const blurTracker = {
         return isBlurred;
     },
     
-    // Check if an image was previously blurred but expired
+    /**
+     * Checks if an image was previously blurred but expired
+     * 
+     * Determines if an image URL is in the historical blur list, which
+     * means it was once blurred but has since expired from the active list.
+     * 
+     * @param {string} imageUrl - The URL of the image to check
+     * @returns {boolean} - True if the image was previously blurred, false otherwise
+     */
     wasBlurredBefore(imageUrl) {
         if (!imageUrl || typeof imageUrl !== 'string') return false;
         
@@ -250,7 +374,15 @@ const blurTracker = {
         return this.historicalBlurs.has(normalizedUrl);
     },
     
-    // Remove from blur list if needed
+    /**
+     * Removes an image URL from the active blur list
+     * 
+     * Moves the image URL from the active blur list to the historical list,
+     * recording when it was last blurred and when it expired.
+     * 
+     * @param {string} imageUrl - The URL of the image to unmark for blurring
+     * @returns {void}
+     */
     unmarkForBlur(imageUrl) {
         if (!imageUrl) return;
         
@@ -274,7 +406,19 @@ const blurTracker = {
         }
     },
     
-    // Save the current set of URLs to storage
+    //--------------------------------------------------------------------------
+    // STORAGE AND MAINTENANCE METHODS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Saves the current blur data to Chrome storage
+     * 
+     * Saves both active and historical blur data to chrome.storage.local.
+     * Before saving, cleans up old entries and ensures storage limits are respected.
+     * 
+     * @param {boolean} force - If true, saves even if needsSave flag is false
+     * @returns {void}
+     */
     save(force = false) {
         // Only save if needed or forced
         if (!this.needsSave && !force) return;
@@ -309,7 +453,14 @@ const blurTracker = {
         });
     },
     
-    // Clean up old entries (older than MIN_AGE_MS)
+    /**
+     * Cleans up old entries from the active and historical blur lists
+     * 
+     * Moves entries older than MIN_AGE_MS from active to historical list.
+     * Removes entries from historical list that are older than HISTORY_MAX_AGE.
+     * 
+     * @returns {void}
+     */
     cleanup() {
         const now = Date.now();
         let removedCount = 0;
@@ -346,7 +497,11 @@ const blurTracker = {
         }
     },
     
-    // Clear all blurred images
+    /**
+     * Clears all blurred images from both active and historical lists
+     * 
+     * @returns {number} - The number of active blur entries that were cleared
+     */
     clear() {
         const count = this.blurredImages.size;
         
@@ -361,16 +516,24 @@ const blurTracker = {
         return count;
     },
     
-    // Get the number of blurred images
+    /**
+     * Returns the count of active blurred images
+     * 
+     * @returns {number} - The number of active blur entries
+     */
     count() {
         return this.blurredImages.size;
     },
     
-    // Get the number of historical records
+    /**
+     * Returns the count of historical blurred images
+     * 
+     * @returns {number} - The number of historical blur entries
+     */
     historicalCount() {
         return this.historicalBlurs.size;
     }
 };
 
-// Initialize on load
+// Initialize blurTracker when the script loads
 blurTracker.init(); 
