@@ -1349,23 +1349,6 @@ async function normalizeImageRotation(img) {
     }
 }
 
-// Add helper function to detect if image needs rotation
-// This function is now imported from utils.js
-// function detectImageRotation(imageData) {
-//     // Simple heuristic: check if height is significantly larger than width
-//     // This assumes portrait photos are more likely to need rotation
-//     const aspectRatio = imageData.width / imageData.height;
-//     return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
-// }
-
-// Add helper function to detect Facebook profile images
-// This function is now imported from utils.js
-// function isFacebookProfileImage(element) {
-//     // Check if element is within Facebook's profile picture container
-//     return element.closest('[data-visualcompletion="media-vc-image"]') !== null ||
-//            element.closest('[data-type="profile_picture"]') !== null ||
-//            element.closest('.profile-photo-container') !== null;
-// }
 
 // Update the detectFacesWithFaceApi function to use the helper
 async function detectFacesWithFaceApi(img) {
@@ -2098,22 +2081,9 @@ function getIntersectionOverUnion(box1, box2) {
   return intersectionArea / (box1Area + box2Area - intersectionArea);
 }
 
-/**
- * Prevents text selection when clicking on images
- * @param {Event} e - The event object
- * 
- * This function is now imported from utils.js
- */
-// function preventTextSelection(e) {
-//   if (e.target.tagName === 'IMG') {
-//     e.preventDefault();
-//     window.getSelection().removeAllRanges();
-//   }
-// }
-
-// Event listeners
-// document.addEventListener('mousedown', preventTextSelection);
-// document.addEventListener('selectstart', preventTextSelection);
+//=============================================================================
+// Event Handling
+//=============================================================================
 
 // Modified click handler with proper selection handling
 let clickTimeout;
@@ -2640,30 +2610,6 @@ async function initializeExtensionContext() {
 
 // Store initialization attempts in session storage to prevent infinite loops
 const MAX_INIT_ATTEMPTS = 3;
-// These functions are now imported from utils.js
-// function getInitAttempts() {
-//     logFunctionEntry('getInitAttempts');
-//     logWithEmoji('info', 'getInitAttempts', 'Getting initialization attempts count');
-//     const attempts = sessionStorage.getItem('initAttempts') || 0;
-//     return parseInt(attempts, 10);
-// }
-// 
-// function incrementInitAttempts() {
-//     logFunctionEntry('incrementInitAttempts');
-//     logWithEmoji('info', 'incrementInitAttempts', 'Incrementing initialization attempts count');
-//     const attempts = getInitAttempts() + 1;
-//     sessionStorage.setItem('initAttempts', attempts);
-//     return attempts;
-// }
-// 
-// function resetInitAttempts() {
-//     logFunctionEntry('resetInitAttempts');
-//     logWithEmoji('info', 'resetInitAttempts', 'Resetting initialization attempts count');
-//     sessionStorage.removeItem('initAttempts');
-// }
-
-// Add a helper function for logging with emojis
-// ... existing code ...
 
 // Use the new logging function in key places
 window.addEventListener('load', async () => {
@@ -3846,59 +3792,6 @@ async function rotateImage(canvas, angle) {
     return rotatedCanvas;
 }
 
-// Add helper function to adjust detection coordinates
-// This function is now imported from utils.js
-// function adjustDetectionCoordinates(detections, angle, canvas) {
-//     logFunctionEntry('adjustDetectionCoordinates');
-//     logWithEmoji('image', 'adjustDetectionCoordinates', `Adjusting coordinates for ${angle} degree rotation`);
-//     const radians = (-angle * Math.PI) / 180;
-//     const centerX = canvas.width / 2;
-//     const centerY = canvas.height / 2;
-//     
-//     return detections.map(detection => {
-//         const { x, y, width, height } = detection.box;
-//         const cx = x + width/2 - centerX;
-//         const cy = y + height/2 - centerY;
-//         
-//         // Rotate coordinates back
-//         const rotatedX = cx * Math.cos(radians) - cy * Math.sin(radians);
-//         const rotatedY = cx * Math.sin(radians) + cy * Math.cos(radians);
-//         
-//         return {
-//             ...detection,
-//             box: {
-//                 x: rotatedX - width/2 + centerX,
-//                 y: rotatedY - height/2 + centerY,
-//                 width,
-//                 height
-//             }
-//         };
-//     });
-// }
-
-// Add recovery function
-// This function is now imported from utils.js
-// function recoverFailedImage(img) {
-//     logFunctionEntry('recoverFailedImage');
-//     logWithEmoji('setup', 'recoverFailedImage', 'Attempting to recover failed image');
-//     // Restore original visibility
-//     img.style.visibility = 'visible';
-//     img.style.opacity = '1';
-//     
-//     // Remove any processing-related classes/attributes
-//     const wrapper = img.closest('.face-detection-wrapper');
-//     if (wrapper) {
-//         const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
-//         Object.assign(img.style, originalStyles);
-//         
-//         // Unwrap the image if needed
-//         if (wrapper.parentNode) {
-//             wrapper.parentNode.insertBefore(img, wrapper);
-//             wrapper.remove();
-//         }
-//     }
-// }
-
 // Add to error handling
 window.addEventListener('error', function(event) {
     if (event.target.tagName === 'IMG') {
@@ -3907,72 +3800,6 @@ window.addEventListener('error', function(event) {
     }
 });
 
-// Add a helper function for all functions to log their entry point
-// This function is now imported from utils.js
-// function logFunctionEntry(functionName) {
-//     logWithEmoji('setup', functionName, 'Function started');
-// }
-
-// Improve the error handling in the sandbox.html communication by adding a special error handler function
-
-// Add the logError function after logWithEmoji
-// This function is now imported from utils.js
-// function logError(functionName, message, error = null) {
-//     logWithEmoji('error', functionName, message);
-//     if (error && error.stack) {
-//         console.error(`${functionName} error stack:`, error.stack);
-//     } else if (error) {
-//         console.error(`${functionName} error details:`, error);
-//     }
-// }
-
-// Add a cleanup utility function for handling message event listeners
-// This function is now imported from utils.js
-// function createMessageHandler(expectedType, timeout, onSuccess, onError) {
-//     return new Promise((resolve, reject) => {
-//         let messageListener = null;
-//         let timeoutId = null;
-//         
-//         const cleanup = () => {
-//             if (timeoutId) clearTimeout(timeoutId);
-//             if (messageListener) window.removeEventListener('message', messageListener);
-//         };
-//         
-//         messageListener = (event) => {
-//             if (event.data && event.data.type === expectedType) {
-//                 cleanup();
-//                 if (onSuccess) {
-//                     try {
-//                         const result = onSuccess(event.data);
-//                         resolve(result);
-//                     } catch (error) {
-//                         logError('messageHandler', `Error handling successful ${expectedType} message:`, error);
-//                         reject(error);
-//                     }
-//                 } else {
-//                     resolve(event.data);
-//                 }
-//             }
-//         };
-//         
-//         window.addEventListener('message', messageListener);
-//         
-//         timeoutId = setTimeout(() => {
-//             cleanup();
-//             const error = new Error(`Timeout waiting for ${expectedType} message (${timeout}ms)`);
-//             if (onError) {
-//                 try {
-//                     onError(error);
-//                 } catch (callbackError) {
-//                     logError('messageHandler', `Error in timeout handler for ${expectedType}:`, callbackError);
-//                 }
-//             }
-//             reject(error);
-//         }, timeout);
-//         
-//         return { cleanup };
-//     });
-// }
 
 // Add the utils.js script to content.js by creating a script element
 document.addEventListener('DOMContentLoaded', function() {
