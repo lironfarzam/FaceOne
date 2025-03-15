@@ -1474,7 +1474,7 @@ async function detectFacesWithFaceApi(img) {
                     
                     if (angleDetections.length > 0) {
                         detections = adjustDetectionCoordinates(angleDetections, angle, rotatedCanvas);
-                        console.log(`Found faces at ${angle} degrees rotation`);
+                        // console.log(`Found faces at ${angle} degrees rotation`);
                         break;
                     }
                 } catch (error) {
@@ -1511,7 +1511,7 @@ async function detectFacesWithFaceApi(img) {
                     matchIndex: comparison.matchIndex
                 });
                 
-                console.log(`Face detected with similarity score: ${(comparison.maxSimilarity * 100).toFixed(2)}%`);
+                // console.log(`Face detected with similarity score: ${(comparison.maxSimilarity * 100).toFixed(2)}%`);
             } catch (error) {
                 console.error('Embedding generation error:', error);
             }
@@ -1547,7 +1547,7 @@ async function detectFacesWithFaceApi(img) {
                     // Store in blurTracker for persistence
                     if (blurTracker) {
                         blurTracker.markForBlur(src);
-                        console.log('Added to blur list:', src.substring(0, 50) + '...');
+                        // console.log('Added to blur list:', src.substring(0, 50) + '...');
                     }
                 } else {
                     img.style.filter = 'none';
@@ -1658,7 +1658,7 @@ const processingQueue = {
                 try {
                     // Skip if item is too old
                     if (Date.now() - timestamp > this.processingTimeout) {
-                        console.log('Skipping stale item');
+                        // console.log('Skipping stale item');
                         return;
                     }
                     
