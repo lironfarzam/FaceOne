@@ -1,161 +1,434 @@
-# FaceOne: Advanced Face Recognition System
+# FaceOne: Advanced Face Recognition & Privacy System
 
-## Project Overview
+<div align="center">
 
-**FaceOne** is an advanced face recognition system designed to identify and replace unwanted images of an individual's face on social networks. The primary goal of this project is to protect victims of sexual assault from being exposed to images of their abuser, providing a layer of privacy and security. The system is built using advanced machine learning techniques, including convolutional neural networks (CNNs), 3D face modeling, and Siamese networks.
+![FaceOne Logo](https://via.placeholder.com/500x150?text=FaceOne+Logo)
 
-## Objectives
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![TensorFlow 2.x](https://img.shields.io/badge/TensorFlow-2.x-orange.svg)](https://www.tensorflow.org/)
 
-1. **Privacy Protection**: Prevent victims of sexual assault from encountering their abuser’s image online by identifying and replacing it with a neutral or blurred image.
-2. **Efficient Recognition**: Achieve effective face recognition with a minimal number of input images, even under varying conditions (lighting, angle, expression).
-3. **Robustness**: Utilize 3D face modeling to enhance recognition accuracy and reduce false positives/negatives.
+**Powerful face recognition, privacy protection, and face animation in one comprehensive platform**
 
-## Methods and Technologies
+[Features](#key-features) • [Components](#system-components) • [Installation](#installation) • [Usage](#usage) • [Documentation](#documentation) • [About](#about-the-project) • [Contributing](#contributing)
 
-### 1. Face Landmarks and 3D Modeling
+</div>
 
-The system utilizes facial landmarks to extract key features from a face. These landmarks are then used to generate a 3D model of the face, which helps in improving recognition accuracy by accounting for variations in angle and expression.
+## 🌟 Introduction
 
-**Key Steps**:
+FaceOne is a comprehensive face recognition and privacy protection system designed to give users control over their digital presence. Built using advanced machine learning techniques including convolutional neural networks (CNNs), 3D face modeling, and Siamese networks, FaceOne offers powerful tools to identify, protect, and animate facial images.
 
-- **Face Landmark Detection**: Using MediaPipe to detect key points on the face.
-- **3D Model Generation**: Constructing a 3D representation of the face based on detected landmarks.
+Created by **Liron Farzam**, this project emerged from the need to provide a solution for privacy protection in the digital age, particularly for vulnerable individuals. The system allows users to identify and manage how their likeness (or others') appears online, giving them unprecedented control over their digital presence.
 
-### 2. Embedding Vectors
+### 🎯 Primary Goals
 
-The system converts facial images into embedding vectors using a CNN-based architecture. These vectors represent the unique features of a face and are used to compare different faces.
+- **Privacy Protection**: Identify and replace unwanted images of specific faces online
+- **Face Recognition**: Achieve accurate recognition with minimal input images
+- **Content Control**: Give users power over how their likeness appears on the web
+- **Animation**: Transform still photos into realistic animated portraits
 
-### 3. Siamese Networks
+<div align="center">
 
-A Siamese network is employed to compare two face images by computing the distance between their embedding vectors. The network is trained to distinguish between pairs of images and determine whether they represent the same person.
+![FaceOne Architecture](https://via.placeholder.com/800x400?text=FaceOne+Architecture+Diagram)
+_FaceOne's system architecture showing key components and data flow_
 
-**Key Components**:
+</div>
 
-- **L1 Distance Layer**: Calculates the absolute difference between two embedding vectors.
-- **Binary Classification**: A Dense layer with a sigmoid activation function is used to classify the pairs as either the same person or different persons.
+## ✨ Key Features
 
-## Project Code Overview
+### 🛡️ Privacy Protection
 
-### 1. Embedding Network
+- Block or blur specific faces across websites
+- Protect victims of harassment from seeing images of their abusers
+- Real-time scanning of web content using the Chrome extension
+- Ethical approach to privacy preservation and consent management
 
-The embedding network is responsible for converting face images into high-dimensional embedding vectors. This network is implemented using a series of convolutional and pooling layers.
+### 🔍 Advanced Face Recognition
 
-```python
-def make_embedding():
-    inp = Input(shape=(100, 100, 3), name="input_image")
-    c1 = Conv2D(64, (10, 10), activation="relu")(inp)
-    m1 = MaxPooling2D(64, (2, 2), padding="same")(c1)
-    c2 = Conv2D(128, (7, 7), activation="relu")(m1)
-    m2 = MaxPooling2D(64, (2, 2), padding="same")(c2)
-    c3 = Conv2D(128, (4, 4), activation="relu")(m2)
-    m3 = MaxPooling2D(64, (2, 2), padding="same")(c3)
-    c4 = Conv2D(256, (4, 4), activation="relu")(m3)
-    f1 = Flatten()(c4)
-    d1 = Dense(4096, activation="sigmoid")(f1)
-    return Model(inputs=[inp], outputs=[d1], name="embedding")
-```
+- High-accuracy recognition with as few as 5-10 input images
+- Robust against lighting variations, angles, and facial expressions
+- 3D face modeling for enhanced recognition accuracy
+- DeepFace integration for state-of-the-art embedding generation
 
-### 2. Siamese Network
+### 🎭 Face Animation
 
-The Siamese network is used to compare two face images by computing the distance between their embeddings. The L1 distance is used as a measure of similarity, and the network outputs a probability indicating whether the two images belong to the same person.
+- Transform still photos into realistic talking videos
+- Use any driving video to animate portrait photos
+- Customize settings for optimal results
+- GPU-accelerated rendering for fast processing
 
-```python
-class L1Dist(Layer):
-    def call(self, input_embedding, validation_embedding):
-        return tf.abs(input_embedding - validation_embedding)
+### 📊 Social Media Integration
 
-def make_siamese_model():
-    input_image = Input(name="input_img", shape=(100, 100, 3))
-    validation_image = Input(name="validation_img", shape=(100, 100, 3))
-    embedding = make_embedding()
-    input_embedding = embedding(input_image)
-    validation_embedding = embedding(validation_image)
-    distances = L1Dist()(input_embedding, validation_embedding)
-    classifier = Dense(1, activation="sigmoid")(distances)
-    return Model(inputs=[input_image, validation_image], outputs=classifier, name="SiameseNetwork")
-```
+- Automatic Facebook profile image collection
+- Bulk face detection and clustering
+- Profile analysis and visualization
+- Privacy-focused API interactions
 
-### 3. Training the Model
+<div align="center">
 
-The training process involves feeding pairs of images into the network and optimizing the network to minimize the binary crossentropy loss. Early stopping and learning rate reduction techniques are used to prevent overfitting.
+![Demo](https://via.placeholder.com/800x400?text=FaceOne+Demo+GIF)
+_FaceOne in action: Detecting and blurring a face in real-time_
 
-```python
-def train_and_save_model(train_loader, test_loader, train_labels, test_labels):
-    siamese_net = make_siamese_model()
-    siamese_net.compile(optimizer=Adam(learning_rate=LEARNING_RATE), loss="binary_crossentropy")
-    early_stopping = EarlyStopping(monitor="val_loss", patience=PATIENCE, restore_best_weights=True)
-    lr_reduction = ReduceLROnPlateau(monitor="val_loss", factor=FACTOR, patience=PATIENCE // 2, min_lr=1e-6)
-    callbacks = [early_stopping, lr_reduction]
-    history = siamese_net.fit(train_loader, validation_data=test_loader, epochs=NUM_OF_EPOCHS, callbacks=callbacks)
-    siamese_net.save("/path/to/your/model/face_recognition_model.h5")
-    return siamese_net
-```
+</div>
 
-### 4. Threshold Calculation and Image Testing
+## 🧩 System Components
 
-After training, the model calculates a threshold based on positive samples. This threshold is used to classify new images. The system can then test a new image against the stored positive samples to determine if it belongs to the same person.
+FaceOne consists of four main components:
 
-```python
-def calculate_threshold(model, positive_vectors):
-    positive_samples = random.sample(positive_vectors, min(max_samples, len(positive_vectors)))
-    positive_scores = []
-    for vec in positive_samples:
-        distance = model.predict([preprocess(vec[0]), preprocess(vec[1])])
-        positive_scores.append(distance)
-    threshold = min(positive_scores)
-    return threshold
-```
+### 1. Chrome Extension 🌐
 
-## Usage
+A powerful browser extension that provides real-time face detection and blur capabilities:
+
+- Detects faces in web images using FaceAPI.js and FaceNet
+- Compares detected faces against known embeddings
+- Applies customizable blur effects to matched faces
+- Operates entirely client-side for maximum privacy
+
+### 2. Face Model Creator 🧠
+
+Create personalized face recognition models using Siamese neural networks:
+
+- Generate high-dimensional (512D) face embeddings
+- Train on minimal data (5-10 images) with high accuracy
+- Calculate optimal similarity thresholds
+- Export models for use with the Chrome extension
+
+### 3. Live Portrait Generator 🎬
+
+Transform still photos into animated videos:
+
+- Animate any portrait photo with realistic movements
+- Use any driving video as a motion source
+- Customize settings for optimal results
+- GPU-accelerated processing
+
+### 4. Facebook Profile Handler 📱
+
+Extract and process facial data from Facebook profiles:
+
+- Authenticate and navigate Facebook programmatically
+- Download profile and album photos
+- Process images through face detection pipeline
+- Cluster and analyze face data
+
+## 🚀 Installation
 
 ### Prerequisites
 
-- Python 3.x
+- Python 3.7+
 - TensorFlow 2.x
-- Necessary Python packages (listed in `requirements.txt`)
+- Chrome browser (for the extension)
+- CUDA-compatible GPU (recommended for face model training)
 
-### Setup
+### Dependencies
 
-1. Clone the repository:
+FaceOne relies on several powerful libraries to provide its functionality:
 
-   ```bash
-   git clone https://github.com/yourusername/FaceOne.git
-   cd FaceOne
-   ```
+```
+# Core ML and Computer Vision
+tensorflow>=2.4.0
+tensorflowjs>=3.0.0
+opencv-python>=4.5.0
+numpy>=1.19.0
+deepface>=0.0.75
+mediapipe>=0.8.0
 
-2. Install the required packages:
+# Web and Automation
+selenium>=3.0.0
+requests>=2.25.0
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Utilities and Visualization
+tqdm>=4.0.0
+matplotlib>=3.0.0
+scikit-learn>=0.0.0
+scipy>=1.0.0
+pillow>=8.0.0
+rich>=10.0.0
+```
 
-3. Prepare your dataset:
+You can install all dependencies using the provided requirements.txt file:
 
-   - Place your positive, negative, and anchor images in the appropriate directories (`/imgs/positives`, `/imgs/negatives`, `/imgs/anchors`).
+```bash
+pip install -r requirements.txt
+```
 
-4. Run the training script:
+### Basic Setup
 
-   ```bash
-   python main_conv_tf.py
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/FaceOne.git
+cd FaceOne
 
-5. Test the model:
-   - After training, you can use the model to test new images by placing them in the `/imgs/test_imgs` directory and running the test function.
+# Install dependencies
+pip install -r requirements.txt
 
-## Examples
+# Set up the Chrome extension
+# 1. Open Chrome and navigate to chrome://extensions
+# 2. Enable Developer Mode
+# 3. Click "Load unpacked" and select the chrome_extensions folder
+```
 
-### Training Example
+### Component-Specific Setup
 
-The training process is automated in the `main_conv_tf.py` script. The script will output training progress, including loss and accuracy metrics.
+<details>
+<summary><b>Face Model Creator Setup</b></summary>
 
-### Testing Example
+```bash
+# Prepare your face images
+mkdir -p data/face_images/source
 
-You can test the model by running the `test_image` function on a new image, and the system will output whether the image matches any of the stored positive samples.
+# Place 5-10 clear face images in the source directory
+# Then run the model creation script
+python scripts/create_face_model.py
+```
 
-## Conclusion
+</details>
 
-FaceOne is a robust face recognition system that leverages modern deep learning techniques to achieve high accuracy with minimal data. The use of Siamese networks and 3D modeling makes it particularly effective in challenging scenarios where traditional methods may fail.
+<details>
+<summary><b>Live Portrait Generator Setup</b></summary>
 
-For further customization and advanced usage, refer to the code comments and functions provided in the `main_conv_tf.py` script.
+```bash
+# Install additional dependencies
+pip install -r NN_LivePortrait/requirements.txt
+
+# Prepare your data
+mkdir -p NN_LivePortrait/Source_Images
+mkdir -p NN_LivePortrait/Source_Video
+
+# Place portrait images and driving videos in their respective folders
+# Then run the generator
+python NN_LivePortrait/live_portrait_generator.py
+```
+
+</details>
+
+<details>
+<summary><b>Facebook Profile Handler Setup</b></summary>
+
+```bash
+# Install additional dependencies
+pip install -r facebook_handler/requirements.txt
+
+# Configure credentials (edit config file)
+cp facebook_handler/config.example.json facebook_handler/config.json
+
+# Run the profile handler
+python facebook_handler/profile_downloader.py
+```
+
+</details>
+
+## 📖 Usage
+
+### Chrome Extension
+
+1. Click the FaceOne icon in your Chrome toolbar
+2. Toggle between Face Detection and Blur modes
+3. Adjust the confidence threshold as needed
+4. Browse the web with automatic face detection/blurring active
+
+<div align="center">
+
+![Chrome Extension](https://via.placeholder.com/400x300?text=Chrome+Extension+Screenshot)
+_FaceOne Chrome extension interface_
+
+</div>
+
+### Face Model Creation
+
+```python
+# Example: Create a face model from a set of input images
+from faceone import FaceModelCreator
+
+# Initialize the creator
+creator = FaceModelCreator()
+
+# Add positive samples (the person to recognize)
+creator.add_positive_samples("path/to/positive/images/")
+
+# Add negative samples (other people)
+creator.add_negative_samples("path/to/negative/images/")
+
+# Train the model
+model = creator.train(epochs=50)
+
+# Save the model and embeddings
+creator.save("models/my_face_model")
+```
+
+### Live Portrait Animation
+
+```python
+# Example: Animate a portrait using a driving video
+from faceone import LivePortrait
+
+# Initialize the generator
+generator = LivePortrait()
+
+# Set source image and driving video
+generator.set_source_image("path/to/portrait.jpg")
+generator.set_driving_video("path/to/driving_video.mp4")
+
+# Generate the animation
+output_path = generator.generate()
+print(f"Animation saved to: {output_path}")
+```
+
+<div align="center">
+
+![Live Portrait Example](https://via.placeholder.com/800x250?text=Before+%E2%86%92+After+Animation)
+_Left: Original portrait photo. Right: Animated portrait_
+
+</div>
+
+### Facebook Profile Handling
+
+```python
+# Example: Download and process images from a Facebook profile
+from faceone import FacebookHandler
+
+# Initialize with credentials
+handler = FacebookHandler(config_path="config.json")
+
+# Connect and navigate to profile
+handler.login()
+handler.navigate_to_profile("profile_url")
+
+# Download images
+image_paths = handler.download_images(limit=100)
+
+# Process downloaded images
+face_clusters = handler.process_faces(image_paths)
+```
+
+## 📚 Documentation
+
+For detailed documentation of each component, please refer to:
+
+- [Chrome Extension Documentation](docs/chrome_extensions.md)
+- [Face Model Creation Guide](docs/create_face_model.md)
+- [Live Portrait Generator Documentation](docs/live_portrait.md)
+- [Facebook Profile Handling Documentation](docs/facebook_profile_handling.md)
+
+## 🧪 Technical Details
+
+### Face Detection and Recognition
+
+FaceOne uses a multi-stage approach for face processing:
+
+1. **Face Detection**: Locates faces in images using FaceAPI.js
+2. **Landmark Detection**: Identifies 68 facial landmarks for precise face alignment
+3. **Face Alignment**: Normalizes face orientation for consistent embedding generation
+4. **Embedding Generation**: Creates 512-dimensional face embeddings using FaceNet
+5. **Similarity Comparison**: Computes cosine similarity between embeddings
+
+```python
+# Example: Core face recognition process
+def recognize_face(image, known_embeddings, threshold=0.6):
+    # Detect face in image
+    face = face_detector.detect(image)
+
+    # Generate embedding
+    embedding = embedding_generator.generate(face)
+
+    # Compare to known embeddings
+    matches = []
+    for name, known_embedding in known_embeddings.items():
+        similarity = cosine_similarity(embedding, known_embedding)
+        if similarity > threshold:
+            matches.append((name, similarity))
+
+    return sorted(matches, key=lambda x: x[1], reverse=True)
+```
+
+### Siamese Network Architecture
+
+The face recognition model uses a Siamese network architecture:
+
+```python
+def make_siamese_model():
+    # Input layers for two face images
+    input_image = Input(name="input_img", shape=(100, 100, 3))
+    validation_image = Input(name="validation_img", shape=(100, 100, 3))
+
+    # Shared embedding network
+    embedding = make_embedding()
+
+    # Get embeddings for both images
+    input_embedding = embedding(input_image)
+    validation_embedding = embedding(validation_image)
+
+    # Calculate L1 distance between embeddings
+    distances = L1Dist()(input_embedding, validation_embedding)
+
+    # Final classification layer
+    classifier = Dense(1, activation="sigmoid")(distances)
+
+    return Model(inputs=[input_image, validation_image],
+                outputs=classifier,
+                name="SiameseNetwork")
+```
+
+## 📜 About the Project
+
+### Project Origin
+
+FaceOne was conceived and developed by **Liron Farzam** in response to the growing need for digital privacy tools in an increasingly connected world. The project began as a research initiative exploring how facial recognition technology could be used to protect individuals rather than expose them.
+
+### Development Journey
+
+The development of FaceOne followed a methodical approach:
+
+1. **Research Phase**: Studied existing facial recognition systems and privacy concerns
+2. **Prototype Development**: Built initial models for face detection and embedding generation
+3. **Chrome Extension Creation**: Developed browser-based solution for real-time protection
+4. **Integration Phase**: Combined various components into a cohesive system
+5. **Optimization**: Enhanced performance and accuracy across all modules
+
+### Ethical Considerations
+
+FaceOne was built with strong ethical principles in mind:
+
+- **Privacy-First**: All processing happens locally where possible
+- **User Control**: Individuals maintain control over their facial data
+- **Transparency**: Clear documentation about how the system works
+- **Protection Focus**: Designed to shield vulnerable individuals
+
+### Current Status and Future Directions
+
+The project is actively maintained and being developed with several planned enhancements:
+
+- Cross-browser extension support
+- Mobile application development
+- Enhanced animation capabilities
+- Improved social media integration
+- Advanced 3D modeling techniques
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgements
+
+- [TensorFlow](https://www.tensorflow.org/)
+- [FaceAPI.js](https://github.com/justadudewhohacks/face-api.js)
+- [MediaPipe](https://mediapipe.dev/)
+- [DeepFace](https://github.com/serengil/deepface)
+- Special thanks to all contributors and testers who helped shape this project
 
 ---
+
+<div align="center">
+<p>Designed and developed by <strong>Liron Farzam</strong></p>
+<p>Made with ❤️ by the FaceOne Team</p>
+</div>

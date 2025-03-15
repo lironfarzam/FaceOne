@@ -63,6 +63,17 @@
             </label>
         </div>
         
+        <div class="setting-row" data-mode="both">
+            <div class="setting-label">
+                <span>Debug Mode</span>
+                <span class="setting-description">Enable verbose console logging for troubleshooting</span>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="debugMode">
+                <span class="slider-toggle"></span>
+            </label>
+        </div>
+        
         <div class="slider-container" data-mode="both">
             <div class="setting-label">
                 <span>Confidence Threshold</span>
@@ -78,8 +89,25 @@
             <i class="material-icons">refresh</i>
             Reprocess All Images
         </button>
+        <button id="clearBlurListButton" class="action-button">
+            <i class="material-icons">blur_off</i>
+            Clear All Blurred Images
+        </button>
+        <div id="blurredCount" class="blur-count">Blurred images: loading...</div>
         <div id="statusIndicator" class="status-indicator"></div>
     </div>
+    
+    <!-- Add diagnostic dialog container -->
+    <div id="diagnosticDialog" class="diagnostic-dialog">
+        <div class="diagnostic-header">
+            <h3>Diagnostic Messages</h3>
+            <button id="closeDiagnosticDialog" class="close-button">×</button>
+        </div>
+        <div id="diagnosticMessages" class="diagnostic-messages"></div>
+    </div>
+    
+    <!-- Add actions section container -->
+    <div class="actions-section"></div>
 
     <script src="js/popup.js"></script>
 </body>

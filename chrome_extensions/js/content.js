@@ -28,7 +28,9 @@
             const script = document.createElement('script');
             script.src = chrome.runtime.getURL('js/utils.js');
             script.onload = function() {
-                console.log('✅ utils.js loaded successfully from extension');
+                if (!window.DEBUG) {
+                    console.log('✅ utils.js loaded successfully from extension');
+                }
                 
                 // Verify that logging functions are now available
                 if (!checkLoggingFunctions()) {
@@ -51,7 +53,26 @@
 
 // Fallback logging utilities in case utils.js is not yet loaded
 if (typeof logWithEmoji !== 'function') {
-    window.logWithEmoji = function(type, functionName, message) {
+    window.DEBUG = false; // Initialize with debugging off
+    
+    window.logWithEmoji = function(type, functionName, message, details = null) {
+        // Critical messages are always shown (errors and warnings)
+        const isCritical = ['error', 'warning'].includes(type);
+        
+        // Model and embedding loading messages are shown in both modes, but with different detail levels
+        const isModelRelated = ['model', 'loading'].includes(type) && 
+                             (functionName.includes('Model') || 
+                              functionName.includes('load') || 
+                              message.includes('model') || 
+                              message.includes('embedding'));
+        
+        // Only log if either DEBUG is enabled, or it's a critical message, or it's a success related to models/embeddings
+        const isSuccess = type === 'success' && isModelRelated;
+        
+        if (!window.DEBUG && !isCritical && !isSuccess) {
+            return;
+        }
+        
         let emoji = '📝'; // Default emoji
         
         // Select emoji based on log type
@@ -70,17 +91,32 @@ if (typeof logWithEmoji !== 'function') {
             case 'unlock': emoji = '🔓'; break;
             case 'start': emoji = '🚀'; break;
             case 'draw': emoji = '🎨'; break;
+            case 'performance': emoji = '📊'; break;
+            case 'stats': emoji = '📈'; break;
+            case 'network': emoji = '🌐'; break;
+            case 'processing': emoji = '⚙️'; break;
         }
         
-        console.log(`${emoji} ${functionName}: ${message}`);
+        // Basic logging for non-debug mode
+        if (!window.DEBUG) {
+            console.log(`Face One - ${emoji} ${functionName}: ${message}`);
+            return;
+        }
+        
+        // Enhanced logging for debug mode
+        if (details) {
+            console.log(`Face One - ${emoji} ${functionName}: ${message}`, details);
+        } else {
+            console.log(`Face One - ${emoji} ${functionName}: ${message}`);
+        }
     };
 }
 
 if (typeof logFunctionEntry !== 'function') {
     window.logFunctionEntry = function(functionName) {
-        if (typeof logWithEmoji === 'function') {
+        if (window.DEBUG && typeof logWithEmoji === 'function') {
             logWithEmoji('setup', functionName, 'Function started');
-        } else {
+        } else if (window.DEBUG) {
             console.log(`🔧 ${functionName}: Function started`);
         }
     };
@@ -143,7 +179,7 @@ let flagShowFrameonImage = {
     frameFaceDetected: true,    
     addLabel: true,
     autoProcessImages: true,
-    minimumImageSize: 100,
+    minimumImageSize: 32,
     confidenceThreshold: 70,
     processingMode: 'face_detection'
 };
@@ -153,8 +189,8 @@ let flagShowFrameonImage = {
 //=============================================================================
 const MODEL_SELECTION_THRESHOLDS = {
     get MINIMUM_SIZE() {
-        // More lenient minimum - 16px or user setting, whichever is smaller
-        return Math.min(16, flagShowFrameonImage.minimumImageSize || 16);
+        // Change minimum size to 32px (or user setting, whichever is smaller)
+        return Math.min(32, flagShowFrameonImage.minimumImageSize || 32);
     },
     get SMALL_IMAGE() {
         return Math.max(64, this.MINIMUM_SIZE * 2);
@@ -178,39 +214,50 @@ let isPositiveEmbeddingsLoaded = false;
  */
 async function loadPositiveEmbeddings() {
     logFunctionEntry('loadPositiveEmbeddings');
-    logWithEmoji('loading', 'loadPositiveEmbeddings', 'Loading positive embeddings');   
-    if (isPositiveEmbeddingsLoaded) return;
+    
+    if (isPositiveEmbeddingsLoaded) {
+        logWithEmoji('info', 'loadPositiveEmbeddings', 'Positive embeddings already loaded');
+        return;
+    }
 
     try {
         const embeddingsPath = chrome.runtime.getURL('models/embeddings/positive_embeddings.json');
+        logWithEmoji('loading', 'loadPositiveEmbeddings', 'Loading positive embeddings', { path: embeddingsPath });
+        
+        const startTime = performance.now();
         const response = await fetch(embeddingsPath);
+        
         if (!response.ok) {
             throw new Error(`Failed to load positive embeddings: ${response.statusText}`);
         }
-        logWithEmoji('success', 'loadPositiveEmbeddings', 'Positive embeddings loaded successfully');
-
-        logWithEmoji('loading', 'loadPositiveEmbeddings', 'Parsing positive embeddings');
+        
         const data = await response.json();
         if (!Array.isArray(data)) {
             throw new Error('Invalid positive embeddings format: expected array');
         }
-        logWithEmoji('success', 'loadPositiveEmbeddings', 'Positive embeddings parsed successfully');
+        
         // Take only the first 10 embeddings
         const limitedData = data.slice(0, 10);
         
         // Convert embeddings to Float32Array for efficient comparison
-        logWithEmoji('loading', 'loadPositiveEmbeddings', 'Converting embeddings to Float32Array');
+        logWithEmoji('processing', 'loadPositiveEmbeddings', 'Converting embeddings to Float32Array', 
+            { count: limitedData.length, dimensions: limitedData[0]?.length || 0 });
+        
         positiveEmbeddings = limitedData.map(embedding => {
             if (!Array.isArray(embedding) || embedding.length !== 512) {
                 throw new Error('Invalid embedding format: expected 512-dimensional array');
             }
             return new Float32Array(embedding);
         });
-        logWithEmoji('success', 'loadPositiveEmbeddings', 'Embeddings converted to Float32Array');
-        console.log(`Loaded ${positiveEmbeddings.length} positive embeddings (limited to first 10)`);
+        
         isPositiveEmbeddingsLoaded = true;
+        const loadTime = Math.round(performance.now() - startTime);
+        
+        logWithEmoji('success', 'loadPositiveEmbeddings', 
+            `Loaded ${positiveEmbeddings.length} positive embeddings successfully (${loadTime}ms)`, 
+            { count: positiveEmbeddings.length, loadTimeMs: loadTime });
     } catch (error) {
-        logWithEmoji('error', 'loadPositiveEmbeddings', 'Error loading positive embeddings:', error);
+        logWithEmoji('error', 'loadPositiveEmbeddings', `Error loading positive embeddings: ${error.message}`, error);
         throw error;
     }
 }
@@ -819,24 +866,45 @@ async function loadFaceApiModels(modelList = ['tinyFaceDetector', 'ssdMobilenetv
  */
 async function loadModelsOnDemand() {
     logFunctionEntry('loadModelsOnDemand');
+    
+    const startTime = performance.now();
     logWithEmoji('loading', 'loadModelsOnDemand', 'Starting progressive model loading');
     
     try {
         // 1. First load only critical face detection model synchronously
-        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: tinyFaceDetector');
+        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: tinyFaceDetector', 
+            { priority: 'high', purpose: 'face detection' });
+        
+        const detectorStartTime = performance.now();
         await loadFaceApiModels(['tinyFaceDetector']);
+        const detectorLoadTime = Math.round(performance.now() - detectorStartTime);
+        
+        logWithEmoji('success', 'loadModelsOnDemand', 
+            `Loaded face detector model (${detectorLoadTime}ms)`, 
+            { model: 'tinyFaceDetector', loadTimeMs: detectorLoadTime });
         
         // 2. Then load FaceNet model which is needed for embeddings
-        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: faceNet');
+        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: faceNet', 
+            { priority: 'high', purpose: 'face embeddings' });
+        
+        const faceNetStartTime = performance.now();
         await loadFaceApiModels(['faceNet']);
+        const faceNetLoadTime = Math.round(performance.now() - faceNetStartTime);
+        
+        logWithEmoji('success', 'loadModelsOnDemand', 
+            `Loaded faceNet model (${faceNetLoadTime}ms)`, 
+            { model: 'faceNet', loadTimeMs: faceNetLoadTime });
         
         // 3. Load non-critical models asynchronously
         setTimeout(() => {
-            logWithEmoji('model', 'loadModelsOnDemand', 'Loading optional models in the background');
+            logWithEmoji('model', 'loadModelsOnDemand', 'Loading optional models in background', 
+                { priority: 'low', purpose: 'similarity comparison' });
+                
             loadFaceApiModels(['myModel']).catch(error => {
                 // Just log errors for optional models
                 logWithEmoji('warning', 'loadModelsOnDemand', 
-                    `Optional model loading failed: ${error.message}. Some features will be limited.`);
+                    `Optional model loading failed: ${error.message}. Some features will be limited.`, 
+                    { error, fallback: 'Using reduced feature set' });
                 
                 // Mark the model as in fallback mode to prevent repeated loading attempts
                 if (error.message.includes('myModel') || error.message.includes('Similarity')) {
@@ -845,10 +913,17 @@ async function loadModelsOnDemand() {
             });
         }, 2000);
         
-        logWithEmoji('success', 'loadModelsOnDemand', 'Progressive model loading initiated successfully');
+        const totalLoadTime = Math.round(performance.now() - startTime);
+        logWithEmoji('success', 'loadModelsOnDemand', 
+            `Critical models loaded successfully (${totalLoadTime}ms)`, 
+            { criticalModels: ['tinyFaceDetector', 'faceNet'], totalTimeMs: totalLoadTime });
+            
         return true;
     } catch (error) {
-        logWithEmoji('error', 'loadModelsOnDemand', `Error during progressive model loading: ${error.message}`);
+        const failTime = Math.round(performance.now() - startTime);
+        logWithEmoji('error', 'loadModelsOnDemand', 
+            `Model loading failed after ${failTime}ms: ${error.message}`, 
+            { error, timeMs: failTime });
         throw error;
     }
 }
@@ -862,8 +937,7 @@ const imageTracker = {
     images: new Map(), // Map<string, ImageInfo>
     maxSize: 1000,
     cleanupInterval: 60000, // Cleanup every minute
-    // maxAge: 5 * 60 * 1000, // Keep items for 5 minutes
-    maxAge: 1 * 10 * 1000, // Keep items for 10 seconds
+    maxAge: 3 * 60 * 1000, // Keep items for 180 seconds (3 minutes)
 
     
     constructor() {
@@ -907,8 +981,8 @@ const imageTracker = {
         };
         this.images.set(src, newInfo);
         
-        // Log processing completion
-        console.log(`Image processing complete: ${src}`, newInfo);
+        // // Log processing completion
+        // console.log(`Image processing complete: ${src}`, newInfo);
     },
     
     shouldProcess(src) {
@@ -927,8 +1001,59 @@ const imageTracker = {
     
     clear() {
         this.images.clear();
+    },
+    
+    normalizeImageUrl(url) {
+        // This method should be implemented to normalize image URLs
+        // For example, you can use a URL normalization library or custom logic
+        // Return a normalized URL string
+        return url;
     }
 };
+
+/**
+ * Checks if an element is a social media profile picture
+ * @param {Element} element - The element to check
+ * @returns {boolean} True if element is likely a profile picture
+ */
+function isProfilePicture(element) {
+    if (!element) return false;
+
+    // Check based on classes and attributes
+    const isProfileByClass = element.classList && (
+        element.classList.contains('profile-picture') ||
+        element.classList.contains('avatar') ||
+        element.classList.contains('user-photo') ||
+        element.classList.contains('user-image') ||
+        element.classList.contains('profile-img') ||
+        element.classList.contains('user-img') ||
+        element.classList.contains('x1lq5wgf') || // Facebook profile photo class
+        element.classList.contains('xgqcy7u') ||
+        element.classList.contains('x30kzoy')
+    );
+
+    // Check based on parent element attribute or class
+    const parentHasProfileIndicator = element.parentElement && (
+        element.parentElement.classList.contains('profile-pic-container') ||
+        element.parentElement.classList.contains('avatar-container') ||
+        element.parentElement.getAttribute('data-testid') === 'user-avatar' ||
+        element.parentElement.getAttribute('aria-label')?.toLowerCase().includes('profile')
+    );
+
+    // Check if image has specific dimensions (common for profile pics)
+    const hasProfileDimensions = (element.width === element.height) && 
+                               (element.width === 36 || element.width === 40 || 
+                                element.width === 48 || element.width === 64);
+    
+    // Check alt text
+    const altTextIsProfile = element.alt && (
+        element.alt.toLowerCase().includes('profile') ||
+        element.alt.toLowerCase().includes('avatar') ||
+        element.alt.toLowerCase().includes('user')
+    );
+
+    return isProfileByClass || parentHasProfileIndicator || hasProfileDimensions || altTextIsProfile;
+}
 
 /**
  * Checks if an element is valid for processing
@@ -962,7 +1087,20 @@ function isValidElement(element) {
 
     if (!src || src.startsWith('data:') || src.includes('emoji')) return false;
 
-    // Remove size validation - we'll handle any size
+    // Check if it's a profile picture - relax size requirements
+    const isProfile = isProfilePicture(element);
+
+    // For profile pictures, only check if hidden or processed
+    if (isProfile) {
+        const isHidden = element.offsetParent === null || 
+                      window.getComputedStyle(element).display === 'none' ||
+                      window.getComputedStyle(element).visibility === 'hidden';
+        const isProcessed = element.closest('.face-detection-wrapper');
+        
+        return !isHidden && !isProcessed;
+    }
+
+    // For non-profile images, do regular checks
     const isHidden = element.offsetParent === null || 
                     window.getComputedStyle(element).display === 'none' ||
                     window.getComputedStyle(element).visibility === 'hidden';
@@ -1019,23 +1157,48 @@ async function createProxyImage(originalImg) {
 }
 
 // Add new function to handle tiny image processing
+/**
+ * Process tiny images (below 64px in either dimension) with specialized upscaling
+ * This function is specifically designed to handle small profile pictures, icons, and thumbnails
+ * that would otherwise be skipped by the face detection system.
+ * 
+ * Key techniques:
+ * 1. Intelligent upscaling - Uses a dynamic scale factor based on original image size
+ * 2. Ensures dimensions are multiples of 32 (required by TinyYOLOv2 backbone in TinyFaceDetector)
+ * 3. High-quality upscaling with improved image smoothing for better detail preservation
+ * 4. Returns both the processed canvas and the scale factor for mapping detections back to original size
+ * 
+ * Designed to work with Facebook profile pictures, avatars, and other small face images down to 32px
+ * 
+ * @param {HTMLImageElement} img - The small image element to process
+ * @returns {Object} Object containing the scaled canvas and scale factors
+ */
 async function processTinyImage(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
     // Calculate dimensions that are multiples of 32
-    const minSize = 32; // Minimum size required by TinyFaceDetector
+    const minSize = 32; // Absolute minimum size required by TinyFaceDetector
+    
+    // Dynamic scale factor calculation - more aggressive for smaller images
+    // For very tiny images (e.g. 32px), this could be 2-3x scaling
+    // For images near 64px, this might be 1.5x scaling
     const scaleFactor = Math.max(2, Math.ceil(32 / Math.min(img.width, img.height)));
+    
+    // Round dimensions up to nearest multiple of 32 for optimal model performance
     const targetWidth = roundToMultipleOf32(Math.ceil(img.width * scaleFactor));
     const targetHeight = roundToMultipleOf32(Math.ceil(img.height * scaleFactor));
     
     canvas.width = targetWidth;
     canvas.height = targetHeight;
     
-    // Use better upscaling algorithm
+    // Use better upscaling algorithm - crucial for preserving facial details
+    // This significantly improves detection quality on small images
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+    
+    logWithEmoji('info', 'processTinyImage', `Upscaled small image from ${img.width}x${img.height} to ${targetWidth}x${targetHeight} (${scaleFactor}x scaling)`);
     
     return {
         canvas,
@@ -1046,21 +1209,57 @@ async function processTinyImage(img) {
     };
 }
 
+/**
+ * Select the appropriate face detection model based on image size and characteristics
+ * 
+ * This function implements an intelligent selection strategy:
+ * - For tiny images (32-64px): Uses TinyFaceDetector with specialized settings
+ * - For small images (64-128px): Uses TinyFaceDetector with optimized settings
+ * - For medium images: Uses either model based on aspect ratio and quality
+ * - For large images (256px+): Uses SSD MobileNet for best accuracy
+ * 
+ * Facebook profile pictures, avatars and thumbnails are handled by the tiny/small
+ * image path, with optimized settings for detecting faces in those challenging cases.
+ * 
+ * @param {HTMLImageElement} img - The image element to analyze
+ * @returns {Object} Selected model and its configuration options
+ * @throws {Error} If the image is smaller than the absolute minimum size (32px)
+ */
 function selectFaceDetectionModel(img) {
     const width = img.width || img.naturalWidth;
     const height = img.height || img.naturalHeight;
     const minDimension = Math.min(width, height);
     const maxDimension = Math.max(width, height);
     
-    // Skip images smaller than minimum size
-    if (minDimension < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
-        throw new Error(`Image too small for face detection (${width}x${height}). Minimum size required: ${MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE}px`);
+    // Skip images smaller than absolute minimum size
+    if (minDimension < 32) {
+        throw new Error(`Image too small for face detection (${width}x${height}). Minimum size required: 32px`);
     }
 
-    // For small images, use tinyFaceDetector with optimized settings
+    // For very small images (32-64px), use tinyFaceDetector with highly optimized settings
+    // This is specifically designed for small profile pics and avatars (e.g. Facebook thumbnails)
+    if (minDimension < 64) {
+        // Ensure input size is divisible by 32 (required by TinyYolov2)
+        const inputSize = 64; // Fixed size for stability with very small images
+        logWithEmoji('info', 'selectFaceDetectionModel', `Using specialized tiny image mode for ${width}x${height} image`);
+        return {
+            model: 'tinyFaceDetector',
+            options: new faceapi.TinyFaceDetectorOptions({
+                ...FACE_API_DETECTION_OPTIONS.tinyFaceDetector,
+                inputSize: inputSize,
+                scoreThreshold: 0.01,  // Very lenient threshold for tiny images
+                minFaceSize: 16, // Absolute minimum face size
+                scaleFactor: 0.5  // More granular scale steps
+            })
+        };
+    }
+    
+    // For small images (64-128px), use tinyFaceDetector with optimized settings
+    // This handles most social media profile pictures and small thumbnails
     if (minDimension <= MODEL_SELECTION_THRESHOLDS.SMALL_IMAGE) {
         // Ensure input size is divisible by 32 (required by TinyYolov2)
-        const inputSize = roundToMultipleOf32(Math.max(32, minDimension));
+        const inputSize = roundToMultipleOf32(Math.max(64, minDimension));
+        logWithEmoji('info', 'selectFaceDetectionModel', `Using optimized small image mode for ${width}x${height} image`);
         return {
             model: 'tinyFaceDetector',
             options: new faceapi.TinyFaceDetectorOptions({
@@ -1072,7 +1271,7 @@ function selectFaceDetectionModel(img) {
             })
         };
     }
-
+    
     // For large images, use ssdMobilenetv1
     if (minDimension >= MODEL_SELECTION_THRESHOLDS.LARGE_IMAGE) {
         return {
@@ -1150,27 +1349,71 @@ async function normalizeImageRotation(img) {
     }
 }
 
-// Add helper function to detect if image needs rotation
-// This function is now imported from utils.js
-// function detectImageRotation(imageData) {
-//     // Simple heuristic: check if height is significantly larger than width
-//     // This assumes portrait photos are more likely to need rotation
-//     const aspectRatio = imageData.width / imageData.height;
-//     return aspectRatio < 0.7; // Arbitrary threshold for portrait orientation
-// }
-
-// Add helper function to detect Facebook profile images
-// This function is now imported from utils.js
-// function isFacebookProfileImage(element) {
-//     // Check if element is within Facebook's profile picture container
-//     return element.closest('[data-visualcompletion="media-vc-image"]') !== null ||
-//            element.closest('[data-type="profile_picture"]') !== null ||
-//            element.closest('.profile-photo-container') !== null;
-// }
 
 // Update the detectFacesWithFaceApi function to use the helper
 async function detectFacesWithFaceApi(img) {
-    const wrapper = createWrapper(img);
+    
+    // Get wrapper and check if it exists
+    const wrapper = findOrCreateWrapper(img);
+    if (!wrapper) return false;
+    
+    // Get image source
+    const src = img.src || img.getAttribute('xlink:href');
+    
+    // Check if source exists
+    if (!src) return false;
+    
+    // Check if this image is already in our blur tracker
+    if (blurTracker && blurTracker.shouldBlur(src)) {
+        // Apply blur effect directly
+        img.style.filter = 'blur(10px)';
+        img.classList.add('blurred-image');
+        img.setAttribute('data-faceone-processed', 'blurred');
+        
+        if (flagShowFrameonImage.addLabel) {
+            addResultIndicator(wrapper, 'Image blurred - From saved list');
+        }
+        
+        // Mark as processed but don't run further detection
+        try {
+            imageTracker.markProcessed(src, true, true);
+            // Also mark in processedImageTracker
+            processedImageTracker.mark(img, 'blurred');
+        } catch (error) {
+            console.error('Error marking image as processed:', error);
+        }
+        return;
+    }
+    
+    // Check if this image was previously blurred but has expired
+    if (blurTracker && blurTracker.wasBlurredBefore(src)) {
+        console.log('Detected previously blurred image, automatically renewing:', src.substring(0, 50) + '...');
+        
+        // Automatically reactivate blur
+        blurTracker.markForBlur(src);
+        
+        // Apply blur effect
+        img.style.filter = 'blur(10px)';
+        img.classList.add('blurred-image');
+        img.setAttribute('data-faceone-processed', 'blurred');
+        img.setAttribute('data-auto-renewed', 'true');
+        
+        if (flagShowFrameonImage.addLabel) {
+            addResultIndicator(wrapper, 'Image auto-reblurred - Previously detected');
+        }
+        
+        // Mark as processed but don't run further detection
+        try {
+            imageTracker.markProcessed(src, true, true);
+            // Also mark in processedImageTracker
+            processedImageTracker.mark(img, 'blurred');
+        } catch (error) {
+            console.error('Error marking image as processed:', error);
+        }
+        return;
+    }
+    
+    // Continue with regular processing for new images...
     const processingKey = `processing_${Date.now()}`;
     wrapper.setAttribute('data-processing-key', processingKey);
     
@@ -1179,8 +1422,6 @@ async function detectFacesWithFaceApi(img) {
             ensureModelsLoaded(),
             loadPositiveEmbeddings()
         ]);
-        
-        const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
         
         if (flagShowFrameonImage.addLabel) {
             addLoadingIndicator(wrapper);
@@ -1202,7 +1443,7 @@ async function detectFacesWithFaceApi(img) {
         // Try multiple angles if initial detection fails
         let detections = [];
         // Expanded angles array to handle more orientations
-        const angles = [0, -15, 15, -30, 30, -45, 45, 90, -90]; 
+        const angles = [0, -45, 45, 90, -90]; 
         
         for (const angle of angles) {
             if (detections.length === 0) {
@@ -1216,7 +1457,7 @@ async function detectFacesWithFaceApi(img) {
                     
                     if (angleDetections.length > 0) {
                         detections = adjustDetectionCoordinates(angleDetections, angle, rotatedCanvas);
-                        console.log(`Found faces at ${angle} degrees rotation`);
+                        // console.log(`Found faces at ${angle} degrees rotation`);
                         break;
                     }
                 } catch (error) {
@@ -1253,7 +1494,7 @@ async function detectFacesWithFaceApi(img) {
                     matchIndex: comparison.matchIndex
                 });
                 
-                console.log(`Face detected with similarity score: ${(comparison.maxSimilarity * 100).toFixed(2)}%`);
+                // console.log(`Face detected with similarity score: ${(comparison.maxSimilarity * 100).toFixed(2)}%`);
             } catch (error) {
                 console.error('Embedding generation error:', error);
             }
@@ -1279,13 +1520,30 @@ async function detectFacesWithFaceApi(img) {
                 if (shouldBlur) {
                     // Apply blur effect to the image
                     img.style.filter = 'blur(10px)';
+                    img.classList.add('blurred-image');
+                    img.setAttribute('data-faceone-processed', 'blurred');
+                    
                     if (flagShowFrameonImage.addLabel) {
                         addResultIndicator(wrapper, 'Image blurred - Similar faces detected');
                     }
+                    
+                    // Store in blurTracker for persistence
+                    if (blurTracker) {
+                        blurTracker.markForBlur(src);
+                        // console.log('Added to blur list:', src.substring(0, 50) + '...');
+                    }
                 } else {
                     img.style.filter = 'none';
+                    img.classList.remove('blurred-image');
+                    img.setAttribute('data-faceone-processed', 'normal');
+                    
                     if (flagShowFrameonImage.addLabel) {
                         addResultIndicator(wrapper, 'No matching faces detected');
+                    }
+                    
+                    // Remove from blur tracker if it was previously blurred
+                    if (blurTracker && blurTracker.shouldBlur(src)) {
+                        blurTracker.unmarkForBlur(src);
                     }
                 }
             }
@@ -1303,11 +1561,17 @@ async function detectFacesWithFaceApi(img) {
             // Ensure no blur is applied when no faces are detected
             if (flagShowFrameonImage.processingMode === 'blur') {
                 img.style.filter = 'none';
+                
+                // Remove from blur tracker if it was previously blurred
+                if (blurTracker && blurTracker.shouldBlur(src)) {
+                    blurTracker.unmarkForBlur(src);
+                }
             }
         }
         
         // Mark image as processed
         imageTracker.markProcessed(src, true);
+        processedImageTracker.mark(img, 'complete');
         
         // Verify wrapper still exists and matches our processing key
         if (!wrapper.isConnected || wrapper.getAttribute('data-processing-key') !== processingKey) {
@@ -1377,7 +1641,7 @@ const processingQueue = {
                 try {
                     // Skip if item is too old
                     if (Date.now() - timestamp > this.processingTimeout) {
-                        console.log('Skipping stale item');
+                        // console.log('Skipping stale item');
                         return;
                     }
                     
@@ -1817,22 +2081,9 @@ function getIntersectionOverUnion(box1, box2) {
   return intersectionArea / (box1Area + box2Area - intersectionArea);
 }
 
-/**
- * Prevents text selection when clicking on images
- * @param {Event} e - The event object
- * 
- * This function is now imported from utils.js
- */
-// function preventTextSelection(e) {
-//   if (e.target.tagName === 'IMG') {
-//     e.preventDefault();
-//     window.getSelection().removeAllRanges();
-//   }
-// }
-
-// Event listeners
-// document.addEventListener('mousedown', preventTextSelection);
-// document.addEventListener('selectstart', preventTextSelection);
+//=============================================================================
+// Event Handling
+//=============================================================================
 
 // Modified click handler with proper selection handling
 let clickTimeout;
@@ -1972,6 +2223,12 @@ async function handleVisibleElement(element) {
     logFunctionEntry('handleVisibleElement');
     logWithEmoji('image', 'handleVisibleElement', 'Processing visible image element');
     
+    // Store the original element properties for recovery if needed
+    const originalDisplay = element.style.display;
+    const originalVisibility = element.style.visibility;
+    const originalOpacity = element.style.opacity;
+    let wrapper = null;
+    
     try {
         // Skip if already processed or being processed
         if (processedImageTracker.isProcessed(element)) {
@@ -1983,29 +2240,40 @@ async function handleVisibleElement(element) {
         processedImageTracker.mark(element, 'pending');
         
         // Create the detection wrapper first
-        const wrapper = createWrapper(element);
+        wrapper = createWrapper(element);
         
         // Only proceed if image meets size requirements
         const width = element.width || element.naturalWidth;
         const height = element.height || element.naturalHeight;
         
-        if (width < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE || height < MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE) {
-            logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}`);
+        // Skip only if image is smaller than absolute minimum (32px)
+        // This allows processing of Facebook profile pics and other small avatars (which are typically 40-50px)
+        // but skips icons, emojis, and decorative elements that are too small to contain meaningful faces
+        if (width < 32 || height < 32) {
+            logWithEmoji('info', 'handleVisibleElement', `Image too small for processing: ${width}x${height}. Minimum required: 32px.`);
+            logWithEmoji('info', 'handleVisibleElement', `Likely an icon, emoji, or decoration - not a profile picture.`);
             processedImageTracker.mark(element, 'skipped');
+            
+            // Instead of removing the wrapper, just clear it of detection-related elements
             if (wrapper && wrapper.isConnected) {
-                cleanupWrapper(wrapper);
+                const canvas = wrapper.querySelector('.face-detection-canvas');
+                const indicator = wrapper.querySelector('.processing-indicator');
+                if (canvas) canvas.remove();
+                if (indicator) indicator.remove();
+                
+                // Don't call cleanupWrapper - instead ensure image is visible
+                element.style.display = originalDisplay;
+                element.style.visibility = 'visible';
+                element.style.opacity = '1';
             }
             return;
         }
         
-        // Check if we should skip this image
+        // Even if smaller than user setting but larger than 32px, we'll still process it
+        // This allows processing of profile pictures even if the user has set a larger minimum size
         if (width < flagShowFrameonImage.minimumImageSize || height < flagShowFrameonImage.minimumImageSize) {
-            logWithEmoji('info', 'handleVisibleElement', `Image smaller than minimum size setting: ${width}x${height} < ${flagShowFrameonImage.minimumImageSize}`);
-            processedImageTracker.mark(element, 'skipped');
-            if (wrapper && wrapper.isConnected) {
-                cleanupWrapper(wrapper);
-            }
-            return;
+            logWithEmoji('info', 'handleVisibleElement', `Processing small image: ${width}x${height} (below user setting of ${flagShowFrameonImage.minimumImageSize}px)`);
+            logWithEmoji('info', 'handleVisibleElement', `Small profile pictures and avatars will be processed with specialized techniques`);
         }
         
         try {
@@ -2017,7 +2285,7 @@ async function handleVisibleElement(element) {
                 await loadPositiveEmbeddings();
             }
             
-            // Process with face detection
+            // Process with face detection - this now handles its own errors and ensures image visibility
             await detectFacesWithFaceApi(element);
             
             // Mark as complete
@@ -2039,24 +2307,37 @@ async function handleVisibleElement(element) {
                 } catch (fallbackError) {
                     logWithEmoji('error', 'handleVisibleElement', `Fallback processing also failed: ${fallbackError.message}`);
                     
-                    // Clean up wrapper to avoid leaving artifacts
-                    if (wrapper && wrapper.isConnected) {
-                        cleanupWrapper(wrapper);
+                    // IMPORTANT: Don't cleanup wrapper, just ensure image is visible
+                    if (element) {
+                        element.style.display = originalDisplay || '';
+                        element.style.visibility = 'visible';
+                        element.style.opacity = '1';
                     }
                     
                     processedImageTracker.mark(element, 'failed');
                 }
             } else {
-                // Critical models not available, just clean up
-                if (wrapper && wrapper.isConnected) {
-                    cleanupWrapper(wrapper);
+                // Critical models not available, ensure image visibility
+                if (element) {
+                    element.style.display = originalDisplay || '';
+                    element.style.visibility = 'visible';
+                    element.style.opacity = '1';
                 }
+                
+                // Don't call cleanupWrapper as it might remove the image
                 processedImageTracker.mark(element, 'failed');
-                throw error; // Re-throw the original error
             }
         }
     } catch (error) {
         logWithEmoji('error', 'handleVisibleElement', `Error processing element: ${error.message}`);
+        
+        // CRITICAL: Always ensure image visibility on errors
+        if (element) {
+            element.style.display = originalDisplay || '';
+            element.style.visibility = 'visible';
+            element.style.opacity = '1';
+        }
+        
         processedImageTracker.mark(element, 'failed');
     }
 }
@@ -2329,30 +2610,6 @@ async function initializeExtensionContext() {
 
 // Store initialization attempts in session storage to prevent infinite loops
 const MAX_INIT_ATTEMPTS = 3;
-// These functions are now imported from utils.js
-// function getInitAttempts() {
-//     logFunctionEntry('getInitAttempts');
-//     logWithEmoji('info', 'getInitAttempts', 'Getting initialization attempts count');
-//     const attempts = sessionStorage.getItem('initAttempts') || 0;
-//     return parseInt(attempts, 10);
-// }
-// 
-// function incrementInitAttempts() {
-//     logFunctionEntry('incrementInitAttempts');
-//     logWithEmoji('info', 'incrementInitAttempts', 'Incrementing initialization attempts count');
-//     const attempts = getInitAttempts() + 1;
-//     sessionStorage.setItem('initAttempts', attempts);
-//     return attempts;
-// }
-// 
-// function resetInitAttempts() {
-//     logFunctionEntry('resetInitAttempts');
-//     logWithEmoji('info', 'resetInitAttempts', 'Resetting initialization attempts count');
-//     sessionStorage.removeItem('initAttempts');
-// }
-
-// Add a helper function for logging with emojis
-// ... existing code ...
 
 // Use the new logging function in key places
 window.addEventListener('load', async () => {
@@ -2905,8 +3162,8 @@ async function createScaledImage(img) {
     const originalWidth = img.width || img.naturalWidth;
     const originalHeight = img.height || img.naturalHeight;
     
-    // Calculate minimum required size
-    const minRequiredSize = MODEL_SELECTION_THRESHOLDS.MINIMUM_SIZE;
+    // Calculate minimum required size - for profile images, ensure at least 64px
+    const minRequiredSize = 64; // Minimum size for reliable face detection
     const smallestDimension = Math.min(originalWidth, originalHeight);
     
     let targetWidth = originalWidth;
@@ -2915,13 +3172,21 @@ async function createScaledImage(img) {
     
     // Scale up if image is too small
     if (smallestDimension < minRequiredSize) {
-        scaleFactor = Math.ceil(minRequiredSize / smallestDimension);
+        // For very small images, use a more aggressive scaling factor
+        if (smallestDimension < 40) {
+            scaleFactor = Math.ceil(minRequiredSize / smallestDimension) * 2; // More aggressive for tiny images
+        } else {
+            scaleFactor = Math.ceil(minRequiredSize / smallestDimension);
+        }
+        
         targetWidth = Math.round(originalWidth * scaleFactor);
         targetHeight = Math.round(originalHeight * scaleFactor);
         
         // Ensure dimensions are multiples of 32 for better model performance
         targetWidth = roundToMultipleOf32(targetWidth);
         targetHeight = roundToMultipleOf32(targetHeight);
+        
+        logWithEmoji('info', 'createScaledImage', `Scaling small image up by ${scaleFactor}x: ${originalWidth}x${originalHeight} → ${targetWidth}x${targetHeight}`);
     }
     
     // Set canvas dimensions
@@ -3018,7 +3283,7 @@ async function extractFaceRegion(img, detection) {
 // Add helper function to check model status
 function checkModelStatus() {
     logFunctionEntry('checkModelStatus');
-    logWithEmoji('info', 'checkModelStatus', 'Checking status of all models');
+    
     const status = {
         faceApi: modelStatus.faceApi.loaded,
         faceNet: modelStatus.faceNet.loaded,
@@ -3034,6 +3299,21 @@ function checkModelStatus() {
     }
     if (!modelStatus.myModel.loaded && modelStatus.myModel.error) {
         status.errors.push(`Similarity: ${modelStatus.myModel.error.message}`);
+    }
+    
+    const allLoaded = status.faceApi && status.faceNet && status.myModel;
+    const essentialLoaded = status.faceApi && status.faceNet;
+    
+    if (allLoaded) {
+        logWithEmoji('success', 'checkModelStatus', 'All models loaded successfully', status);
+    } else if (essentialLoaded) {
+        logWithEmoji('info', 'checkModelStatus', 'Essential models loaded, optional models pending', status);
+    } else if (status.errors.length > 0) {
+        logWithEmoji('warning', 'checkModelStatus', 
+            `Model loading incomplete: ${status.errors.length} errors found`,
+            { status, errors: status.errors });
+    } else {
+        logWithEmoji('info', 'checkModelStatus', 'Models still loading', status);
     }
     
     return status;
@@ -3145,33 +3425,163 @@ async function computeImageSimilarities(src) {
 
 // Add message listener for settings updates
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'SETTINGS_UPDATED') {
-        flagShowFrameonImage = {
-            ...flagShowFrameonImage,
-            ...message.settings
-        };
-        
-        // Reprocess visible images with new settings
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
+    try {
+        if (message.type === 'SETTINGS_UPDATED') {
+            flagShowFrameonImage = {
+                ...flagShowFrameonImage,
+                ...message.settings
+            };
+            
+            // Update DEBUG flag if it's included in the settings
+            if (typeof message.settings.debugMode !== 'undefined') {
+                window.DEBUG = message.settings.debugMode;
+                
+                if (window.DEBUG) {
+                    console.log('🔧 Debug mode enabled - verbose console logging activated');
+                } else {
+                    console.log('🔧 Debug mode disabled - reduced console logging activated');
+                }
+            }
+            
+            // Reprocess visible images with new settings
+            if (flagShowFrameonImage.autoProcessImages) {
+                processExistingImages();
+            }
+            
+            sendResponse({ success: true });
         }
+        else if (message.action === 'updateSettings') {
+            // Handle direct settings updates from popup
+            if (message.settings) {
+                // Handle debug mode toggle
+                if (typeof message.settings.debugMode !== 'undefined') {
+                    window.DEBUG = message.settings.debugMode;
+                    
+                    if (window.DEBUG) {
+                        console.log('🔧 Debug mode enabled - verbose console logging activated');
+                        // Add diagnostic info in debug mode
+                        console.log('🔧 Current settings:', flagShowFrameonImage);
+                        console.log('🔧 Current blur list size:', blurTracker ? blurTracker.blurredImages.size : 'blurTracker not loaded');
+                    } else {
+                        console.log('🔧 Debug mode disabled - reduced console logging activated');
+                    }
+                }
+                
+                // Update other settings if included
+                if (Object.keys(message.settings).length > 0) {
+                    flagShowFrameonImage = {
+                        ...flagShowFrameonImage,
+                        ...message.settings
+                    };
+                }
+            }
+            
+            sendResponse({ success: true, debug: window.DEBUG });
+        }
+        else if (message.type === 'REPROCESS_IMAGES') {
+            // Update settings if provided
+            if (message.settings) {
+                flagShowFrameonImage = {
+                    ...flagShowFrameonImage,
+                    ...message.settings
+                };
+            }
+            
+            // Clear processed status to allow reprocessing
+            imageTracker.clear();
+            processedImageTracker.clear();
+            
+            // Reprocess visible images
+            processExistingImages();
+            
+            sendResponse({ success: true });
+        }
+        else if (message.type === 'CLEAR_BLUR_LIST') {
+            // Handle clearing blur list
+            let count = 0;
+            if (blurTracker) {
+                count = blurTracker.clear();
+            }
+            
+            // Refresh all images after a short delay
+            setTimeout(() => {
+                forceProcessAllImages();
+            }, 500);
+            
+            // Return the count of cleared images
+            sendResponse({
+                success: true,
+                count: count
+            });
+        }
+        else if (message.type === 'GET_BLUR_COUNT') {
+            // Get count of blurred images
+            let count = 0;
+            let historicalCount = 0;
+            let autoRenewedCount = 0;
+            
+            if (blurTracker) {
+                count = blurTracker.count();
+                
+                // Get historical count if available
+                if (typeof blurTracker.historicalCount === 'function') {
+                    historicalCount = blurTracker.historicalCount();
+                }
+                
+                // Count auto-renewed images
+                document.querySelectorAll('[data-auto-renewed="true"]').forEach(() => {
+                    autoRenewedCount++;
+                });
+            }
+            
+            sendResponse({
+                success: true,
+                count: count,
+                historicalCount: historicalCount,
+                autoRenewedCount: autoRenewedCount
+            });
+        }
+        else if (message.type === 'MODE_CHANGED') {
+            
+            // The actual mode change is handled by the settings update
+            sendResponse({ success: true });
+        }
+    } catch (error) {
+        console.error('Error handling message:', error);
+        sendResponse({ success: false, error: error.message });
     }
+    
+    // Keep the message channel open for async response
+    return true;
 });
 
 // Load initial settings
 chrome.storage.sync.get({
     frameProsessedImage: true,
-    frameFaceDetected: true,
     addLabel: true,
+    showConsoleLog: false,
     autoProcessImages: true,
-    minimumImageSize: 100,
+    processingMode: 'face_detection',
     confidenceThreshold: 70,
-    processingMode: 'face_detection'  // Add default mode
+    debugMode: false
 }, function(items) {
+    // Update global debug flag
+    window.DEBUG = items.debugMode || false;
+    
+    // Initialize global settings object
     flagShowFrameonImage = {
         ...flagShowFrameonImage,
         ...items
     };
+    
+    if (window.DEBUG) {
+        logWithEmoji('setup', 'settings', 'Debug mode enabled from saved settings', {
+            settings: items,
+            debugMode: true
+        });
+    } else {
+        logWithEmoji('setup', 'settings', 'Extension initialized with normal logging');
+    }
 });
 
 // Add function to check if image should be displayed
@@ -3304,93 +3714,48 @@ async function initializeExtension() {
         // 0. Preload critical resources
         preloadCriticalResources();
         
-        // 1. Check if the site is restricted
-        const isRestricted = checkIfRestrictedSite() || hasWorkerRestrictions();
-        if (isRestricted) {
-            logWithEmoji('warning', 'initializeExtension', 'Detected restricted site, some features may be limited');
-        }
-        
-        // 2. Initialize image tracker for processing state
-        if (!window.processedImageTracker) {
-            logWithEmoji('setup', 'initializeExtension', 'Initializing image tracker');
-            window.processedImageTracker = processedImageTracker;
-        }
-        
-        // 3. Initialize worker pool with optimal settings
-        const workerPoolInitialized = await initializeWorkerPool();
-        
-        const workerPoolTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Worker pool initialization took ${workerPoolTime.toFixed(0)}ms`);
+        const preloadTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Resource preloading took ${preloadTime.toFixed(0)}ms`);
         stepStartTime = performance.now();
         
-        // 4. Initialize image queue
-        imageQueue = new ImageQueue({
-            batchSize: 5,
-            processingInterval: 300
-        });
-        
-        const queueTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Image queue initialization took ${queueTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 5. Initialize sandbox for TensorFlow (if not restricted)
-        if (!isRestricted) {
-            try {
-                await createSandboxFrame();
-                sandboxInitialized = true;
-                logWithEmoji('success', 'initializeExtension', 'Sandbox initialized successfully');
-            } catch (error) {
-                logWithEmoji('error', 'initializeExtension', `Failed to initialize sandbox: ${error.message}`);
-                sandboxInitialized = false;
-            }
-        } else {
-            logWithEmoji('warning', 'initializeExtension', 'Restricted site, skipping sandbox initialization');
-        }
-        
-        const sandboxTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Sandbox initialization took ${sandboxTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 6. Set up mutation observer
-        setupMutationObserver();
-        
-        const observerTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Mutation observer setup took ${observerTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 7. Set up memory monitoring
-        const memoryMonitoringTimer = setInterval(() => {
-            try {
-                if (typeof TensorMemoryManager !== 'undefined') {
-                    TensorMemoryManager.checkMemory();
-                }
-                
-                // Also check worker pool memory if available
-                if (workerPoolInitialized && workerPool) {
-                    workerPool.checkWorkerMemoryUsage();
-                }
-            } catch (error) {
-                console.error('Memory monitoring error:', error);
-            }
-        }, 30000); // Check every 30 seconds
-        
-        // 8. Load models progressively instead of all at once
-        await loadModelsOnDemand();
+        // 1. Initialize the models
+        await ensureModelsLoaded();
         
         const modelLoadTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Initial model loading took ${modelLoadTime.toFixed(0)}ms`);
+        logWithEmoji('timer', 'initializeExtension', `Model loading took ${modelLoadTime.toFixed(0)}ms`);
         stepStartTime = performance.now();
         
-        // 9. Set up message listeners
-        setupMessageListeners();
+        // 2. Initialize worker pool (if available)
+        if (!hasWorkerRestrictions()) {
+            try {
+                await initializeWorkerPool();
+                workerPoolInitialized = true;
+            } catch (error) {
+                logWithEmoji('warning', 'initializeExtension', `Worker pool initialization failed: ${error.message}`);
+            }
+        } else {
+            logWithEmoji('warning', 'initializeExtension', 'Worker pool disabled due to restrictions');
+        }
         
-        // 10. Process existing images if auto-processing is enabled
+        const workerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Worker initialization took ${workerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 3. Set up image observers
+        observeElements();
+        
+        const observerTime = performance.now() - stepStartTime;
+        logWithEmoji('timer', 'initializeExtension', `Observer setup took ${observerTime.toFixed(0)}ms`);
+        stepStartTime = performance.now();
+        
+        // 4. Set up dynamic CSS updater for Facebook images
+        setupDynamicCssUpdater();
+        logWithEmoji('setup', 'initializeExtension', 'Dynamic CSS updater initialized');
+        
+        // 5. Process existing images
         if (flagShowFrameonImage.autoProcessImages) {
             processExistingImages();
         }
-        
-        // Mark as initialized
-        extensionInitialized = true;
         
         // Total initialization time
         const totalTime = performance.now() - startTime;
@@ -3399,10 +3764,6 @@ async function initializeExtension() {
         return true;
     } catch (error) {
         logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
-        
-        // Even with errors, mark as initialized with limited functionality
-        extensionInitialized = true;
-        
         return false;
     }
 }
@@ -3431,59 +3792,6 @@ async function rotateImage(canvas, angle) {
     return rotatedCanvas;
 }
 
-// Add helper function to adjust detection coordinates
-// This function is now imported from utils.js
-// function adjustDetectionCoordinates(detections, angle, canvas) {
-//     logFunctionEntry('adjustDetectionCoordinates');
-//     logWithEmoji('image', 'adjustDetectionCoordinates', `Adjusting coordinates for ${angle} degree rotation`);
-//     const radians = (-angle * Math.PI) / 180;
-//     const centerX = canvas.width / 2;
-//     const centerY = canvas.height / 2;
-//     
-//     return detections.map(detection => {
-//         const { x, y, width, height } = detection.box;
-//         const cx = x + width/2 - centerX;
-//         const cy = y + height/2 - centerY;
-//         
-//         // Rotate coordinates back
-//         const rotatedX = cx * Math.cos(radians) - cy * Math.sin(radians);
-//         const rotatedY = cx * Math.sin(radians) + cy * Math.cos(radians);
-//         
-//         return {
-//             ...detection,
-//             box: {
-//                 x: rotatedX - width/2 + centerX,
-//                 y: rotatedY - height/2 + centerY,
-//                 width,
-//                 height
-//             }
-//         };
-//     });
-// }
-
-// Add recovery function
-// This function is now imported from utils.js
-// function recoverFailedImage(img) {
-//     logFunctionEntry('recoverFailedImage');
-//     logWithEmoji('setup', 'recoverFailedImage', 'Attempting to recover failed image');
-//     // Restore original visibility
-//     img.style.visibility = 'visible';
-//     img.style.opacity = '1';
-//     
-//     // Remove any processing-related classes/attributes
-//     const wrapper = img.closest('.face-detection-wrapper');
-//     if (wrapper) {
-//         const originalStyles = JSON.parse(wrapper.getAttribute('data-original-styles') || '{}');
-//         Object.assign(img.style, originalStyles);
-//         
-//         // Unwrap the image if needed
-//         if (wrapper.parentNode) {
-//             wrapper.parentNode.insertBefore(img, wrapper);
-//             wrapper.remove();
-//         }
-//     }
-// }
-
 // Add to error handling
 window.addEventListener('error', function(event) {
     if (event.target.tagName === 'IMG') {
@@ -3492,72 +3800,6 @@ window.addEventListener('error', function(event) {
     }
 });
 
-// Add a helper function for all functions to log their entry point
-// This function is now imported from utils.js
-// function logFunctionEntry(functionName) {
-//     logWithEmoji('setup', functionName, 'Function started');
-// }
-
-// Improve the error handling in the sandbox.html communication by adding a special error handler function
-
-// Add the logError function after logWithEmoji
-// This function is now imported from utils.js
-// function logError(functionName, message, error = null) {
-//     logWithEmoji('error', functionName, message);
-//     if (error && error.stack) {
-//         console.error(`${functionName} error stack:`, error.stack);
-//     } else if (error) {
-//         console.error(`${functionName} error details:`, error);
-//     }
-// }
-
-// Add a cleanup utility function for handling message event listeners
-// This function is now imported from utils.js
-// function createMessageHandler(expectedType, timeout, onSuccess, onError) {
-//     return new Promise((resolve, reject) => {
-//         let messageListener = null;
-//         let timeoutId = null;
-//         
-//         const cleanup = () => {
-//             if (timeoutId) clearTimeout(timeoutId);
-//             if (messageListener) window.removeEventListener('message', messageListener);
-//         };
-//         
-//         messageListener = (event) => {
-//             if (event.data && event.data.type === expectedType) {
-//                 cleanup();
-//                 if (onSuccess) {
-//                     try {
-//                         const result = onSuccess(event.data);
-//                         resolve(result);
-//                     } catch (error) {
-//                         logError('messageHandler', `Error handling successful ${expectedType} message:`, error);
-//                         reject(error);
-//                     }
-//                 } else {
-//                     resolve(event.data);
-//                 }
-//             }
-//         };
-//         
-//         window.addEventListener('message', messageListener);
-//         
-//         timeoutId = setTimeout(() => {
-//             cleanup();
-//             const error = new Error(`Timeout waiting for ${expectedType} message (${timeout}ms)`);
-//             if (onError) {
-//                 try {
-//                     onError(error);
-//                 } catch (callbackError) {
-//                     logError('messageHandler', `Error in timeout handler for ${expectedType}:`, callbackError);
-//                 }
-//             }
-//             reject(error);
-//         }, timeout);
-//         
-//         return { cleanup };
-//     });
-// }
 
 // Add the utils.js script to content.js by creating a script element
 document.addEventListener('DOMContentLoaded', function() {
@@ -3670,121 +3912,6 @@ function preloadCriticalResources() {
         } catch (error) {
             logWithEmoji('warning', 'preloadCriticalResources', `Failed to preload ${resource.url}: ${error.message}`);
         }
-    }
-}
-
-// Update initializeExtension to call this first
-async function initializeExtension() {
-    logFunctionEntry('initializeExtension');
-    
-    // Detailed timing
-    const startTime = performance.now();
-    let stepStartTime = startTime;
-    
-    try {
-        // 0. Preload critical resources
-        preloadCriticalResources();
-        
-        // 1. Check if the site is restricted
-        const isRestricted = checkIfRestrictedSite() || hasWorkerRestrictions();
-        if (isRestricted) {
-            logWithEmoji('warning', 'initializeExtension', 'Detected restricted site, some features may be limited');
-        }
-        
-        // 2. Initialize image tracker for processing state
-        if (!window.processedImageTracker) {
-            logWithEmoji('setup', 'initializeExtension', 'Initializing image tracker');
-            window.processedImageTracker = processedImageTracker;
-        }
-        
-        // 3. Initialize worker pool with optimal settings
-        const workerPoolInitialized = await initializeWorkerPool();
-        
-        const workerPoolTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Worker pool initialization took ${workerPoolTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 4. Initialize image queue
-        imageQueue = new ImageQueue({
-            batchSize: 5,
-            processingInterval: 300
-        });
-        
-        const queueTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Image queue initialization took ${queueTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 5. Initialize sandbox for TensorFlow (if not restricted)
-        if (!isRestricted) {
-            try {
-                await createSandboxFrame();
-                sandboxInitialized = true;
-                logWithEmoji('success', 'initializeExtension', 'Sandbox initialized successfully');
-            } catch (error) {
-                logWithEmoji('error', 'initializeExtension', `Failed to initialize sandbox: ${error.message}`);
-                sandboxInitialized = false;
-            }
-        } else {
-            logWithEmoji('warning', 'initializeExtension', 'Restricted site, skipping sandbox initialization');
-        }
-        
-        const sandboxTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Sandbox initialization took ${sandboxTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 6. Set up mutation observer
-        setupMutationObserver();
-        
-        const observerTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Mutation observer setup took ${observerTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 7. Set up memory monitoring
-        const memoryMonitoringTimer = setInterval(() => {
-            try {
-                if (typeof TensorMemoryManager !== 'undefined') {
-                    TensorMemoryManager.checkMemory();
-                }
-                
-                // Also check worker pool memory if available
-                if (workerPoolInitialized && workerPool) {
-                    workerPool.checkWorkerMemoryUsage();
-                }
-            } catch (error) {
-                console.error('Memory monitoring error:', error);
-            }
-        }, 30000); // Check every 30 seconds
-        
-        // 8. Load models progressively instead of all at once
-        await loadModelsOnDemand();
-        
-        const modelLoadTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Initial model loading took ${modelLoadTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 9. Set up message listeners
-        setupMessageListeners();
-        
-        // 10. Process existing images if auto-processing is enabled
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
-        }
-        
-        // Mark as initialized
-        extensionInitialized = true;
-        
-        // Total initialization time
-        const totalTime = performance.now() - startTime;
-        logWithEmoji('success', 'initializeExtension', `Extension initialized in ${totalTime.toFixed(0)}ms`);
-        
-        return true;
-    } catch (error) {
-        logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
-        
-        // Even with errors, mark as initialized with limited functionality
-        extensionInitialized = true;
-        
-        return false;
     }
 }
 
@@ -3995,9 +4122,6 @@ function markImageForFallbackProcessing(img) {
     
     logWithEmoji('success', 'markImageForFallbackProcessing', 'Image marked for fallback processing');
 }
-
-// Modify generateEmbedding to ensure model readiness
-// ... existing code ...
 
 /**
  * Checks if the current environment has restrictions that prevent using Web Workers
@@ -4334,4 +4458,220 @@ async function forceProcessAllImages() {
     
     // Now process all images again
     await processExistingImages();
+}
+
+// Find the handleImageVisible function and modify it to check blurTracker first
+function handleImageVisible(entry) {
+    const img = entry.target;
+    
+    if (!img || !isValidElement(img)) {
+        return;
+    }
+    
+    // Get image source
+    const src = img.tagName === 'IMG' ? img.src : img.getAttribute('xlink:href');
+    
+    // Skip if no source
+    if (!src) {
+        return;
+    }
+    
+    // Check if this image is currently in the blur list
+    if (blurTracker && blurTracker.shouldBlur(src)) {
+        // Create wrapper for the image if it doesn't exist
+        const wrapper = findOrCreateWrapper(img);
+        if (wrapper) {
+            // Immediately apply blur without needing to process again
+            img.style.filter = 'blur(10px)';
+            img.classList.add('blurred-image');
+            img.classList.add('blurred-by-url'); // Add this class for CSS targeting
+            img.setAttribute('data-faceone-processed', 'blurred');
+            
+            // Set a custom attribute with the normalized URL for debugging
+            try {
+                const normalizedUrl = blurTracker.normalizeImageUrl(src);
+                img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
+                
+                // Send diagnostic message to popup
+                if (window.DEBUG) {
+                    console.log(`🔍 Image blurred from saved list: ${normalizedUrl.substring(0, 50)}...`);
+                    
+                    // If in debug mode, add additional diagnostic information
+                    if (typeof processedImageTracker !== 'undefined' && processedImageTracker) {
+                        const id = processedImageTracker.getImageIdentifier(img);
+                        console.log(`🔍 Debug: Image identifier for blurred image: ${id}`);
+                    }
+                }
+            } catch (e) {
+                // Ignore errors in URL normalization
+                if (window.DEBUG) {
+                    console.error('🔍 Error in URL normalization:', e);
+                }
+            }
+            
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, 'Image blurred - From saved list');
+            }
+        }
+        
+        // Mark as processed in imageTracker to prevent redundant processing
+        if (imageTracker) {
+            try {
+                imageTracker.markProcessed(src, true, true);
+            } catch (error) {
+                console.error('Error marking image as processed:', error);
+            }
+        }
+        
+        // Also mark in processedImageTracker
+        if (processedImageTracker && typeof processedImageTracker.mark === 'function') {
+            processedImageTracker.mark(img, 'blurred');
+        }
+        
+        return; // Skip processing - we already know it needs blurring
+    }
+    
+    // Check if this image was previously blurred but has expired
+    if (blurTracker && blurTracker.wasBlurredBefore(src)) {
+        console.log('Found previously blurred image that expired, automatically renewing:', src.substring(0, 50) + '...');
+        
+        // Create wrapper for the image if it doesn't exist
+        const wrapper = findOrCreateWrapper(img);
+        if (wrapper) {
+            // Automatically reactivate blur
+            blurTracker.markForBlur(src);
+            
+            // Apply blur effect
+            img.style.filter = 'blur(10px)';
+            img.classList.add('blurred-image');
+            img.classList.add('blurred-by-url');
+            img.setAttribute('data-faceone-processed', 'blurred');
+            img.setAttribute('data-auto-renewed', 'true');
+            
+            // Set a custom attribute with the normalized URL for debugging
+            try {
+                const normalizedUrl = blurTracker.normalizeImageUrl(src);
+                img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
+            } catch (e) {
+                // Ignore errors in URL normalization
+                if (window.DEBUG) {
+                    console.error('🔍 Error in URL normalization:', e);
+                }
+            }
+            
+            if (flagShowFrameonImage.addLabel) {
+                addResultIndicator(wrapper, 'Image auto-reblurred - Previously detected');
+            }
+        }
+        
+        // Mark as processed
+        if (imageTracker) {
+            try {
+                imageTracker.markProcessed(src, true, true);
+            } catch (error) {
+                console.error('Error marking image as processed:', error);
+            }
+        }
+        
+        // Also mark in processedImageTracker
+        if (processedImageTracker && typeof processedImageTracker.mark === 'function') {
+            processedImageTracker.mark(img, 'blurred');
+        }
+        
+        return; // Skip further processing
+    }
+    
+    // Continue with normal processing for unrecognized images
+    if (shouldProcessImage(img) && !processedImageTracker.isProcessed(img)) {
+        processImage(img);
+    }
+}
+
+/**
+ * Finds an existing wrapper for an image or creates a new one
+ * @param {HTMLElement} img - The image element
+ * @returns {HTMLElement|null} - The wrapper element or null if not found/created
+ */
+function findOrCreateWrapper(img) {
+    if (!img) return null;
+    
+    // Check if there's already a wrapper for this image
+    if (img.parentElement && img.parentElement.classList.contains('faceone-wrapper')) {
+        return img.parentElement;
+    }
+    
+    // If not, create a new wrapper
+    try {
+        return createWrapper(img);
+    } catch (error) {
+        console.error('Error creating wrapper:', error);
+        return null;
+    }
+}
+
+// Inject dynamic CSS rules for specific URLs
+function injectDynamicCssRules() {
+    // Don't inject if blurTracker isn't available
+    if (!blurTracker || blurTracker.blurredImages.size === 0) return;
+    
+    try {
+        // Create a style element if it doesn't exist yet
+        let styleEl = document.getElementById('faceone-dynamic-styles');
+        if (!styleEl) {
+            styleEl = document.createElement('style');
+            styleEl.id = 'faceone-dynamic-styles';
+            document.head.appendChild(styleEl);
+        }
+        
+        // Generate CSS rules for each blurred URL
+        let cssRules = '';
+        for (const [url, _] of blurTracker.blurredImages.entries()) {
+            // Create a safe selector from the URL
+            try {
+                // Extract just the filename part of the URL
+                const urlObj = new URL(url);
+                const pathParts = urlObj.pathname.split('/');
+                const filename = pathParts[pathParts.length - 1].split('.')[0];
+                
+                if (filename && filename.length > 5) {
+                    // Create a selector that targets images with this filename in their src
+                    cssRules += `img[src*="${filename}"] { filter: blur(10px) !important; }\n`;
+                }
+            } catch (e) {
+                console.error('Error generating CSS for URL', url, e);
+            }
+        }
+        
+        // Add the rules to the style element
+        styleEl.textContent = cssRules;
+        
+        console.log(`Injected ${blurTracker.blurredImages.size} dynamic CSS rules for blurring`);
+    } catch (error) {
+        console.error('Error injecting dynamic CSS rules:', error);
+    }
+}
+
+// Setup function to periodically update dynamic CSS
+function setupDynamicCssUpdater() {
+    // Initial injection
+    injectDynamicCssRules();
+    
+    // Periodically update the CSS rules
+    setInterval(() => {
+        injectDynamicCssRules();
+    }, 5000); // Every 5 seconds
+}
+
+// Add this to the initialization process
+async function initializeExtension() {
+    const startTime = performance.now();
+    logWithEmoji('start', 'initializeExtension', 'Starting extension initialization');
+    
+    if (extensionInitialized) {
+        logWithEmoji('info', 'initializeExtension', 'Extension already initialized, skipping');
+        return true;
+    }
+        
+    setupDynamicCssUpdater(); // Add this line to set up the dynamic CSS updater
+    
 }
