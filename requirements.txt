@@ -16,6 +16,7 @@ mediapipe
 pillow
 requests
 rich
+kagglehub
 
 tensorflow
 tensorflowjs

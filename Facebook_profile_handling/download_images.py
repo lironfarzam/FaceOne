@@ -190,7 +190,7 @@ def download_image(link: str, download_folder: str) -> bool:
         if response.status_code == 200:
             # Verify the image is a photo (not a small icon)
             if not is_valid_photo(response.content):
-                print(f"Skipping non-photo image: {link}")
+                # print(f"Skipping non-photo image: {link}")
                 return False
 
             # Use a more unique filename to avoid collisions
@@ -271,7 +271,7 @@ def download_user_photos(profile_url: str, download_folder: str) -> None:
 
             # Download new images
             for link in section_links:
-                print("Image source: ", link)
+                # print("Image source: ", link)
                 if download_image(link, download_folder):
                     download_count += 1
                 processed_links.add(link)  # Mark as processed

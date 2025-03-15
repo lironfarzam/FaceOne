@@ -3,7 +3,6 @@
  * 
  * @author Liron Farzam
  * @version 1.0.0
- * @license MIT
  * 
  * A lightweight system for tracking and managing image URLs that need to be blurred.
  * This module only stores URLs of images that require blurring, without keeping embeddings,

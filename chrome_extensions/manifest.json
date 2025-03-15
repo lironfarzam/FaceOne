@@ -27,7 +27,9 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "<all_urls>"
+      ],
       "js": [
         "js/utils.js",
         "lib/face-api.min.js",
@@ -38,24 +40,30 @@
       "run_at": "document_idle"
     }
   ],
-  "web_accessible_resources": [{
-    "resources": [
-      "sandbox.html",
-      "lib/tf.min.js",
-      "lib/tf-converter.min.js",
-      "models/*",
-      "css/*",
-      "js/imageWorker.js",
-      "js/workerPool.js",
-      "js/utils.js",
-      "js/sandbox.js"
-    ],
-    "matches": ["<all_urls>"]
-  }],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sandbox.html",
+        "lib/tf.min.js",
+        "lib/tf-converter.min.js",
+        "models/*",
+        "css/*",
+        "js/imageWorker.js",
+        "js/workerPool.js",
+        "js/utils.js",
+        "js/sandbox.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
   "sandbox": {
-    "pages": ["sandbox.html"]
+    "pages": [
+      "sandbox.html"
+    ]
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; img-src 'self' data: https: http: blob:"
   }
-} 
+}
