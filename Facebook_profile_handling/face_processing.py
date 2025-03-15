@@ -2,8 +2,8 @@
 Face Processing Module
 ======================
 
-This module provides functionality for detecting, analyzing, and clustering faces 
-in a collection of images. It's designed to identify the most frequently occurring 
+This module provides functionality for detecting, analyzing, and clustering faces
+in a collection of images. It's designed to identify the most frequently occurring
 person across multiple photos.
 
 Key features:
@@ -16,12 +16,12 @@ Key features:
 - Visualization tools for debugging and analysis
 - Face frame extraction for the most frequent person
 
-The module is built on top of DeepFace and offers a comprehensive pipeline for 
+The module is built on top of DeepFace and offers a comprehensive pipeline for
 face processing tasks, with configurable parameters at each stage.
 
 Usage:
     from Facebook_profile_handling.face_processing import process_images
-    
+
     most_frequent_person_folder = process_images(
         images_folder="./photos",
         output_folder="./results",
@@ -320,7 +320,7 @@ def get_optimal_clustering_threshold(model_name: str, face_count: int) -> float:
 
 
 def process_single_photo(
-    args: Tuple[str, str, float, int, float, List[str], List[str], float, int]
+    args: Tuple[str, str, float, int, float, List[str], List[str], float, int],
 ) -> Dict[str, Any]:
     """Process a single photo for face detection and embedding generation"""
     (
@@ -453,7 +453,7 @@ def process_single_photo(
 
 
 def process_batch(
-    args: Tuple[List[str], str, float, int, float, List[str], List[str], float, int]
+    args: Tuple[List[str], str, float, int, float, List[str], List[str], float, int],
 ) -> Dict[str, Any]:
     """
     Process a batch of images to detect and extract faces.
@@ -2100,7 +2100,7 @@ def enhance_face_crop(face_crop: np.ndarray, preserve_skin_tone: bool = True):
         return enhanced_bgr
 
     except Exception as e:
-        print_red(f"Warning: Enhancement failed, returning original image: {e}")
+        # print_red(f"Warning: Enhancement failed, returning original image: {e}")
         return face_crop
 
 

@@ -271,7 +271,7 @@ def download_user_photos(profile_url: str, download_folder: str) -> None:
 
             # Download new images
             for link in section_links:
-                print("Image source: ", link)
+                # print("Image source: ", link)
                 if download_image(link, download_folder):
                     download_count += 1
                 processed_links.add(link)  # Mark as processed
