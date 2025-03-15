@@ -6,9 +6,10 @@ FaceOne: Main Pipeline Execution
 This script orchestrates the complete FaceOne pipeline:
 1. Download face images from Facebook profiles
 2. Process and extract faces from the images
-3. Download LFW dataset for negative examples
-4. Create a face recognition model
-5. Prepare files for the Chrome extension
+3. Generate live portraits using the processed faces
+4. Download LFW dataset for negative examples
+5. Create a face recognition model
+6. Prepare files for the Chrome extension
 
 Run this script to execute the entire workflow in sequence.
 
@@ -153,6 +154,7 @@ def check_prerequisites():
         "Facebook_profile_handling",
         "create_face_model",
         "chrome_extensions",
+        "Live_portrait",
     ]
 
     for directory in directories:
@@ -161,6 +163,23 @@ def check_prerequisites():
             return False
 
     print_success("✓ All required directories exist.")
+
+    # Check for required script files
+    required_scripts = [
+        "Facebook_profile_handling/download_images.py",
+        "Facebook_profile_handling/face_processing.py",
+        "Live_portrait/live_portrait_generator.py",
+        "create_face_model/download_lfw.py",
+        "create_face_model/create_model.py",
+        "create_face_model/prepare_extension.py",
+    ]
+
+    for script in required_scripts:
+        if not os.path.exists(script):
+            print_error(f"Required script {script} not found.")
+            return False
+
+    print_success("✓ All required scripts exist.")
 
     # Check if necessary Python packages are installed
     try:
@@ -190,6 +209,20 @@ def setup_directories(config):
     chrome_ext_path = config["chrome_extension_model_path"]
     os.makedirs(os.path.dirname(chrome_ext_path), exist_ok=True)
 
+    # Set up live portrait directories if configured
+    live_portrait_dirs = [
+        "input_source_folder",
+        "input_video_folder",
+        "output_video_folder",
+        "positives_folder",
+        "anchors_folder",
+    ]
+
+    for dir_key in live_portrait_dirs:
+        if dir_key in config:
+            os.makedirs(config[dir_key], exist_ok=True)
+            print_success(f"✓ Created live portrait directory: {dir_key}")
+
     print_success("✓ Directories set up successfully.")
 
 
@@ -201,6 +234,11 @@ def main():
     )
     parser.add_argument(
         "--skip-processing", action="store_true", help="Skip the face processing step"
+    )
+    parser.add_argument(
+        "--skip-portraits",
+        action="store_true",
+        help="Skip the live portrait generation step",
     )
     parser.add_argument(
         "--skip-lfw", action="store_true", help="Skip the LFW dataset download step"
@@ -229,10 +267,11 @@ def main():
     # Setup directories
     setup_directories(config)
 
-    total_steps = 5 - sum(
+    total_steps = 6 - sum(
         [
             args.skip_download,
             args.skip_processing,
+            args.skip_portraits,
             args.skip_lfw,
             args.skip_model,
             args.chrome_only,
@@ -267,7 +306,20 @@ def main():
             return
         current_step += 1
 
-    # 3. Download LFW dataset for negative examples
+    # 3. Generate Live Portraits
+    if not args.skip_portraits and not args.chrome_only:
+        if not run_script(
+            "Live_portrait/live_portrait_generator.py",
+            "Generating live portraits from processed faces",
+            current_step,
+            total_steps,
+        ):
+            print_warning(
+                "Live portrait generation had issues. Pipeline will continue but portraits may not be available."
+            )
+        current_step += 1
+
+    # 4. Download LFW dataset for negative examples
     if not args.skip_lfw and not args.chrome_only:
         lfw_result = run_script(
             "create_face_model/download_lfw.py",
@@ -284,7 +336,7 @@ def main():
             )
         current_step += 1
 
-    # 4. Create model
+    # 5. Create model
     if not args.skip_model and not args.chrome_only:
         if not run_script(
             "create_face_model/create_model.py",
@@ -296,7 +348,7 @@ def main():
             return
         current_step += 1
 
-    # 5. Prepare Chrome extension files
+    # 6. Prepare Chrome extension files
     if not run_script(
         "create_face_model/prepare_extension.py",
         "Preparing files for Chrome extension",
