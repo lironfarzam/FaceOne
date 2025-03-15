@@ -1,6 +1,30 @@
+/**
+ * @fileoverview popup.js - Extension popup UI controller
+ * 
+ * @author Liron Farzam
+ * @version 1.0.0
+ * 
+ * Controls the extension's popup interface, manages user settings, and handles
+ * communication with the content script. Provides UI for switching between face
+ * detection and blur modes, adjusting settings, and performing actions like
+ * reprocessing images or clearing the blur list.
+ */
+
+//==============================================================================
+// INITIALIZATION AND SETUP
+//==============================================================================
+
+/**
+ * Initializes the popup UI when the DOM content is loaded.
+ * Sets up all event handlers and loads saved settings.
+ */
 document.addEventListener('DOMContentLoaded', function() {
     console.log('Popup script loaded');
 
+    //--------------------------------------------------------------------------
+    // UI ELEMENT REFERENCES
+    //--------------------------------------------------------------------------
+    
     // Get all UI elements
     const faceDetectionButton = document.getElementById('faceDetectionMode');
     const blurButton = document.getElementById('blurMode');
@@ -24,8 +48,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // Get all mode-specific settings
     const modeSpecificSettings = document.querySelectorAll('[data-mode]');
 
-    // Load saved settings
+    //--------------------------------------------------------------------------
+    // LOAD SAVED SETTINGS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Loads previously saved settings from Chrome storage and initializes the UI.
+     * Sets up the initial state of the popup interface based on stored preferences.
+     */
     chrome.storage.sync.get({
+        // Default values if settings aren't found
         processingMode: 'face_detection',
         autoProcessImages: true,
         addLabel: true,
@@ -49,7 +81,14 @@ document.addEventListener('DOMContentLoaded', function() {
         updateBlurredImagesCount();
     });
 
-    // Mode switching
+    //--------------------------------------------------------------------------
+    // MODE SWITCHING EVENT HANDLERS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Event handler for face detection mode button.
+     * Switches the extension to face detection mode and updates the UI.
+     */
     faceDetectionButton.addEventListener('click', function() {
         console.log('Face Detection button clicked');
         if (this.classList.contains('active')) {
@@ -61,6 +100,10 @@ document.addEventListener('DOMContentLoaded', function() {
         showStatus('Switched to Face Detection mode');
     });
 
+    /**
+     * Event handler for blur mode button.
+     * Switches the extension to direct blur mode and updates the UI.
+     */
     blurButton.addEventListener('click', function() {
         console.log('Blur button clicked');
         if (this.classList.contains('active')) {
@@ -72,26 +115,45 @@ document.addEventListener('DOMContentLoaded', function() {
         showStatus('Switched to Blur mode');
     });
 
-    // Settings changes
+    //--------------------------------------------------------------------------
+    // SETTINGS EVENT HANDLERS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Event handler for auto-process checkbox.
+     * Enables or disables automatic processing of images.
+     */
     autoProcessCheckbox.addEventListener('change', function() {
         console.log('Auto process changed:', this.checked);
         saveSettings('autoProcessImages', this.checked);
         showStatus(this.checked ? 'Auto-processing enabled' : 'Auto-processing disabled');
     });
 
+    /**
+     * Event handler for label checkbox.
+     * Enables or disables showing labels on processed images.
+     */
     addLabelCheckbox.addEventListener('change', function() {
         console.log('Show labels changed:', this.checked);
         saveSettings('addLabel', this.checked);
         showStatus(this.checked ? 'Labels enabled' : 'Labels disabled');
     });
 
+    /**
+     * Event handler for frame face detection checkbox.
+     * Enables or disables drawing frames around detected faces.
+     */
     frameFaceCheckbox.addEventListener('change', function() {
         console.log('Show frames changed:', this.checked);
         saveSettings('frameFaceDetected', this.checked);
         showStatus(this.checked ? 'Face frames enabled' : 'Face frames disabled');
     });
 
-    // Debug mode toggle handling
+    /**
+     * Event handler for debug mode checkbox.
+     * Enables or disables verbose logging for debugging.
+     * Also sends an immediate update to the content script.
+     */
     debugModeCheckbox.addEventListener('change', function() {
         console.log('Debug mode changed:', this.checked);
         saveSettings('debugMode', this.checked);
@@ -119,17 +181,33 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    /**
+     * Event handler for confidence slider input (real-time updates).
+     * Updates the displayed confidence value as the slider moves.
+     */
     confidenceSlider.addEventListener('input', function() {
         confidenceValue.textContent = `${this.value}%`;
     });
 
+    /**
+     * Event handler for confidence slider change (after release).
+     * Saves the new confidence threshold setting.
+     */
     confidenceSlider.addEventListener('change', function() {
         console.log('Confidence threshold changed:', this.value);
         saveSettings('confidenceThreshold', parseInt(this.value));
         showStatus(`Confidence threshold set to ${this.value}%`);
     });
 
-    // Reprocess button
+    //--------------------------------------------------------------------------
+    // ACTION BUTTON HANDLERS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Event handler for reprocess button.
+     * Sends a message to the content script to reprocess all images
+     * on the current page using current settings.
+     */
     reprocessButton.addEventListener('click', function() {
         if (this.disabled) return;
         
@@ -167,7 +245,11 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    // Clear blur list button
+    /**
+     * Event handler for clear blur list button.
+     * Sends a message to the content script to clear all
+     * blurred images from storage.
+     */
     clearBlurListButton.addEventListener('click', function() {
         if (this.disabled) return;
         
@@ -199,7 +281,14 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
     
-    // Function to update the number of blurred images
+    //--------------------------------------------------------------------------
+    // UTILITY FUNCTIONS
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Updates the count of blurred images displayed in the popup.
+     * Queries the content script for current blur statistics.
+     */
     function updateBlurredImagesCount() {
         chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
             if (tabs[0]) {
@@ -227,7 +316,12 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Helper function to update UI based on mode
+    /**
+     * Updates the UI based on the selected processing mode.
+     * Shows or hides mode-specific settings and updates button states.
+     * 
+     * @param {string} mode - The processing mode to switch to ('face_detection' or 'blur')
+     */
     function updateUIForMode(mode) {
         console.log('Updating UI for mode:', mode);
         
@@ -263,7 +357,12 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Helper function to save settings
+    /**
+     * Saves a setting to Chrome storage and notifies the content script.
+     * 
+     * @param {string} key - The setting key to save
+     * @param {any} value - The value to save for the setting
+     */
     function saveSettings(key, value) {
         console.log('Saving setting:', key, value);
         const settings = {};
@@ -303,7 +402,12 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Helper function to show status messages
+    /**
+     * Displays a status message to the user.
+     * Shows a temporary notification that fades after 2 seconds.
+     * 
+     * @param {string} message - The status message to display
+     */
     function showStatus(message) {
         console.log('Status:', message);
         if (statusIndicator) {
@@ -316,7 +420,10 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // Diagnostic Dialog Functionality
+    //--------------------------------------------------------------------------
+    // DIAGNOSTIC DIALOG FUNCTIONALITY
+    //--------------------------------------------------------------------------
+    
     const diagnosticDialog = document.getElementById('diagnosticDialog');
     const diagnosticMessages = document.getElementById('diagnosticMessages');
     const closeDiagnosticDialog = document.getElementById('closeDiagnosticDialog');
@@ -325,8 +432,13 @@ document.addEventListener('DOMContentLoaded', function() {
     let diagnosticMessageHistory = [];
     const MAX_MESSAGES = 50;
     
-    
-    // Function to add a diagnostic message
+    /**
+     * Adds a diagnostic message to the diagnostic dialog.
+     * Creates a timestamped entry with appropriate styling based on message level.
+     * 
+     * @param {string} level - Message level ('info', 'warning', 'error')
+     * @param {string} text - The message text to display
+     */
     function addDiagnosticMessage(level, text) {
         // Make sure diagnostic dialog elements exist
         if (!diagnosticDialog || !diagnosticMessages) {
@@ -366,8 +478,10 @@ document.addEventListener('DOMContentLoaded', function() {
         diagnosticDialog.classList.add('show');
     }
     
-    
-    // Close button event
+    /**
+     * Event handler for the diagnostic dialog close button.
+     * Hides the diagnostic dialog when clicked.
+     */
     if (closeDiagnosticDialog) {
         closeDiagnosticDialog.addEventListener('click', function() {
             if (diagnosticDialog) {
@@ -376,7 +490,14 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Add a test diagnostic button (for development, can be removed later)
+    //--------------------------------------------------------------------------
+    // DEVELOPMENT TOOLS - Can be removed in production
+    //--------------------------------------------------------------------------
+    
+    /**
+     * Adds a test diagnostic button for development purposes.
+     * This can be removed in production builds.
+     */
     const actionsSection = document.querySelector('.actions-section');
     if (actionsSection) {
         const testDiagnosticButton = document.createElement('button');
