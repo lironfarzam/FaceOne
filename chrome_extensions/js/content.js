@@ -3504,6 +3504,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             
             sendResponse({ success: true });
         }
+        else if (message.action === 'updateSettings') {
+            // Handle direct settings updates from popup
+            if (message.settings) {
+                // Handle debug mode toggle
+                if (typeof message.settings.debugMode !== 'undefined') {
+                    window.DEBUG = message.settings.debugMode;
+                    
+                    if (window.DEBUG) {
+                        console.log('🔧 Debug mode enabled - verbose console logging activated');
+                        // Add diagnostic info in debug mode
+                        console.log('🔧 Current settings:', flagShowFrameonImage);
+                        console.log('🔧 Current blur list size:', blurTracker ? blurTracker.blurredImages.size : 'blurTracker not loaded');
+                    } else {
+                        console.log('🔧 Debug mode disabled - reduced console logging activated');
+                    }
+                }
+                
+                // Update other settings if included
+                if (Object.keys(message.settings).length > 0) {
+                    flagShowFrameonImage = {
+                        ...flagShowFrameonImage,
+                        ...message.settings
+                    };
+                }
+            }
+            
+            sendResponse({ success: true, debug: window.DEBUG });
+        }
         else if (message.type === 'REPROCESS_IMAGES') {
             // Update settings if provided
             if (message.settings) {
@@ -4638,8 +4666,20 @@ function handleImageVisible(entry) {
                 img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
                 
                 // Send diagnostic message to popup
+                if (window.DEBUG) {
+                    console.log(`🔍 Image blurred from saved list: ${normalizedUrl.substring(0, 50)}...`);
+                    
+                    // If in debug mode, add additional diagnostic information
+                    if (typeof processedImageTracker !== 'undefined' && processedImageTracker) {
+                        const id = processedImageTracker.getImageIdentifier(img);
+                        console.log(`🔍 Debug: Image identifier for blurred image: ${id}`);
+                    }
+                }
             } catch (e) {
                 // Ignore errors in URL normalization
+                if (window.DEBUG) {
+                    console.error('🔍 Error in URL normalization:', e);
+                }
             }
             
             if (flagShowFrameonImage.addLabel) {
@@ -4687,6 +4727,9 @@ function handleImageVisible(entry) {
                 img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
             } catch (e) {
                 // Ignore errors in URL normalization
+                if (window.DEBUG) {
+                    console.error('🔍 Error in URL normalization:', e);
+                }
             }
             
             if (flagShowFrameonImage.addLabel) {

@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const frameFaceCheckbox = document.getElementById('frameFaceDetected');
     const confidenceSlider = document.getElementById('confidenceThreshold');
     const confidenceValue = document.getElementById('confidenceValue');
+    const debugModeCheckbox = document.getElementById('debugMode');
     const reprocessButton = document.getElementById('reprocessButton');
     const clearBlurListButton = document.getElementById('clearBlurListButton');
     const blurredCount = document.getElementById('blurredCount');
@@ -29,7 +30,8 @@ document.addEventListener('DOMContentLoaded', function() {
         autoProcessImages: true,
         addLabel: true,
         frameFaceDetected: true,
-        confidenceThreshold: 70
+        confidenceThreshold: 70,
+        debugMode: false
     }, function(items) {
         console.log('Loaded settings:', items);
         
@@ -39,6 +41,7 @@ document.addEventListener('DOMContentLoaded', function() {
         autoProcessCheckbox.checked = items.autoProcessImages;
         addLabelCheckbox.checked = items.addLabel;
         frameFaceCheckbox.checked = items.frameFaceDetected;
+        debugModeCheckbox.checked = items.debugMode;
         confidenceSlider.value = items.confidenceThreshold;
         confidenceValue.textContent = `${items.confidenceThreshold}%`;
         
@@ -86,6 +89,34 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('Show frames changed:', this.checked);
         saveSettings('frameFaceDetected', this.checked);
         showStatus(this.checked ? 'Face frames enabled' : 'Face frames disabled');
+    });
+
+    // Debug mode toggle handling
+    debugModeCheckbox.addEventListener('change', function() {
+        console.log('Debug mode changed:', this.checked);
+        saveSettings('debugMode', this.checked);
+        
+        if (this.checked) {
+            showStatus('Debug mode enabled - Verbose logging activated');
+            addDiagnosticMessage('info', 'Debug mode ON - Check browser console for detailed logs');
+        } else {
+            showStatus('Debug mode disabled - Normal logging activated');
+            addDiagnosticMessage('info', 'Debug mode OFF - Reduced console logging');
+        }
+        
+        // Notify content script to update debug mode immediately
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+            if (tabs && tabs.length > 0) {
+                chrome.tabs.sendMessage(tabs[0].id, {
+                    action: 'updateSettings',
+                    settings: { debugMode: debugModeCheckbox.checked }
+                }, function(response) {
+                    if (response && response.success) {
+                        console.log('Debug mode updated in content script:', response.debug);
+                    }
+                });
+            }
+        });
     });
 
     confidenceSlider.addEventListener('input', function() {
@@ -177,15 +208,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 }, function(response) {
                     if (response && response.success) {
                         const blurredCount = document.getElementById('blurredCount');
-                        if (response.historicalCount !== undefined) {
-                            blurredCount.textContent = `Active: ${response.count} | Auto-renewed: ${response.autoRenewedCount || 0} | Historical: ${response.historicalCount}`;
-                            blurredCount.title = 'Active: Currently blurred images\nAuto-renewed: Images that were automatically reblurred\nHistorical: Previously blurred images';
-                        } else {
-                            blurredCount.textContent = `Blurred images: ${response.count}`;
+                        if (blurredCount) {
+                            if (response.historicalCount !== undefined) {
+                                blurredCount.textContent = `Active: ${response.count} | Auto-renewed: ${response.autoRenewedCount || 0} | Historical: ${response.historicalCount}`;
+                                blurredCount.title = 'Active: Currently blurred images\nAuto-renewed: Images that were automatically reblurred\nHistorical: Previously blurred images';
+                            } else {
+                                blurredCount.textContent = `Blurred images: ${response.count}`;
+                            }
                         }
                     } else {
                         const blurredCount = document.getElementById('blurredCount');
-                        blurredCount.textContent = 'Blurred images: unavailable';
+                        if (blurredCount) {
+                            blurredCount.textContent = 'Blurred images: unavailable';
+                        }
                     }
                 });
             }
@@ -271,12 +306,14 @@ document.addEventListener('DOMContentLoaded', function() {
     // Helper function to show status messages
     function showStatus(message) {
         console.log('Status:', message);
-        statusIndicator.textContent = message;
-        statusIndicator.classList.add('show');
-        
-        setTimeout(() => {
-            statusIndicator.classList.remove('show');
-        }, 2000);
+        if (statusIndicator) {
+            statusIndicator.textContent = message;
+            statusIndicator.classList.add('show');
+            
+            setTimeout(() => {
+                statusIndicator.classList.remove('show');
+            }, 2000);
+        }
     }
 
     // Diagnostic Dialog Functionality
@@ -291,6 +328,12 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Function to add a diagnostic message
     function addDiagnosticMessage(level, text) {
+        // Make sure diagnostic dialog elements exist
+        if (!diagnosticDialog || !diagnosticMessages) {
+            console.error('Diagnostic dialog elements not found');
+            return;
+        }
+        
         // Create timestamp
         const now = new Date();
         const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
@@ -325,19 +368,26 @@ document.addEventListener('DOMContentLoaded', function() {
     
     
     // Close button event
-    closeDiagnosticDialog.addEventListener('click', function() {
-        diagnosticDialog.classList.remove('show');
-    });
+    if (closeDiagnosticDialog) {
+        closeDiagnosticDialog.addEventListener('click', function() {
+            if (diagnosticDialog) {
+                diagnosticDialog.classList.remove('show');
+            }
+        });
+    }
     
-    // Add a test diagnostic message button (for development, can be removed later)
-    const testDiagnosticButton = document.createElement('button');
-    testDiagnosticButton.textContent = 'Test Diagnostic';
-    testDiagnosticButton.className = 'action-button';
-    testDiagnosticButton.style.marginTop = '8px';
-    testDiagnosticButton.addEventListener('click', function() {
-        const levels = ['info', 'warning', 'error'];
-        const level = levels[Math.floor(Math.random() * levels.length)];
-        addDiagnosticMessage(level, `Test diagnostic message with ${level} level`);
-    });
-    document.querySelector('.actions-section').appendChild(testDiagnosticButton);
+    // Add a test diagnostic button (for development, can be removed later)
+    const actionsSection = document.querySelector('.actions-section');
+    if (actionsSection) {
+        const testDiagnosticButton = document.createElement('button');
+        testDiagnosticButton.textContent = 'Test Diagnostic';
+        testDiagnosticButton.className = 'action-button';
+        testDiagnosticButton.style.marginTop = '8px';
+        testDiagnosticButton.addEventListener('click', function() {
+            const levels = ['info', 'warning', 'error'];
+            const level = levels[Math.floor(Math.random() * levels.length)];
+            addDiagnosticMessage(level, `Test diagnostic message with ${level} level`);
+        });
+        actionsSection.appendChild(testDiagnosticButton);
+    }
 }); 
