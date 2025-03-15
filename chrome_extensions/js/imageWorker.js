@@ -1,19 +1,30 @@
 /**
  * @fileoverview Optimized Web Worker for image processing operations.
  * Handles image preprocessing tasks in a separate thread.
+ * 
  * @author Liron Farzam
  * @version 1.0.0
+ * 
+ * This worker provides an isolated execution environment for computationally 
+ * intensive image processing tasks. It implements resource management, 
+ * performance optimization, memory monitoring, and error handling to ensure
+ * efficient and reliable image processing operations without impacting the
+ * main thread's performance.
  */
 
-//=============================================================================
-// Logging Function for Worker
-//=============================================================================
+//==============================================================================
+// LOGGING SYSTEM
+//==============================================================================
+
 /**
  * Simplified logWithEmoji function for worker context
+ * Provides consistent logging across the extension with emoji indicators.
+ * 
  * @param {string} type - Type of message: 'info', 'success', 'warning', 'error', etc.
  * @param {string} functionName - Name of the function generating the log
  * @param {string} message - The message to log
  * @param {Object} [details] - Optional detailed information
+ * @returns {void}
  */
 function logWithEmoji(type, functionName, message, details = null) {
     // Workers don't share window object, so we need our own DEBUG flag
@@ -53,51 +64,91 @@ function logWithEmoji(type, functionName, message, details = null) {
     }
 }
 
-//=============================================================================
-// Global Variables and Constants
-//=============================================================================
+//==============================================================================
+// GLOBAL STATE AND CONFIGURATION
+//==============================================================================
+
 /**
- * Worker state and configuration
+ * Worker state object that tracks runtime statistics and operational status
+ * @type {Object}
  */
 const state = {
+    /** @type {boolean} - Whether the worker has been properly initialized */
     initialized: false,
+    /** @type {number} - Count of images processed since worker start */
     processingCount: 0,
+    /** @type {number} - Duration of the most recent processing operation in ms */
     lastProcessingTime: 0,
+    /** @type {number} - Timestamp when worker was started */
     startTimestamp: Date.now(),
+    /** @type {number} - Current JavaScript heap size in bytes */
     memoryUsage: 0,
+    /** @type {number} - Peak JavaScript heap size observed in bytes */
     peakMemoryUsage: 0
 };
 
+/**
+ * Configuration settings for the worker's behavior
+ * @type {Object}
+ */
 const config = {
+    /** @type {number} - Maximum image dimension to process in pixels */
     maxImageSize: 1024,
+    /** @type {number} - Maximum time allowed for processing a single image in ms */
     processingTimeout: 30000,
+    /** @type {number} - Maximum retry attempts for failed operations */
     maxRetries: 2,
+    /** @type {number} - Interval between memory usage checks in ms */
     memoryCheckInterval: 30000 // 30 seconds
 };
 
-//=============================================================================
-// Performance Optimization
-//=============================================================================
+//==============================================================================
+// RESOURCE MANAGEMENT AND PERFORMANCE OPTIMIZATION
+//==============================================================================
+
 /**
- * Reusable canvas and context for image processing
+ * Shared canvas and context for reuse across operations to reduce memory allocation
+ * @type {OffscreenCanvas|null}
  */
 let sharedCanvas = null;
+
+/**
+ * Shared 2D rendering context for the shared canvas
+ * @type {OffscreenCanvasRenderingContext2D|null}
+ */
 let sharedCtx = null;
 
-// Resource management
+/** 
+ * Resource management - interval for memory checking
+ * @type {number|null}
+ */
 let memoryCheckInterval = null;
+
+/**
+ * Pool of reusable canvases to reduce memory allocation and garbage collection
+ * @type {Array<OffscreenCanvas>}
+ */
 let canvasPool = [];
+
+/**
+ * Maximum number of canvases to keep in the pool to limit memory usage
+ * @type {number}
+ * @constant
+ */
 const MAX_CANVAS_POOL_SIZE = 3;
 
 /**
- * Initialize shared resources
+ * Initializes shared resources used by the worker
+ * Creates a shared canvas and context, and starts memory monitoring
+ * 
+ * @returns {void}
  */
 function initializeSharedResources() {
     if (!sharedCanvas) {
         sharedCanvas = new OffscreenCanvas(1, 1);
         sharedCtx = sharedCanvas.getContext('2d', {
-            alpha: false,
-            willReadFrequently: true
+            alpha: false,  // Optimize by disabling alpha channel if not needed
+            willReadFrequently: true  // Optimize for pixel manipulation operations
         });
     }
     
@@ -106,7 +157,10 @@ function initializeSharedResources() {
 }
 
 /**
- * Start monitoring memory usage
+ * Sets up periodic memory usage monitoring
+ * Monitors JavaScript heap size to prevent memory leaks and excessive usage
+ * 
+ * @returns {void}
  */
 function startMemoryMonitoring() {
     if (memoryCheckInterval) {
@@ -120,7 +174,10 @@ function startMemoryMonitoring() {
 }
 
 /**
- * Check current memory usage
+ * Checks current memory usage and performs cleanup if necessary
+ * Uses performance.memory API if available to monitor heap size
+ * 
+ * @returns {void}
  */
 function checkMemoryUsage() {
     try {
@@ -145,7 +202,10 @@ function checkMemoryUsage() {
 }
 
 /**
- * Clean up resources when memory is high
+ * Cleans up resources when memory usage is high
+ * Releases canvas pool and attempts to trigger garbage collection
+ * 
+ * @returns {void}
  */
 function cleanupResources() {
     // Release canvas pool
@@ -167,9 +227,10 @@ function cleanupResources() {
 }
 
 /**
- * Get or create a canvas from the pool
- * @param {number} width - Canvas width
- * @param {number} height - Canvas height
+ * Gets or creates a canvas from the pool for efficient reuse
+ * 
+ * @param {number} width - Required canvas width in pixels
+ * @param {number} height - Required canvas height in pixels
  * @returns {OffscreenCanvas} A canvas of the requested size
  */
 function getCanvasFromPool(width, height) {
@@ -189,8 +250,10 @@ function getCanvasFromPool(width, height) {
 }
 
 /**
- * Return a canvas to the pool
- * @param {OffscreenCanvas} canvas - The canvas to return
+ * Returns a canvas to the pool for reuse when no longer needed
+ * 
+ * @param {OffscreenCanvas} canvas - The canvas to return to the pool
+ * @returns {void}
  */
 function returnCanvasToPool(canvas) {
     // Don't add if pool is full
@@ -204,16 +267,22 @@ function returnCanvasToPool(canvas) {
     canvasPool.push(canvas);
 }
 
-//=============================================================================
-// Message Handler
-//=============================================================================
+//==============================================================================
+// MESSAGE HANDLING
+//==============================================================================
+
 /**
  * Main message handler for the worker
+ * Dispatches incoming messages to appropriate handlers based on message type
+ * 
  * @param {MessageEvent} e - The message event containing the task data
+ * @param {Object} e.data - The message data payload
  * @param {string} e.data.type - The type of operation to perform
- * @param {ImageData} e.data.data - The image data to process
- * @param {number} e.data.width - The width of the image
- * @param {number} e.data.height - The height of the image
+ * @param {ImageData} [e.data.data] - The image data to process (for image operations)
+ * @param {number} [e.data.width] - The width of the image
+ * @param {number} [e.data.height] - The height of the image
+ * @param {Object} [e.data.config] - Optional configuration settings
+ * @returns {void}
  */
 self.onmessage = async function(e) {
     const { type, data, width, height } = e.data;
@@ -270,11 +339,17 @@ self.onmessage = async function(e) {
     }
 };
 
-//=============================================================================
-// Handler Functions
-//=============================================================================
+//==============================================================================
+// OPERATION HANDLERS
+//==============================================================================
+
 /**
- * Initialize worker with optimized settings
+ * Initializes the worker with optimized settings
+ * Sets up shared resources and reports ready status
+ * 
+ * @async
+ * @returns {Promise<void>}
+ * @throws {Error} If initialization fails
  */
 async function handleInit() {
     try {
@@ -297,7 +372,15 @@ async function handleInit() {
 }
 
 /**
- * Process image with performance optimizations
+ * Handles image processing requests with performance optimizations
+ * Processes the image and returns the result to the main thread
+ * 
+ * @async
+ * @param {ImageData} imageData - The image data to process
+ * @param {number} width - The width of the image
+ * @param {number} height - The height of the image
+ * @returns {Promise<void>}
+ * @throws {Error} If processing fails or times out
  */
 async function handleImageProcessing(imageData, width, height) {
     if (!state.initialized) {
@@ -341,17 +424,25 @@ async function handleImageProcessing(imageData, width, height) {
     }
 }
 
-//=============================================================================
-// Image Processing Functions
-//=============================================================================
+//==============================================================================
+// IMAGE PROCESSING CORE FUNCTIONS
+//==============================================================================
+
 /**
- * Optimized image processing with caching and performance improvements
+ * Optimized image processing with caching, timeouts, and performance improvements
+ * 
+ * @async
+ * @param {ImageData} imageData - The image data to process
+ * @param {number} width - The width of the image
+ * @param {number} height - The height of the image
+ * @returns {Promise<ImageData>} The processed image data
+ * @throws {Error} If processing times out or fails
  */
 async function processImageOptimized(imageData, width, height) {
     // Put image data on canvas
     sharedCtx.putImageData(imageData, 0, 0);
 
-    // Apply optimized processing
+    // Apply optimized processing with timeout protection
     const processed = await Promise.race([
         applyImageProcessing(imageData),
         new Promise((_, reject) => 
@@ -367,7 +458,12 @@ async function processImageOptimized(imageData, width, height) {
 }
 
 /**
- * Apply actual image processing with optimizations
+ * Applies actual image processing with performance optimizations
+ * This is the core function where specific image processing algorithms are implemented
+ * 
+ * @async
+ * @param {ImageData} imageData - The image data to process
+ * @returns {Promise<ImageData>} The processed image data
  */
 async function applyImageProcessing(imageData) {
     // Get a canvas to work with
@@ -392,10 +488,14 @@ async function applyImageProcessing(imageData) {
     }
 }
 
-//=============================================================================
-// Cleanup Function
-//=============================================================================
-// Clean up resources when worker is terminating
+//==============================================================================
+// WORKER LIFECYCLE MANAGEMENT
+//==============================================================================
+
+/**
+ * Clean up resources when worker is terminating
+ * Ensures proper cleanup of intervals and object references
+ */
 self.addEventListener('close', () => {
     logWithEmoji('setup', 'workerCleanup', 'Worker is terminating, cleaning up resources');
     
