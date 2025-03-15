@@ -278,4 +278,66 @@ document.addEventListener('DOMContentLoaded', function() {
             statusIndicator.classList.remove('show');
         }, 2000);
     }
+
+    // Diagnostic Dialog Functionality
+    const diagnosticDialog = document.getElementById('diagnosticDialog');
+    const diagnosticMessages = document.getElementById('diagnosticMessages');
+    const closeDiagnosticDialog = document.getElementById('closeDiagnosticDialog');
+    
+    // Initialize diagnostic message storage
+    let diagnosticMessageHistory = [];
+    const MAX_MESSAGES = 50;
+    
+    
+    // Function to add a diagnostic message
+    function addDiagnosticMessage(level, text) {
+        // Create timestamp
+        const now = new Date();
+        const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+        
+        // Add to history
+        diagnosticMessageHistory.push({ timestamp, level, text });
+        
+        // Trim history if needed
+        if (diagnosticMessageHistory.length > MAX_MESSAGES) {
+            diagnosticMessageHistory = diagnosticMessageHistory.slice(-MAX_MESSAGES);
+        }
+        
+        // Add to display
+        const messageElement = document.createElement('div');
+        messageElement.className = `diagnostic-message ${level}`;
+        
+        const timestampSpan = document.createElement('span');
+        timestampSpan.className = 'timestamp';
+        timestampSpan.textContent = timestamp;
+        
+        messageElement.appendChild(timestampSpan);
+        messageElement.appendChild(document.createTextNode(text));
+        
+        diagnosticMessages.appendChild(messageElement);
+        
+        // Auto-scroll
+        diagnosticMessages.scrollTop = diagnosticMessages.scrollHeight;
+        
+        // Show the dialog if it's not already visible
+        diagnosticDialog.classList.add('show');
+    }
+    
+    
+    // Close button event
+    closeDiagnosticDialog.addEventListener('click', function() {
+        diagnosticDialog.classList.remove('show');
+    });
+    
+    // Add a test diagnostic message button (for development, can be removed later)
+    const testDiagnosticButton = document.createElement('button');
+    testDiagnosticButton.textContent = 'Test Diagnostic';
+    testDiagnosticButton.className = 'action-button';
+    testDiagnosticButton.style.marginTop = '8px';
+    testDiagnosticButton.addEventListener('click', function() {
+        const levels = ['info', 'warning', 'error'];
+        const level = levels[Math.floor(Math.random() * levels.length)];
+        addDiagnosticMessage(level, `Test diagnostic message with ${level} level`);
+    });
+    document.querySelector('.actions-section').appendChild(testDiagnosticButton);
 }); 

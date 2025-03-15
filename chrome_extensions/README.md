@@ -268,47 +268,66 @@ The blurring process follows these steps:
 
 ## User Interface
 
-The popup UI provides several controls:
+FaceOne provides a clean, intuitive interface for controlling its behavior:
 
-1. **Mode Selection**: Choose between face detection and blur modes
+### Settings Panel
 
-   - Face Detection: Visualizes faces with similarity indicators
-   - Blur: Automatically blurs matched faces
+Access the extension's settings by clicking the FaceOne icon in your Chrome toolbar. The settings panel allows you to:
 
-2. **Auto-Processing**: Toggle automatic processing of images
+- Switch between **Face Detection** and **Blur** modes
+- Enable/disable automatic image processing
+- Show/hide labels and face frames
+- Adjust the confidence threshold for face matching
+- Enable debug mode for troubleshooting (see Debug Mode section below)
+- Reprocess all images on the current page
+- Clear all blurred images
 
-   - Background processing of visible images
-   - On-demand processing when scrolling
-   - Performance-optimized to avoid browser slowdowns
+### Visual Indicators
 
-3. **Show Labels**: Toggle display of detection results and similarity scores
+When processing images, FaceOne provides visual feedback:
 
-   - Overlaid information on processed images
-   - Color-coded confidence indicators
-   - Descriptive text for user feedback
+- Green frames indicate detected faces
+- Red frames indicate faces matching known embeddings
+- Optional labels show detection confidence and processing time
+- Blurred images indicate faces that have been automatically obscured
 
-4. **Show Face Frames**: Toggle colored frames around detected faces
+### Debug Mode
 
-   - Bounding box visualization
-   - Color coding based on similarity scores
-   - Adjustable frame visibility
+The extension includes a debug mode intended for developers and troubleshooting:
 
-5. **Confidence Threshold**: Adjust the minimum similarity percentage for matches
+#### Purpose
 
-   - Slider control from 0% to 100%
-   - Real-time threshold adjustment
-   - Visual feedback on current setting
+Debug mode enables verbose console logging that shows detailed information about each step of the face detection and processing pipeline. This is useful for:
 
-6. **Reprocess Button**: Manually trigger reprocessing of all images
+- Troubleshooting issues with face detection
+- Understanding the extension's processing flow
+- Diagnosing performance problems
+- Development and testing
 
-   - Force refresh all analysis
-   - Clear existing results
-   - Apply current settings to all images
+#### Enabling Debug Mode
 
-7. **Clear Blur List**: Remove all stored blur information
-   - Reset all blurring decisions
-   - Counter for number of cleared entries
-   - Confirmation feedback
+1. Click on the FaceOne extension icon to open the settings panel
+2. Toggle the "Debug Mode" switch to the ON position
+3. Refresh the current page to see full debug output
+
+#### What Gets Logged
+
+When debug mode is enabled, the extension logs details about:
+
+- Function entry and exit points
+- Model loading status
+- Image processing steps
+- Face detection results
+- Memory management operations
+- Performance metrics
+
+#### Performance Impact
+
+Be aware that enabling debug mode may slightly impact performance due to the additional logging overhead. It is recommended to disable debug mode during normal usage.
+
+#### Disabling Debug Mode
+
+Simply toggle the Debug Mode switch to the OFF position in the settings panel and refresh the page.
 
 ## Performance Optimizations
 

@@ -28,7 +28,9 @@
             const script = document.createElement('script');
             script.src = chrome.runtime.getURL('js/utils.js');
             script.onload = function() {
-                console.log('✅ utils.js loaded successfully from extension');
+                if (!window.DEBUG) {
+                    console.log('✅ utils.js loaded successfully from extension');
+                }
                 
                 // Verify that logging functions are now available
                 if (!checkLoggingFunctions()) {
@@ -51,7 +53,26 @@
 
 // Fallback logging utilities in case utils.js is not yet loaded
 if (typeof logWithEmoji !== 'function') {
-    window.logWithEmoji = function(type, functionName, message) {
+    window.DEBUG = false; // Initialize with debugging off
+    
+    window.logWithEmoji = function(type, functionName, message, details = null) {
+        // Critical messages are always shown (errors and warnings)
+        const isCritical = ['error', 'warning'].includes(type);
+        
+        // Model and embedding loading messages are shown in both modes, but with different detail levels
+        const isModelRelated = ['model', 'loading'].includes(type) && 
+                             (functionName.includes('Model') || 
+                              functionName.includes('load') || 
+                              message.includes('model') || 
+                              message.includes('embedding'));
+        
+        // Only log if either DEBUG is enabled, or it's a critical message, or it's a success related to models/embeddings
+        const isSuccess = type === 'success' && isModelRelated;
+        
+        if (!window.DEBUG && !isCritical && !isSuccess) {
+            return;
+        }
+        
         let emoji = '📝'; // Default emoji
         
         // Select emoji based on log type
@@ -70,17 +91,32 @@ if (typeof logWithEmoji !== 'function') {
             case 'unlock': emoji = '🔓'; break;
             case 'start': emoji = '🚀'; break;
             case 'draw': emoji = '🎨'; break;
+            case 'performance': emoji = '📊'; break;
+            case 'stats': emoji = '📈'; break;
+            case 'network': emoji = '🌐'; break;
+            case 'processing': emoji = '⚙️'; break;
         }
         
-        console.log(`${emoji} ${functionName}: ${message}`);
+        // Basic logging for non-debug mode
+        if (!window.DEBUG) {
+            console.log(`Face One - ${emoji} ${functionName}: ${message}`);
+            return;
+        }
+        
+        // Enhanced logging for debug mode
+        if (details) {
+            console.log(`Face One - ${emoji} ${functionName}: ${message}`, details);
+        } else {
+            console.log(`Face One - ${emoji} ${functionName}: ${message}`);
+        }
     };
 }
 
 if (typeof logFunctionEntry !== 'function') {
     window.logFunctionEntry = function(functionName) {
-        if (typeof logWithEmoji === 'function') {
+        if (window.DEBUG && typeof logWithEmoji === 'function') {
             logWithEmoji('setup', functionName, 'Function started');
-        } else {
+        } else if (window.DEBUG) {
             console.log(`🔧 ${functionName}: Function started`);
         }
     };
@@ -178,39 +214,50 @@ let isPositiveEmbeddingsLoaded = false;
  */
 async function loadPositiveEmbeddings() {
     logFunctionEntry('loadPositiveEmbeddings');
-    logWithEmoji('loading', 'loadPositiveEmbeddings', 'Loading positive embeddings');   
-    if (isPositiveEmbeddingsLoaded) return;
+    
+    if (isPositiveEmbeddingsLoaded) {
+        logWithEmoji('info', 'loadPositiveEmbeddings', 'Positive embeddings already loaded');
+        return;
+    }
 
     try {
         const embeddingsPath = chrome.runtime.getURL('models/embeddings/positive_embeddings.json');
+        logWithEmoji('loading', 'loadPositiveEmbeddings', 'Loading positive embeddings', { path: embeddingsPath });
+        
+        const startTime = performance.now();
         const response = await fetch(embeddingsPath);
+        
         if (!response.ok) {
             throw new Error(`Failed to load positive embeddings: ${response.statusText}`);
         }
-        logWithEmoji('success', 'loadPositiveEmbeddings', 'Positive embeddings loaded successfully');
-
-        logWithEmoji('loading', 'loadPositiveEmbeddings', 'Parsing positive embeddings');
+        
         const data = await response.json();
         if (!Array.isArray(data)) {
             throw new Error('Invalid positive embeddings format: expected array');
         }
-        logWithEmoji('success', 'loadPositiveEmbeddings', 'Positive embeddings parsed successfully');
+        
         // Take only the first 10 embeddings
         const limitedData = data.slice(0, 10);
         
         // Convert embeddings to Float32Array for efficient comparison
-        logWithEmoji('loading', 'loadPositiveEmbeddings', 'Converting embeddings to Float32Array');
+        logWithEmoji('processing', 'loadPositiveEmbeddings', 'Converting embeddings to Float32Array', 
+            { count: limitedData.length, dimensions: limitedData[0]?.length || 0 });
+        
         positiveEmbeddings = limitedData.map(embedding => {
             if (!Array.isArray(embedding) || embedding.length !== 512) {
                 throw new Error('Invalid embedding format: expected 512-dimensional array');
             }
             return new Float32Array(embedding);
         });
-        logWithEmoji('success', 'loadPositiveEmbeddings', 'Embeddings converted to Float32Array');
-        console.log(`Loaded ${positiveEmbeddings.length} positive embeddings (limited to first 10)`);
+        
         isPositiveEmbeddingsLoaded = true;
+        const loadTime = Math.round(performance.now() - startTime);
+        
+        logWithEmoji('success', 'loadPositiveEmbeddings', 
+            `Loaded ${positiveEmbeddings.length} positive embeddings successfully (${loadTime}ms)`, 
+            { count: positiveEmbeddings.length, loadTimeMs: loadTime });
     } catch (error) {
-        logWithEmoji('error', 'loadPositiveEmbeddings', 'Error loading positive embeddings:', error);
+        logWithEmoji('error', 'loadPositiveEmbeddings', `Error loading positive embeddings: ${error.message}`, error);
         throw error;
     }
 }
@@ -819,24 +866,45 @@ async function loadFaceApiModels(modelList = ['tinyFaceDetector', 'ssdMobilenetv
  */
 async function loadModelsOnDemand() {
     logFunctionEntry('loadModelsOnDemand');
+    
+    const startTime = performance.now();
     logWithEmoji('loading', 'loadModelsOnDemand', 'Starting progressive model loading');
     
     try {
         // 1. First load only critical face detection model synchronously
-        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: tinyFaceDetector');
+        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: tinyFaceDetector', 
+            { priority: 'high', purpose: 'face detection' });
+        
+        const detectorStartTime = performance.now();
         await loadFaceApiModels(['tinyFaceDetector']);
+        const detectorLoadTime = Math.round(performance.now() - detectorStartTime);
+        
+        logWithEmoji('success', 'loadModelsOnDemand', 
+            `Loaded face detector model (${detectorLoadTime}ms)`, 
+            { model: 'tinyFaceDetector', loadTimeMs: detectorLoadTime });
         
         // 2. Then load FaceNet model which is needed for embeddings
-        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: faceNet');
+        logWithEmoji('model', 'loadModelsOnDemand', 'Loading critical model: faceNet', 
+            { priority: 'high', purpose: 'face embeddings' });
+        
+        const faceNetStartTime = performance.now();
         await loadFaceApiModels(['faceNet']);
+        const faceNetLoadTime = Math.round(performance.now() - faceNetStartTime);
+        
+        logWithEmoji('success', 'loadModelsOnDemand', 
+            `Loaded faceNet model (${faceNetLoadTime}ms)`, 
+            { model: 'faceNet', loadTimeMs: faceNetLoadTime });
         
         // 3. Load non-critical models asynchronously
         setTimeout(() => {
-            logWithEmoji('model', 'loadModelsOnDemand', 'Loading optional models in the background');
+            logWithEmoji('model', 'loadModelsOnDemand', 'Loading optional models in background', 
+                { priority: 'low', purpose: 'similarity comparison' });
+                
             loadFaceApiModels(['myModel']).catch(error => {
                 // Just log errors for optional models
                 logWithEmoji('warning', 'loadModelsOnDemand', 
-                    `Optional model loading failed: ${error.message}. Some features will be limited.`);
+                    `Optional model loading failed: ${error.message}. Some features will be limited.`, 
+                    { error, fallback: 'Using reduced feature set' });
                 
                 // Mark the model as in fallback mode to prevent repeated loading attempts
                 if (error.message.includes('myModel') || error.message.includes('Similarity')) {
@@ -845,10 +913,17 @@ async function loadModelsOnDemand() {
             });
         }, 2000);
         
-        logWithEmoji('success', 'loadModelsOnDemand', 'Progressive model loading initiated successfully');
+        const totalLoadTime = Math.round(performance.now() - startTime);
+        logWithEmoji('success', 'loadModelsOnDemand', 
+            `Critical models loaded successfully (${totalLoadTime}ms)`, 
+            { criticalModels: ['tinyFaceDetector', 'faceNet'], totalTimeMs: totalLoadTime });
+            
         return true;
     } catch (error) {
-        logWithEmoji('error', 'loadModelsOnDemand', `Error during progressive model loading: ${error.message}`);
+        const failTime = Math.round(performance.now() - startTime);
+        logWithEmoji('error', 'loadModelsOnDemand', 
+            `Model loading failed after ${failTime}ms: ${error.message}`, 
+            { error, timeMs: failTime });
         throw error;
     }
 }
@@ -906,8 +981,8 @@ const imageTracker = {
         };
         this.images.set(src, newInfo);
         
-        // Log processing completion
-        console.log(`Image processing complete: ${src}`, newInfo);
+        // // Log processing completion
+        // console.log(`Image processing complete: ${src}`, newInfo);
     },
     
     shouldProcess(src) {
@@ -1294,7 +1369,6 @@ async function normalizeImageRotation(img) {
 
 // Update the detectFacesWithFaceApi function to use the helper
 async function detectFacesWithFaceApi(img) {
-    // Rest of the code...
     
     // Get wrapper and check if it exists
     const wrapper = findOrCreateWrapper(img);
@@ -3263,7 +3337,7 @@ async function extractFaceRegion(img, detection) {
 // Add helper function to check model status
 function checkModelStatus() {
     logFunctionEntry('checkModelStatus');
-    logWithEmoji('info', 'checkModelStatus', 'Checking status of all models');
+    
     const status = {
         faceApi: modelStatus.faceApi.loaded,
         faceNet: modelStatus.faceNet.loaded,
@@ -3279,6 +3353,21 @@ function checkModelStatus() {
     }
     if (!modelStatus.myModel.loaded && modelStatus.myModel.error) {
         status.errors.push(`Similarity: ${modelStatus.myModel.error.message}`);
+    }
+    
+    const allLoaded = status.faceApi && status.faceNet && status.myModel;
+    const essentialLoaded = status.faceApi && status.faceNet;
+    
+    if (allLoaded) {
+        logWithEmoji('success', 'checkModelStatus', 'All models loaded successfully', status);
+    } else if (essentialLoaded) {
+        logWithEmoji('info', 'checkModelStatus', 'Essential models loaded, optional models pending', status);
+    } else if (status.errors.length > 0) {
+        logWithEmoji('warning', 'checkModelStatus', 
+            `Model loading incomplete: ${status.errors.length} errors found`,
+            { status, errors: status.errors });
+    } else {
+        logWithEmoji('info', 'checkModelStatus', 'Models still loading', status);
     }
     
     return status;
@@ -3397,6 +3486,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 ...message.settings
             };
             
+            // Update DEBUG flag if it's included in the settings
+            if (typeof message.settings.debugMode !== 'undefined') {
+                window.DEBUG = message.settings.debugMode;
+                
+                if (window.DEBUG) {
+                    console.log('🔧 Debug mode enabled - verbose console logging activated');
+                } else {
+                    console.log('🔧 Debug mode disabled - reduced console logging activated');
+                }
+            }
+            
             // Reprocess visible images with new settings
             if (flagShowFrameonImage.autoProcessImages) {
                 processExistingImages();
@@ -3467,6 +3567,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 autoRenewedCount: autoRenewedCount
             });
         }
+        else if (message.type === 'MODE_CHANGED') {
+            
+            // The actual mode change is handled by the settings update
+            sendResponse({ success: true });
+        }
     } catch (error) {
         console.error('Error handling message:', error);
         sendResponse({ success: false, error: error.message });
@@ -3479,17 +3584,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Load initial settings
 chrome.storage.sync.get({
     frameProsessedImage: true,
-    frameFaceDetected: true,
     addLabel: true,
+    showConsoleLog: false,
     autoProcessImages: true,
-    minimumImageSize: 32, // Changed from 100 to 32 to allow profile photos
+    processingMode: 'face_detection',
     confidenceThreshold: 70,
-    processingMode: 'face_detection'  // Add default mode
+    debugMode: false
 }, function(items) {
+    // Update global debug flag
+    window.DEBUG = items.debugMode || false;
+    
+    // Initialize global settings object
     flagShowFrameonImage = {
         ...flagShowFrameonImage,
         ...items
     };
+    
+    if (window.DEBUG) {
+        logWithEmoji('setup', 'settings', 'Debug mode enabled from saved settings', {
+            settings: items,
+            debugMode: true
+        });
+    } else {
+        logWithEmoji('setup', 'settings', 'Extension initialized with normal logging');
+    }
 });
 
 // Add function to check if image should be displayed
@@ -3942,72 +4060,6 @@ function preloadCriticalResources() {
     }
 }
 
-// Update initializeExtension to call this first
-async function initializeExtension() {
-    logFunctionEntry('initializeExtension');
-    
-    // Detailed timing
-    const startTime = performance.now();
-    let stepStartTime = startTime;
-    
-    try {
-        // 0. Preload critical resources
-        preloadCriticalResources();
-        
-        const preloadTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Resource preloading took ${preloadTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 1. Initialize the models
-        await ensureModelsLoaded();
-        
-        const modelLoadTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Model loading took ${modelLoadTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 2. Initialize worker pool (if available)
-        if (!hasWorkerRestrictions()) {
-            try {
-                await initializeWorkerPool();
-                workerPoolInitialized = true;
-            } catch (error) {
-                logWithEmoji('warning', 'initializeExtension', `Worker pool initialization failed: ${error.message}`);
-            }
-        } else {
-            logWithEmoji('warning', 'initializeExtension', 'Worker pool disabled due to restrictions');
-        }
-        
-        const workerTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Worker initialization took ${workerTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 3. Set up image observers
-        observeElements();
-        
-        const observerTime = performance.now() - stepStartTime;
-        logWithEmoji('timer', 'initializeExtension', `Observer setup took ${observerTime.toFixed(0)}ms`);
-        stepStartTime = performance.now();
-        
-        // 4. Set up dynamic CSS updater for Facebook images
-        setupDynamicCssUpdater();
-        logWithEmoji('setup', 'initializeExtension', 'Dynamic CSS updater initialized');
-        
-        // 5. Process existing images
-        if (flagShowFrameonImage.autoProcessImages) {
-            processExistingImages();
-        }
-        
-        // Total initialization time
-        const totalTime = performance.now() - startTime;
-        logWithEmoji('success', 'initializeExtension', `Extension initialized in ${totalTime.toFixed(0)}ms`);
-        
-        return true;
-    } catch (error) {
-        logWithEmoji('error', 'initializeExtension', `Initialization failed: ${error.message}`);
-        return false;
-    }
-}
-
 // Dynamically load scripts only when needed
 async function loadScriptOnDemand(scriptPath) {
     logFunctionEntry('loadScriptOnDemand');
@@ -4215,9 +4267,6 @@ function markImageForFallbackProcessing(img) {
     
     logWithEmoji('success', 'markImageForFallbackProcessing', 'Image marked for fallback processing');
 }
-
-// Modify generateEmbedding to ensure model readiness
-// ... existing code ...
 
 /**
  * Checks if the current environment has restrictions that prevent using Web Workers
@@ -4587,6 +4636,8 @@ function handleImageVisible(entry) {
             try {
                 const normalizedUrl = blurTracker.normalizeImageUrl(src);
                 img.setAttribute('data-blurred-url', normalizedUrl.substring(0, 50) + '...');
+                
+                // Send diagnostic message to popup
             } catch (e) {
                 // Ignore errors in URL normalization
             }
@@ -4750,10 +4801,7 @@ async function initializeExtension() {
         logWithEmoji('info', 'initializeExtension', 'Extension already initialized, skipping');
         return true;
     }
-    
-    // ...existing initialization code...
-    
+        
     setupDynamicCssUpdater(); // Add this line to set up the dynamic CSS updater
     
-    // ...rest of the initialization code...
 }

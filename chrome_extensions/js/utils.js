@@ -4,12 +4,31 @@
 
 /**
  * Logs a message with an appropriate emoji based on message type
+ * Only logs if DEBUG is enabled or log type is critical, or if message is related to model/embedding loading in normal mode
  * 
  * @param {string} type - Type of message: 'info', 'success', 'warning', 'error', 'model', 'image', etc.
  * @param {string} functionName - Name of the function generating the log
  * @param {string} message - The message to log
+ * @param {Object} [details] - Optional detailed information for debug mode only
  */
-function logWithEmoji(type, functionName, message) {
+function logWithEmoji(type, functionName, message, details = null) {
+    // Critical messages are always shown (errors and warnings)
+    const isCritical = ['error', 'warning'].includes(type);
+    
+    // Model and embedding loading messages are shown in both modes, but with different detail levels
+    const isModelRelated = ['model', 'loading'].includes(type) && 
+                          (functionName.includes('Model') || 
+                           functionName.includes('load') || 
+                           message.includes('model') || 
+                           message.includes('embedding'));
+    
+    // Only log if either DEBUG is enabled, or it's a critical message, or it's a success related to models/embeddings
+    const isSuccess = type === 'success' && isModelRelated;
+    
+    if (!window.DEBUG && !isCritical && !isSuccess) {
+        return;
+    }
+    
     let emoji = '📝'; // Default emoji
     
     // Select emoji based on log type
@@ -56,19 +75,44 @@ function logWithEmoji(type, functionName, message) {
         case 'draw':
             emoji = '🎨';
             break;
+        case 'performance':
+            emoji = '📊';
+            break;
+        case 'stats':
+            emoji = '📈';
+            break;
+        case 'network':
+            emoji = '🌐';
+            break;
+        case 'processing':
+            emoji = '⚙️';
+            break;
     }
     
-    // Log with the selected emoji and function name
-    console.log(`${emoji} ${functionName}: ${message}`);
+    // Basic logging for non-debug mode
+    if (!window.DEBUG) {
+        console.log(`Face One - ${emoji} ${functionName}: ${message}`);
+        return;
+    }
+    
+    // Enhanced logging for debug mode
+    if (details) {
+        console.log(`Face One - ${emoji} ${functionName}: ${message}`, details);
+    } else {
+        console.log(`Face One - ${emoji} ${functionName}: ${message}`);
+    }
 }
 
 /**
  * Logs the entry point to a function with the setup emoji
+ * Only logs if debugging is enabled
  * 
  * @param {string} functionName - Name of the function being entered 
  */
 function logFunctionEntry(functionName) {
-    logWithEmoji('setup', functionName, 'Function started');
+    if (window.DEBUG) {
+        logWithEmoji('setup', functionName, 'Function started');
+    }
 }
 
 /**
@@ -478,6 +522,9 @@ const TensorMemoryManager = (() => {
         // Debug mode for detailed logging
         DEBUG: false
     };
+    
+    // Set global DEBUG flag for extension-wide access
+    window.DEBUG = config.DEBUG;
     
     // Adapt memory limits based on device capabilities
     try {

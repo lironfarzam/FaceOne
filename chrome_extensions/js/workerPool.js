@@ -99,7 +99,8 @@ class PriorityQueue {
         const totalRemoved = queueRemoved + processingRemoved;
         
         if (totalRemoved > 0) {
-            console.warn(`PriorityQueue: Removed ${totalRemoved} stale tasks (${queueRemoved} queued, ${processingRemoved} processing)`);
+            logWithEmoji('warning', 'PriorityQueue.cleanup', `Removed ${totalRemoved} stale tasks`, 
+                { queuedRemoved: queueRemoved, processingRemoved: processingRemoved });
         }
         
         return totalRemoved;
@@ -164,6 +165,9 @@ class EnhancedWorkerPool {
      */
     async initialize() {
         try {
+            logWithEmoji('setup', 'workerPool.initialize', 'Initializing worker pool', 
+                { maxWorkers: this.options.maxWorkers });
+                
             // Create workers
             for (let i = 0; i < this.options.maxWorkers; i++) {
                 const worker = await this.createWorker(i);
@@ -190,9 +194,12 @@ class EnhancedWorkerPool {
             // Start memory monitoring
             this.startMemoryMonitoring();
             
+            logWithEmoji('success', 'workerPool.initialize', 'Worker pool initialized successfully', 
+                { workers: this.workers.size });
+                
             return true;
         } catch (error) {
-            console.error('Worker pool initialization failed:', error);
+            logWithEmoji('error', 'workerPool.initialize', 'Worker pool initialization failed', error);
             
             // Clean up any created workers on failure
             this.workers.forEach(worker => {
@@ -216,6 +223,7 @@ class EnhancedWorkerPool {
      */
     async createWorker(id) {
         try {
+            logWithEmoji('setup', 'workerPool.createWorker', `Creating worker ${id}`);
             // Create blob URL for the worker to avoid CSP issues
             const workerScript = chrome.runtime.getURL('js/imageWorker.js');
             const worker = new Worker(workerScript);
@@ -228,9 +236,10 @@ class EnhancedWorkerPool {
             
             this.stats.workersCreated++;
             
+            logWithEmoji('success', 'workerPool.createWorker', `Worker ${id} created successfully`);
             return worker;
         } catch (error) {
-            console.error(`Failed to create worker ${id}:`, error);
+            logWithEmoji('error', 'workerPool.createWorker', `Failed to create worker ${id}`, error);
             throw error;
         }
     }
@@ -265,7 +274,8 @@ class EnhancedWorkerPool {
                 workerId: id,
                 config: {
                     maxImageSize: this.options.maxImageSize || 1024,
-                    processingTimeout: this.options.taskTimeout
+                    processingTimeout: this.options.taskTimeout,
+                    debug: window.DEBUG // Pass debug flag to worker
                 }
             });
         });
@@ -328,6 +338,8 @@ class EnhancedWorkerPool {
             
             if (task.attempts < this.options.retryAttempts) {
                 task.attempts++;
+                logWithEmoji('warning', 'workerPool.processNextTask', 
+                    `Task failed, retrying (attempt ${task.attempts}/${this.options.retryAttempts})`, { error: error.message });
                 this.taskQueue.add({
                     task,
                     resolve,
@@ -335,6 +347,8 @@ class EnhancedWorkerPool {
                     priority: taskItem.priority + 1 // Increase priority
                 }, taskItem.priority + 1);
             } else {
+                logWithEmoji('error', 'workerPool.processNextTask', 
+                    `Task failed after ${task.attempts} attempts`, error);
                 reject(error);
                 this.stats.errors++;
                 
@@ -399,6 +413,7 @@ class EnhancedWorkerPool {
      */
     async warmup() {
         try {
+            logWithEmoji('setup', 'workerPool.warmup', 'Warming up worker pool');
             const dummyData = new ImageData(1, 1);
             const warmupPromises = [];
             
@@ -431,10 +446,10 @@ class EnhancedWorkerPool {
             }
             
             await Promise.all(warmupPromises);
-            console.log('Worker pool warmup completed successfully');
+            logWithEmoji('success', 'workerPool.warmup', 'Worker pool warmup completed successfully');
             return true;
         } catch (error) {
-            console.error('Worker pool warmup failed:', error);
+            logWithEmoji('error', 'workerPool.warmup', 'Worker pool warmup failed', error);
             return false;
         }
     }
@@ -479,7 +494,7 @@ class EnhancedWorkerPool {
                 });
             }
         } catch (error) {
-            console.error('Error checking worker memory:', error);
+            logWithEmoji('error', 'workerPool.checkWorkerMemoryUsage', 'Error checking worker memory', error);
         }
     }
     
@@ -512,6 +527,9 @@ class EnhancedWorkerPool {
             const workerId = this.getWorkerId(worker);
             if (workerId === -1) return;
             
+            // Get worker state for logging
+            const state = this.workerState.get(worker);
+            
             // Remove from idle set if present
             this.idleWorkers.delete(worker);
             
@@ -537,11 +555,12 @@ class EnhancedWorkerPool {
             
             this.stats.workersRestarted++;
             
-            console.log(`Recycled worker ${workerId} after ${state.tasksProcessed} tasks`);
+            logWithEmoji('info', 'workerPool.recycleWorker', `Recycled worker ${workerId}`, 
+                { tasksProcessed: state?.tasksProcessed || 0, errors: state?.errors || 0 });
             
             return newWorker;
         } catch (error) {
-            console.error('Error recycling worker:', error);
+            logWithEmoji('error', 'workerPool.recycleWorker', 'Error recycling worker', error);
             return null;
         }
     }
@@ -580,7 +599,7 @@ class EnhancedWorkerPool {
      * Handle worker errors
      */
     handleWorkerError(worker, error) {
-        console.error('Worker error:', error);
+        logWithEmoji('error', 'workerPool.handleWorkerError', 'Worker error', error);
         this.stats.errors++;
         
         // Update worker-specific stats
@@ -610,7 +629,9 @@ class EnhancedWorkerPool {
             
             // If memory usage is too high, consider recycling the worker
             if (memoryStats.memoryUsage > 100 * 1024 * 1024) { // 100MB
-                console.warn(`Worker ${state.id} using excessive memory: ${Math.round(memoryStats.memoryUsage / (1024 * 1024))}MB`);
+                logWithEmoji('warning', 'workerPool.handleMemoryStats', 
+                    `Worker ${state.id} using excessive memory: ${Math.round(memoryStats.memoryUsage / (1024 * 1024))}MB`,
+                    { workerId: state.id, memoryUsage: memoryStats.memoryUsage });
                 this.recycleWorker(worker);
             }
         }
@@ -646,6 +667,8 @@ class EnhancedWorkerPool {
      * Clean up resources
      */
     terminate() {
+        logWithEmoji('setup', 'workerPool.terminate', 'Terminating worker pool');
+        
         // Clear intervals
         if (this.memoryCheckInterval) {
             clearInterval(this.memoryCheckInterval);
@@ -667,7 +690,7 @@ class EnhancedWorkerPool {
         this.workerState.clear();
         this.taskQueue.reset();
         
-        console.log('Worker pool terminated');
+        logWithEmoji('success', 'workerPool.terminate', 'Worker pool terminated');
     }
 }
 

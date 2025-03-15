@@ -50,11 +50,14 @@ async function initializeTensorFlow() {
         state.initialization.tfReady = true;
         state.initialization.backendReady = true;
         
+        logWithEmoji('success', 'initializeTensorFlow', 'TensorFlow initialized successfully', 
+            { backend: tf.getBackend() });
+        
         // Initialize models
         await initializeModels();
         
     } catch (error) {
-        console.error('TF initialization failed:', error);
+        logWithEmoji('error', 'initializeTensorFlow', 'TF initialization failed', error);
         throw error;
     }
 }
@@ -90,11 +93,22 @@ function setupMemoryManagement() {
 async function initializeModels() {
     try {
         const modelPath = chrome.runtime.getURL('models/facenet/model.json');
+        logWithEmoji('loading', 'initializeModels', 'Loading FaceNet model', { path: modelPath });
+        
+        const startTime = performance.now();
         state.models.faceNet = await tf.loadGraphModel(modelPath);
+        const loadTime = Math.round(performance.now() - startTime);
+        
+        logWithEmoji('success', 'initializeModels', 'FaceNet model loaded successfully', 
+            { loadTimeMs: loadTime });
+        
+        logWithEmoji('loading', 'initializeModels', 'Warming up model');
         await warmupModel(state.models.faceNet);
         state.models.warmedUp = true;
+        
+        logWithEmoji('success', 'initializeModels', 'Model warmup complete');
     } catch (error) {
-        console.error('Model initialization failed:', error);
+        logWithEmoji('error', 'initializeModels', 'Model initialization failed', error);
         throw error;
     }
 }
@@ -112,8 +126,9 @@ async function warmupModel(model) {
 // Initialize on Load
 //=============================================================================
 window.addEventListener('load', () => {
+    logWithEmoji('start', 'sandboxInit', 'Initializing TensorFlow sandbox');
     initializeTensorFlow().catch(error => {
-        console.error('Initialization error:', error);
+        logWithEmoji('error', 'sandboxInit', 'Initialization error', error);
         // Notify parent of error
         window.parent.postMessage({
             type: 'INIT_ERROR',

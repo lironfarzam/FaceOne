@@ -6,6 +6,54 @@
  */
 
 //=============================================================================
+// Logging Function for Worker
+//=============================================================================
+/**
+ * Simplified logWithEmoji function for worker context
+ * @param {string} type - Type of message: 'info', 'success', 'warning', 'error', etc.
+ * @param {string} functionName - Name of the function generating the log
+ * @param {string} message - The message to log
+ * @param {Object} [details] - Optional detailed information
+ */
+function logWithEmoji(type, functionName, message, details = null) {
+    // Workers don't share window object, so we need our own DEBUG flag
+    const DEBUG = self.DEBUG || false;
+    
+    // Critical messages are always shown
+    const isCritical = ['error', 'warning'].includes(type);
+    
+    // Only log if debugging is enabled or it's a critical message
+    if (!DEBUG && !isCritical) {
+        return;
+    }
+    
+    let emoji = '📝'; // Default emoji
+    
+    // Select emoji based on log type
+    switch (type) {
+        case 'info': emoji = '📋'; break;
+        case 'success': emoji = '✅'; break;
+        case 'warning': emoji = '⚠️'; break;
+        case 'error': emoji = '❌'; break;
+        case 'model': emoji = '🧠'; break;
+        case 'image': emoji = '🖼️'; break;
+        case 'loading': emoji = '🔄'; break;
+        case 'setup': emoji = '🔧'; break;
+        case 'timer': emoji = '⏱️'; break;
+        case 'performance': emoji = '📊'; break;
+        case 'memory': emoji = '🧠'; break;
+        case 'worker': emoji = '👷'; break;
+    }
+    
+    // Basic logging
+    if (details) {
+        console.log(`Worker - ${emoji} ${functionName}: ${message}`, details);
+    } else {
+        console.log(`Worker - ${emoji} ${functionName}: ${message}`);
+    }
+}
+
+//=============================================================================
 // Global Variables and Constants
 //=============================================================================
 /**
@@ -86,6 +134,8 @@ function checkMemoryUsage() {
             
             // If memory usage is too high, clean up resources
             if (state.memoryUsage > 100 * 1024 * 1024) { // 100MB threshold
+                logWithEmoji('memory', 'checkMemoryUsage', 'Memory usage high, cleaning resources', 
+                    { memoryUsage: Math.round(state.memoryUsage / (1024 * 1024)) + 'MB' });
                 cleanupResources();
             }
         }
@@ -103,10 +153,13 @@ function cleanupResources() {
         canvasPool.pop();
     }
     
+    logWithEmoji('memory', 'cleanupResources', 'Canvas pool cleared');
+    
     // Run garbage collection if available
     if (typeof gc === 'function') {
         try {
             gc();
+            logWithEmoji('memory', 'cleanupResources', 'Garbage collection triggered');
         } catch (e) {
             // Ignore errors
         }
@@ -177,6 +230,11 @@ self.onmessage = async function(e) {
                     Object.assign(config, e.data.config);
                 }
                 
+                // Set debug flag if provided
+                if (e.data.config && e.data.config.debug !== undefined) {
+                    self.DEBUG = e.data.config.debug;
+                }
+                
                 await handleInit();
                 break;
 
@@ -203,6 +261,7 @@ self.onmessage = async function(e) {
                 throw new Error(`Unknown message type: ${type}`);
         }
     } catch (error) {
+        logWithEmoji('error', 'messageHandler', `Error handling message type: ${type}`, error);
         self.postMessage({
             type: `${type}_FAILED`,
             success: false,
@@ -219,8 +278,11 @@ self.onmessage = async function(e) {
  */
 async function handleInit() {
     try {
+        logWithEmoji('setup', 'handleInit', 'Initializing worker', { workerId: state.workerId });
         initializeSharedResources();
         state.initialized = true;
+        logWithEmoji('success', 'handleInit', 'Worker initialized successfully');
+        
         self.postMessage({
             type: 'WORKER_READY',
             success: true,
@@ -229,6 +291,7 @@ async function handleInit() {
         });
     } catch (error) {
         state.initialized = false;
+        logWithEmoji('error', 'handleInit', 'Worker initialization failed', error);
         throw error;
     }
 }
@@ -244,6 +307,9 @@ async function handleImageProcessing(imageData, width, height) {
     const startTime = performance.now();
     state.processingCount++;
 
+    logWithEmoji('image', 'handleImageProcessing', 'Processing image', 
+        { width, height, count: state.processingCount });
+
     try {
         // Resize canvas if needed
         if (sharedCanvas.width < width || sharedCanvas.height < height) {
@@ -256,6 +322,9 @@ async function handleImageProcessing(imageData, width, height) {
         
         // Track performance
         state.lastProcessingTime = performance.now() - startTime;
+        
+        logWithEmoji('success', 'handleImageProcessing', 'Image processed successfully', 
+            { processingTime: Math.round(state.lastProcessingTime) + 'ms' });
 
         self.postMessage({
             type: 'IMAGE_PROCESSED',
@@ -267,6 +336,7 @@ async function handleImageProcessing(imageData, width, height) {
             }
         });
     } catch (error) {
+        logWithEmoji('error', 'handleImageProcessing', 'Image processing failed', error);
         throw error;
     }
 }
@@ -327,6 +397,8 @@ async function applyImageProcessing(imageData) {
 //=============================================================================
 // Clean up resources when worker is terminating
 self.addEventListener('close', () => {
+    logWithEmoji('setup', 'workerCleanup', 'Worker is terminating, cleaning up resources');
+    
     if (memoryCheckInterval) {
         clearInterval(memoryCheckInterval);
     }

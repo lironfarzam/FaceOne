@@ -22,7 +22,7 @@ const blurTracker = {
     
     // Initialize from storage
     init() {
-        console.log('Initializing blurTracker');
+        logWithEmoji('setup', 'blurTracker.init', 'Initializing blurTracker');
         chrome.storage.local.get(['blurredImageData', 'historicalBlurData'], (result) => {
             // Load current blur data
             if (result.blurredImageData) {
@@ -39,9 +39,10 @@ const blurTracker = {
                         }
                     }
                     
-                    console.log(`Loaded ${this.blurredImages.size} previously blurred image URLs`);
+                    logWithEmoji('success', 'blurTracker.init', `Loaded ${this.blurredImages.size} previously blurred image URLs`, 
+                        { count: this.blurredImages.size });
                 } catch (error) {
-                    console.error('Error loading blurred image data:', error);
+                    logWithEmoji('error', 'blurTracker.init', 'Error loading blurred image data', error);
                     this.blurredImages = new Map();
                 }
             }
@@ -61,9 +62,10 @@ const blurTracker = {
                         }
                     }
                     
-                    console.log(`Loaded ${this.historicalBlurs.size} historical blurred image URLs`);
+                    logWithEmoji('success', 'blurTracker.init', `Loaded ${this.historicalBlurs.size} historical blurred image URLs`,
+                        { count: this.historicalBlurs.size });
                 } catch (error) {
-                    console.error('Error loading historical blur data:', error);
+                    logWithEmoji('error', 'blurTracker.init', 'Error loading historical blur data', error);
                     this.historicalBlurs = new Map();
                 }
             }
@@ -117,7 +119,7 @@ const blurTracker = {
                 attributes: false
             });
             
-            console.log('BlurTracker: MutationObserver setup complete');
+            logWithEmoji('setup', 'blurTracker.setupMutationObserver', 'MutationObserver setup complete');
         }
     },
     
@@ -148,13 +150,15 @@ const blurTracker = {
         
         const normalizedUrl = this.normalizeImageUrl(img.src);
         if (this.shouldBlur(normalizedUrl)) {
-            console.log('Applying blur to dynamically added image:', normalizedUrl.substring(0, 50) + '...');
+            logWithEmoji('image', 'blurTracker.applyBlurIfNeeded', 'Applying blur to dynamically added image', 
+                { url: normalizedUrl.substring(0, 50) + '...' });
             img.style.filter = 'blur(10px)';
             img.classList.add('blurred-image');
             img.setAttribute('data-faceone-processed', 'blurred');
         } else if (this.wasBlurredBefore(normalizedUrl)) {
             // If it was blurred before but expired, automatically reactivate it
-            console.log('Reactivating previously blurred image:', normalizedUrl.substring(0, 50) + '...');
+            logWithEmoji('image', 'blurTracker.applyBlurIfNeeded', 'Reactivating previously blurred image', 
+                { url: normalizedUrl.substring(0, 50) + '...' });
             this.markForBlur(normalizedUrl);
             img.style.filter = 'blur(10px)';
             img.classList.add('blurred-image');
@@ -192,7 +196,7 @@ const blurTracker = {
             // Return original URL for non-Facebook images
             return url;
         } catch (e) {
-            console.error('Error normalizing URL:', e);
+            logWithEmoji('error', 'blurTracker.normalizeImageUrl', 'Error normalizing URL', e);
             return url; // Return original if parsing fails
         }
     },
@@ -211,7 +215,8 @@ const blurTracker = {
         // Add to active blur list with current timestamp
         this.blurredImages.set(normalizedUrl, Date.now());
         this.needsSave = true;
-        console.log(`Marked image for blur: ${normalizedUrl.substring(0, 50)}...`);
+        logWithEmoji('image', 'blurTracker.markForBlur', 'Marked image for blur', 
+            { url: normalizedUrl.substring(0, 50) + '...' });
     },
     
     // Check if an image should be blurred
@@ -224,7 +229,8 @@ const blurTracker = {
         const isBlurred = this.blurredImages.has(normalizedUrl);
         
         if (isBlurred) {
-            console.log(`Found blurred image: ${normalizedUrl.substring(0, 50)}...`);
+            logWithEmoji('info', 'blurTracker.shouldBlur', 'Found blurred image', 
+                { url: normalizedUrl.substring(0, 50) + '...' });
             
             // Update timestamp to keep it fresh (automatic extension of expiration)
             this.blurredImages.set(normalizedUrl, Date.now());
@@ -263,7 +269,8 @@ const blurTracker = {
             });
             
             this.needsSave = true;
-            console.log(`Unmarked image from blur: ${normalizedUrl.substring(0, 50)}...`);
+            logWithEmoji('image', 'blurTracker.unmarkForBlur', 'Unmarked image from blur', 
+                { url: normalizedUrl.substring(0, 50) + '...' });
         }
     },
     
@@ -293,9 +300,10 @@ const blurTracker = {
             'historicalBlurData': historicalBlurs
         }, () => {
             if (chrome.runtime.lastError) {
-                console.error('Error saving blur data:', chrome.runtime.lastError);
+                logWithEmoji('error', 'blurTracker.save', 'Error saving blur data', chrome.runtime.lastError);
             } else {
-                console.log(`Saved ${currentBlurs.length} current and ${historicalBlurs.length} historical blurred image entries`);
+                logWithEmoji('success', 'blurTracker.save', 'Saved blurred image data', 
+                    { current: currentBlurs.length, historical: historicalBlurs.length });
                 this.needsSave = false;
             }
         });
@@ -332,7 +340,8 @@ const blurTracker = {
         }
         
         if (removedCount > 0 || historicalCleanupCount > 0) {
-            console.log(`Cleanup: moved ${removedCount} entries to historical, removed ${historicalCleanupCount} old historical entries`);
+            logWithEmoji('info', 'blurTracker.cleanup', 'Cleaned up blur entries', 
+                { movedToHistorical: removedCount, removedHistorical: historicalCleanupCount });
             this.needsSave = true;
         }
     },
@@ -347,7 +356,8 @@ const blurTracker = {
         
         this.needsSave = true;
         this.save(true); // Force immediate save
-        console.log(`Cleared ${count} blurred images and all historical records`);
+        logWithEmoji('success', 'blurTracker.clear', `Cleared ${count} blurred images and all historical records`, 
+            { count, action: 'clear all' });
         return count;
     },
     

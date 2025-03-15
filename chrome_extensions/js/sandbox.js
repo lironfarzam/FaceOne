@@ -5,7 +5,26 @@
 
 // Fallback logging utilities in case utils.js is not yet loaded
 if (typeof logWithEmoji !== 'function') {
-    window.logWithEmoji = function(type, functionName, message) {
+    window.DEBUG = false; // Initialize with debugging off
+    
+    window.logWithEmoji = function(type, functionName, message, details = null) {
+        // Critical messages are always shown (errors and warnings)
+        const isCritical = ['error', 'warning'].includes(type);
+        
+        // Model and embedding loading messages are shown in both modes, but with different detail levels
+        const isModelRelated = ['model', 'loading'].includes(type) && 
+                              (functionName.includes('Model') || 
+                               functionName.includes('load') || 
+                               message.includes('model') || 
+                               message.includes('embedding'));
+        
+        // Only log if either DEBUG is enabled, or it's a critical message, or it's a success related to models/embeddings
+        const isSuccess = type === 'success' && isModelRelated;
+        
+        if (!window.DEBUG && !isCritical && !isSuccess) {
+            return;
+        }
+        
         let emoji = '📝'; // Default emoji
         
         // Select emoji based on log type
@@ -19,9 +38,29 @@ if (typeof logWithEmoji !== 'function') {
             case 'loading': emoji = '🔄'; break;
             case 'setup': emoji = '🔧'; break;
             case 'timer': emoji = '⏱️'; break;
+            case 'search': emoji = '🔍'; break;
+            case 'lock': emoji = '🔒'; break;
+            case 'unlock': emoji = '🔓'; break;
+            case 'start': emoji = '🚀'; break;
+            case 'draw': emoji = '🎨'; break;
+            case 'performance': emoji = '📊'; break;
+            case 'stats': emoji = '📈'; break;
+            case 'network': emoji = '🌐'; break;
+            case 'processing': emoji = '⚙️'; break;
         }
         
-        console.log(`${emoji} ${functionName}: ${message}`);
+        // Basic logging for non-debug mode
+        if (!window.DEBUG) {
+            console.log(`Sandbox - ${emoji} ${functionName}: ${message}`);
+            return;
+        }
+        
+        // Enhanced logging for debug mode
+        if (details) {
+            console.log(`Sandbox - ${emoji} ${functionName}: ${message}`, details);
+        } else {
+            console.log(`Sandbox - ${emoji} ${functionName}: ${message}`);
+        }
     };
 }
 
