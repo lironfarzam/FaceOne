@@ -6,8 +6,9 @@ FaceOne: Main Pipeline Execution
 This script orchestrates the complete FaceOne pipeline:
 1. Download face images from Facebook profiles
 2. Process and extract faces from the images
-3. Create a face recognition model
-4. Prepare files for the Chrome extension
+3. Download LFW dataset for negative examples
+4. Create a face recognition model
+5. Prepare files for the Chrome extension
 
 Run this script to execute the entire workflow in sequence.
 
@@ -202,6 +203,9 @@ def main():
         "--skip-processing", action="store_true", help="Skip the face processing step"
     )
     parser.add_argument(
+        "--skip-lfw", action="store_true", help="Skip the LFW dataset download step"
+    )
+    parser.add_argument(
         "--skip-model", action="store_true", help="Skip the model creation step"
     )
     parser.add_argument(
@@ -225,8 +229,14 @@ def main():
     # Setup directories
     setup_directories(config)
 
-    total_steps = 4 - sum(
-        [args.skip_download, args.skip_processing, args.skip_model, args.chrome_only]
+    total_steps = 5 - sum(
+        [
+            args.skip_download,
+            args.skip_processing,
+            args.skip_lfw,
+            args.skip_model,
+            args.chrome_only,
+        ]
     )
     current_step = 1
     pipeline_success = True
@@ -257,7 +267,24 @@ def main():
             return
         current_step += 1
 
-    # 3. Create model
+    # 3. Download LFW dataset for negative examples
+    if not args.skip_lfw and not args.chrome_only:
+        lfw_result = run_script(
+            "create_face_model/download_lfw.py",
+            "Downloading LFW dataset for negative examples",
+            current_step,
+            total_steps,
+        )
+        if not lfw_result:
+            print_warning(
+                "LFW dataset download had issues, but the pipeline will continue with available negative examples."
+            )
+            print_warning(
+                "The model will use synthetic or existing negative examples, which may impact quality."
+            )
+        current_step += 1
+
+    # 4. Create model
     if not args.skip_model and not args.chrome_only:
         if not run_script(
             "create_face_model/create_model.py",
@@ -269,7 +296,7 @@ def main():
             return
         current_step += 1
 
-    # 4. Prepare Chrome extension files
+    # 5. Prepare Chrome extension files
     if not run_script(
         "create_face_model/prepare_extension.py",
         "Preparing files for Chrome extension",

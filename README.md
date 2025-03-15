@@ -153,14 +153,14 @@ The FaceOne system follows a specific workflow to create and deploy a face prote
 <div align="center">
 
 ```
-┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
-│                     │     │                     │     │                     │     │                     │
-│  download_images.py │──▶ │  face_processing.py │──▶ │   create_model.py   │──▶ │  Chrome Extension   │
-│                     │     │                     │     │                     │     │                     │
-└─────────────────────┘     └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
-       Step 1                      Step 2                      Step 3                      Step 4
-   Collect Images             Process & Extract            Train Custom              Deploy Protection
-                                   Faces                    Face Model                    Solution
+┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
+│                     │     │                     │     │                     │     │                     │     │                     │
+│  download_images.py │──▶ │  face_processing.py │──▶ │   download_lfw.py   │──▶ │   create_model.py   │──▶ │  Chrome Extension   │
+│                     │     │                     │     │                     │     │                     │     │                     │
+└─────────────────────┘     └─────────────────────┘     └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
+       Step 1                      Step 2                      Step 3                      Step 4                      Step 5
+   Collect Images             Process & Extract          Download Negative            Train Custom              Deploy Protection
+                                   Faces                     Examples                   Face Model                   Solution
 ```
 
 _FaceOne execution flow from data collection to deployment_
@@ -182,14 +182,21 @@ _FaceOne execution flow from data collection to deployment_
    - Clusters similar faces to identify the target individual
    - Prepares face data for model training
 
-3. **Model Creation** (create_model.py):
+3. **Negative Examples Collection** (download_lfw.py):
+
+   - Downloads the Labeled Faces in the Wild (LFW) dataset
+   - Processes over 13,000 diverse face images
+   - Prepares negative examples to improve model discrimination
+   - Organizes images for use in model training
+
+4. **Model Creation** (create_model.py):
 
    - Extracts face embeddings using DeepFace
    - Creates a Siamese neural network for face verification
    - Trains the model on positive and negative face pairs
    - Exports the model in formats compatible with browser execution
 
-4. **Protection Deployment** (Chrome Extension):
+5. **Protection Deployment** (Chrome Extension):
    - Loads the trained model in the browser
    - Scans web pages for images containing faces
    - Compares detected faces against the target's embeddings
@@ -203,9 +210,13 @@ The `main.py` script automates the entire pipeline, allowing you to run all comp
 # Run the complete pipeline
 python main.py
 
+# Or run with specific steps skipped
+python main.py --skip-lfw  # Skip LFW dataset download
+
 # Or run individual components as needed
 python Facebook_profile_handling/download_images.py
 python Facebook_profile_handling/face_processing.py
+python create_face_model/download_lfw.py
 python create_face_model/create_model.py
 ```
 
@@ -304,10 +315,13 @@ python Facebook_profile_handling/download_images.py
 # Step 2: Process the downloaded faces
 python Facebook_profile_handling/face_processing.py
 
-# Step 3: Create and train the face model
+# Step 3: Download negative examples
+python create_face_model/download_lfw.py
+
+# Step 4: Create and train the face model
 python create_face_model/create_model.py
 
-# Step 4: Load the extension in Chrome
+# Step 5: Load the extension in Chrome
 # (Follow Chrome Extension Setup steps above)
 ```
 

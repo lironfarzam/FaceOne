@@ -190,7 +190,7 @@ def download_image(link: str, download_folder: str) -> bool:
         if response.status_code == 200:
             # Verify the image is a photo (not a small icon)
             if not is_valid_photo(response.content):
-                print(f"Skipping non-photo image: {link}")
+                # print(f"Skipping non-photo image: {link}")
                 return False
 
             # Use a more unique filename to avoid collisions
