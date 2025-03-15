@@ -3,29 +3,81 @@
  * Provides task queuing and worker lifecycle management.
  * @author Liron Farzam
  * @version 1.0.0
+ * 
+ * This module implements a sophisticated worker pool for distributing 
+ * image processing tasks across multiple Web Worker threads. It provides
+ * task prioritization, automatic worker lifecycle management, error handling,
+ * and performance optimization to maximize throughput while maintaining
+ * stability and resource efficiency.
  */
 
+//==============================================================================
+// PRIORITY QUEUE FOR TASK MANAGEMENT
+//==============================================================================
+
 /**
- * Priority Queue for task management with improved cleanup
+ * A priority queue implementation for managing tasks with timeouts and statistics
+ * 
+ * Handles prioritized enqueuing, efficient processing order, automatic cleanup
+ * of stale tasks, and comprehensive metrics for monitoring queue performance.
+ * 
+ * @class
  */
 class PriorityQueue {
+    /**
+     * Creates a new priority queue instance
+     * 
+     * @param {Object} options - Configuration options
+     * @param {number} [options.taskTimeout=30000] - Maximum time in milliseconds before a task is considered stale
+     */
     constructor(options = {}) {
+        /**
+         * Array of queued task items awaiting processing
+         * @type {Array<Object>}
+         * @private
+         */
         this.items = [];
+        
+        /**
+         * Set of items currently being processed
+         * @type {Set<Object>}
+         * @private
+         */
         this.processing = new Set();
+        
+        /**
+         * Configuration options with defaults
+         * @type {Object}
+         * @private
+         */
         this.options = {
             taskTimeout: 30000, // 30 seconds
             ...options
         };
         
-        // Stats tracking
+        /**
+         * Statistics tracking for performance monitoring
+         * @type {Object}
+         * @private
+         */
         this.stats = {
-            enqueued: 0,
-            processed: 0,
-            timedOut: 0,
-            errors: 0
+            enqueued: 0,    // Total tasks added to queue
+            processed: 0,   // Successfully processed tasks
+            timedOut: 0,    // Tasks that exceeded timeout
+            errors: 0       // Tasks that failed with errors
         };
     }
 
+    /**
+     * Adds a task to the queue with specified priority
+     * 
+     * Higher priority tasks are processed before lower priority ones.
+     * Each task is assigned a unique ID for tracking and potential cancellation.
+     * 
+     * @param {Object} task - The task to be processed
+     * @param {number} [priority=0] - Task priority (higher values = higher priority)
+     * @returns {string} Unique task ID for tracking or cancellation
+     */
     add(task, priority = 0) {
         const item = { 
             task, 
@@ -41,6 +93,14 @@ class PriorityQueue {
         return item.id; // Return task ID for potential cancellation
     }
 
+    /**
+     * Retrieves the next highest-priority task from the queue
+     * 
+     * Removes the task from the queue and adds it to the processing set.
+     * Returns null if the queue is empty.
+     * 
+     * @returns {Object|null} The next task item or null if queue is empty
+     */
     next() {
         if (this.items.length === 0) return null;
         
@@ -49,6 +109,15 @@ class PriorityQueue {
         return item;
     }
     
+    /**
+     * Marks a task as completed and removes it from the processing set
+     * 
+     * Updates task statistics for completed tasks.
+     * 
+     * @param {string} taskId - The ID of the task to mark as complete
+     * @param {boolean} [success=true] - Whether the task completed successfully
+     * @returns {boolean} True if the task was found and marked, false otherwise
+     */
     markComplete(taskId, success = true) {
         // Find in processing set
         for (const item of this.processing) {
@@ -61,6 +130,14 @@ class PriorityQueue {
         return false;
     }
     
+    /**
+     * Marks a task as failed with an error and removes it from the processing set
+     * 
+     * Updates error statistics for tracking failed tasks.
+     * 
+     * @param {string} taskId - The ID of the task that failed
+     * @returns {boolean} True if the task was found and marked, false otherwise
+     */
     markError(taskId) {
         // Find in processing set
         for (const item of this.processing) {
@@ -73,6 +150,14 @@ class PriorityQueue {
         return false;
     }
 
+    /**
+     * Cleans up stale tasks that have exceeded their timeout period
+     * 
+     * Removes timed-out tasks from both the queue and processing sets.
+     * Updates timeout statistics for monitoring.
+     * 
+     * @returns {number} Total number of stale tasks removed
+     */
     cleanup() {
         const now = Date.now();
         
@@ -106,28 +191,73 @@ class PriorityQueue {
         return totalRemoved;
     }
     
+    /**
+     * Returns the current number of tasks waiting in the queue
+     * 
+     * @returns {number} Number of tasks in the queue
+     */
     size() {
         return this.items.length;
     }
     
+    /**
+     * Returns the current number of tasks being processed
+     * 
+     * @returns {number} Number of tasks currently being processed
+     */
     processingCount() {
         return this.processing.size;
     }
     
+    /**
+     * Returns statistics about the queue's performance
+     * 
+     * @returns {Object} Statistics about enqueued, processed, timed out, and errored tasks
+     */
     getStats() {
         return {...this.stats};
     }
     
+    /**
+     * Resets the queue, clearing all queued and processing tasks
+     * 
+     * @returns {void}
+     */
     reset() {
         this.items = [];
         this.processing.clear();
     }
 }
 
+//==============================================================================
+// WORKER POOL IMPLEMENTATION
+//==============================================================================
+
 /**
- * Enhanced Worker Pool with optimized resource management
+ * Enhanced worker pool with advanced resource management and error handling
+ * 
+ * Manages a pool of Web Workers for parallelized image processing with features like:
+ * - Task priority queuing
+ * - Worker health monitoring
+ * - Automatic worker recycling
+ * - Memory usage optimization
+ * - Performance statistics
+ * - Error handling and recovery
+ * 
+ * @class
  */
 class EnhancedWorkerPool {
+    /**
+     * Creates a new worker pool
+     * 
+     * @param {Object} options - Configuration options
+     * @param {number} [options.maxWorkers] - Maximum number of workers (defaults to hardware concurrency or 4)
+     * @param {number} [options.taskTimeout=30000] - Task timeout in milliseconds
+     * @param {number} [options.retryAttempts=2] - Number of retry attempts for failed tasks
+     * @param {number} [options.batchSize=4] - Number of tasks to process in parallel
+     * @param {number} [options.workerRestartThreshold=1000] - Number of tasks before recycling a worker
+     * @param {number} [options.memoryCheckInterval=60000] - Interval for memory checks in milliseconds
+     */
     constructor(options = {}) {
         this.options = {
             maxWorkers: navigator.hardwareConcurrency || 4,
@@ -139,11 +269,34 @@ class EnhancedWorkerPool {
             ...options
         };
 
-        this.workers = new Map(); // Worker instances
+        /**
+         * Map of worker IDs to worker instances
+         * @type {Map<number, Worker>}
+         * @private
+         */
+        this.workers = new Map();
+        
+        /**
+         * Queue for managing pending tasks
+         * @type {PriorityQueue}
+         * @private
+         */
         this.taskQueue = new PriorityQueue({
             taskTimeout: this.options.taskTimeout
         });
+        
+        /**
+         * Set of currently idle workers
+         * @type {Set<Worker>}
+         * @private
+         */
         this.idleWorkers = new Set();
+        
+        /**
+         * Performance and operational statistics
+         * @type {Object}
+         * @private
+         */
         this.stats = {
             processed: 0,
             errors: 0,
@@ -153,15 +306,30 @@ class EnhancedWorkerPool {
             workersRestarted: 0
         };
         
-        // Worker state tracking
-        this.workerState = new Map(); // Tracks per-worker stats
+        /**
+         * Map of workers to their state information
+         * @type {Map<Worker, Object>}
+         * @private
+         */
+        this.workerState = new Map();
         
-        // Memory check interval
+        /**
+         * Interval ID for memory checking
+         * @type {number|null}
+         * @private
+         */
         this.memoryCheckInterval = null;
     }
 
     /**
      * Initialize worker pool with warm-up
+     * 
+     * Creates all workers according to configuration, initializes them,
+     * performs warm-up tasks to optimize initial performance, and
+     * starts the task processor and memory monitoring systems.
+     * 
+     * @async
+     * @returns {Promise<boolean>} True if initialization successful, false otherwise
      */
     async initialize() {
         try {
@@ -219,7 +387,15 @@ class EnhancedWorkerPool {
     }
 
     /**
-     * Create and initialize a worker
+     * Creates and initializes a new worker
+     * 
+     * Loads the worker script, sets up error handling, and initializes
+     * the worker with appropriate configuration.
+     * 
+     * @async
+     * @param {number} id - Worker identifier
+     * @returns {Promise<Worker>} The initialized worker
+     * @throws {Error} If worker creation or initialization fails
      */
     async createWorker(id) {
         try {
@@ -282,7 +458,16 @@ class EnhancedWorkerPool {
     }
 
     /**
-     * Process image with automatic retry and fallback
+     * Processes an image using the worker pool
+     * 
+     * Adds the image processing task to the queue with the specified priority.
+     * The task will be picked up by the next available worker.
+     * 
+     * @async
+     * @param {ImageData} imageData - The image data to process
+     * @param {number} [priority=0] - Task priority (higher values = higher priority)
+     * @returns {Promise<ImageData>} Processed image data
+     * @throws {Error} If processing fails after retry attempts
      */
     async processImage(imageData, priority = 0) {
         const task = {
@@ -664,7 +849,12 @@ class EnhancedWorkerPool {
     }
 
     /**
-     * Clean up resources
+     * Clean up resources and terminate all workers
+     * 
+     * Properly shuts down the worker pool, terminating all workers,
+     * clearing intervals, and resetting all internal state.
+     * 
+     * @returns {void}
      */
     terminate() {
         logWithEmoji('setup', 'workerPool.terminate', 'Terminating worker pool');
@@ -694,13 +884,39 @@ class EnhancedWorkerPool {
     }
 }
 
-// Change the class name in the file
+//==============================================================================
+// EXPORTED CLASSES
+//==============================================================================
+
+/**
+ * Main WorkerPool class for use by the extension
+ * 
+ * This is an alias of EnhancedWorkerPool, provided for
+ * backward compatibility and cleaner API.
+ * 
+ * @class
+ * @extends EnhancedWorkerPool
+ */
 class WorkerPool extends EnhancedWorkerPool {
+    /**
+     * Creates a new worker pool instance
+     * 
+     * @param {Object} options - Configuration options (see EnhancedWorkerPool constructor)
+     */
     constructor(options = {}) {
         super(options);
     }
 }
 
-// Export both classes
+// Export classes to global scope for use in extension
+/**
+ * Make WorkerPool class available globally
+ * @type {typeof WorkerPool}
+ */
 window.WorkerPool = WorkerPool;
+
+/**
+ * Make EnhancedWorkerPool class available globally
+ * @type {typeof EnhancedWorkerPool}
+ */
 window.EnhancedWorkerPool = EnhancedWorkerPool; 
