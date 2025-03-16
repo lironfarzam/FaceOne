@@ -181,15 +181,82 @@ def check_prerequisites():
 
     print_success("✓ All required scripts exist.")
 
-    # Check if necessary Python packages are installed
+    # Check if necessary Python packages are installed by reading requirements.txt
     try:
-        import tensorflow
-        import selenium
-        import deepface
+        import pkg_resources
+        import re
 
-        print_success("✓ Core dependencies are installed.")
-    except ImportError as e:
-        print_error(f"Missing required Python package: {str(e)}")
+        # Read requirements.txt
+        if not os.path.exists("requirements.txt"):
+            print_error("requirements.txt not found.")
+            return False
+
+        with open("requirements.txt", "r") as f:
+            requirements = f.readlines()
+
+        # Package name mapping for special cases
+        package_mapping = {
+            "opencv-python": "cv2",
+            "pillow": "PIL",
+            "scikit-learn": "sklearn",
+            "scikit-image": "skimage",
+            "pyyaml": "yaml",
+            "ffmpeg-python": "ffmpeg",
+        }
+
+        # Parse requirements, skipping comments and empty lines
+        packages_to_check = []
+        for line in requirements:
+            line = line.strip()
+            # Skip comments, empty lines, and special requirements (like --extra-index-url)
+            if (
+                not line
+                or line.startswith("#")
+                or line.startswith("-r")
+                or line.startswith("--")
+            ):
+                continue
+
+            # Extract package name (remove version specifiers)
+            package_name = re.split(r"[<>=~]", line)[0].strip()
+            if package_name:
+                packages_to_check.append(package_name)
+
+        # Check each package
+        missing_packages = []
+        for package in packages_to_check:
+            try:
+                # Handle special cases with different import names
+                if package.lower() in package_mapping:
+                    # For packages with different import names, try to import the module
+                    module_name = package_mapping[package.lower()]
+                    try:
+                        __import__(module_name)
+                    except ImportError:
+                        missing_packages.append(package)
+                else:
+                    # Use pkg_resources for standard packages
+                    pkg_resources.get_distribution(package)
+            except (pkg_resources.DistributionNotFound, ImportError):
+                missing_packages.append(package)
+            except Exception as e:
+                print_warning(f"Warning checking {package}: {str(e)}")
+
+        if missing_packages:
+            print_error(
+                f"Missing required Python packages: {', '.join(missing_packages)}"
+            )
+            print_warning(
+                "Please install all dependencies: pip install -r requirements.txt"
+            )
+            return False
+
+        print_success(
+            f"✓ All {len(packages_to_check)} dependencies from requirements.txt are installed."
+        )
+
+    except Exception as e:
+        print_error(f"Error checking dependencies: {str(e)}")
         print_warning(
             "Please install all dependencies: pip install -r requirements.txt"
         )
