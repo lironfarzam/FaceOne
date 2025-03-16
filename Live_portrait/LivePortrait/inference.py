@@ -1,7 +1,4 @@
-# coding: utf-8
-"""
-for human
-"""
+# Description: This script is the main entry point for running the live portrait pipeline."""
 
 import os
 import os.path as osp

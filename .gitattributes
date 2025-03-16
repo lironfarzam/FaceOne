@@ -1,0 +1,5 @@
+Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/warping_module.pth filter=lfs diff=lfs merge=lfs -text
+Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/xpose.pth filter=lfs diff=lfs merge=lfs -text
+Live_portrait/LivePortrait/pretrained_weights/liveportrait/landmark.onnx filter=lfs diff=lfs merge=lfs -text
+Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/motion_extractor.pth filter=lfs diff=lfs merge=lfs -text
+Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/spade_generator.pth filter=lfs diff=lfs merge=lfs -text
