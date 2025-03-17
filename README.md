@@ -10,7 +10,7 @@
 
 **Protecting vulnerable individuals from unwanted digital encounters through advanced facial recognition**
 
-[Problem](#problem-description) • [Solution](#our-solution) • [Components](#system-components) • [Project Structure](#project-structure) • [Installation](#installation) • [Usage](#usage) • [Documentation](#documentation) • [About](#about-the-project)
+[Problem](#problem-description) • [Solution](#our-solution) • [Components](#system-components) • [Quick Start](#quick-start) • [Installation](#installation) • [Usage](#usage) • [Documentation](#documentation) • [About](#about-the-project)
 
 </div>
 
@@ -21,6 +21,25 @@ Recently, a woman shared her story of being sexually assaulted by someone she kn
 This situation underscores a broader problem: existing social media and browser tools are inadequate for shielding users from harmful content. Blocking features and generic image-replacement extensions are either insufficient or too broad to address users' specific needs.
 
 There is a clear need for a more effective solution that uses advanced facial recognition technology to automatically detect and replace images of specific individuals. Such a tool would empower users to navigate the digital world safely, free from the fear of encountering specific and unwanted faces.
+
+## 🚀 Quick Start
+
+Getting started with FaceOne is now easier than ever:
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/lironfarzam/FaceOne.git
+cd FaceOne
+
+# 2. Run the main script (automatically handles dependencies and model setup)
+python main.py
+```
+
+That's it! The main script will:
+
+- Check for required dependencies and install them if needed
+- Automatically download or assemble required model files
+- Guide you through the entire pipeline
 
 ## 💡 Our Solution
 

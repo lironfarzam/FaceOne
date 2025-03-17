@@ -147,6 +147,120 @@ def run_shell_script(script_path, description, step_num, total_steps):
         return False
 
 
+def check_and_install_dependencies():
+    """Check and install required dependencies."""
+    print_header("Checking Dependencies")
+
+    # Check if requirements file exists
+    if not os.path.exists("requirements.txt"):
+        print_error("requirements.txt file not found.")
+        return False
+
+    try:
+        # Try a simple import of critical packages to see if they're installed
+        print("Checking for critical dependencies...")
+        try:
+            import numpy
+            import torch
+            import cv2
+
+            print_success("Critical dependencies found.")
+        except ImportError:
+            print_warning("Some critical dependencies are missing.")
+            print(
+                f"{Colors.CYAN}Would you like to install/update dependencies now? (y/n){Colors.ENDC}"
+            )
+            choice = input().strip().lower()
+
+            if choice == "y":
+                print_header("Installing Dependencies")
+                try:
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "pip",
+                            "install",
+                            "-r",
+                            "requirements.txt",
+                        ],
+                        check=True,
+                    )
+                    print_success("Dependencies installed successfully.")
+                    return True
+                except Exception as e:
+                    print_error(f"Failed to install dependencies: {str(e)}")
+                    return False
+            else:
+                print_warning(
+                    "Skipping dependency installation. Some features may not work correctly."
+                )
+                return True
+
+        # Even if critical dependencies are found, still offer to update
+        print(
+            f"{Colors.CYAN}Would you like to ensure all dependencies are up to date? (y/n){Colors.ENDC}"
+        )
+        choice = input().strip().lower()
+
+        if choice == "y":
+            print_header("Updating Dependencies")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+                    check=True,
+                )
+                print_success("Dependencies updated successfully.")
+            except Exception as e:
+                print_error(f"Failed to update dependencies: {str(e)}")
+                print_warning("Continuing with existing dependencies.")
+        else:
+            print_success("Using existing dependencies.")
+
+        return True
+    except Exception as e:
+        print_error(f"Error checking dependencies: {str(e)}")
+        print_warning(
+            "Dependency check failed. You may need to manually run: pip install -r requirements.txt"
+        )
+        return False
+
+
+def download_missing_models():
+    """Download missing model files using the download_models.py script."""
+    print_header("Downloading Missing Model Files")
+
+    if not os.path.exists("download_models.py"):
+        print_error("download_models.py script not found.")
+        return False
+
+    # Make the script executable
+    try:
+        os.chmod("download_models.py", 0o755)
+    except Exception as e:
+        print_error(f"Failed to make script executable: {str(e)}")
+        # Continue anyway, might still work
+
+    # Run the script
+    try:
+        print("Starting model download...")
+        result = subprocess.run(
+            [sys.executable, "download_models.py"],
+            check=True,
+            text=True,
+        )
+        print_success("Models downloaded successfully.")
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Model download failed with return code {e.returncode}")
+        if hasattr(e, "output") and e.output:
+            print_error(f"Output: {e.output}")
+        return False
+    except Exception as e:
+        print_error(f"An unexpected error occurred during model download: {str(e)}")
+        return False
+
+
 def run_setup_model_files():
     """Run the setup_model_files.sh script to set up model files."""
     print_header("Running Model Files Setup")
@@ -526,7 +640,21 @@ def main():
         action="store_true",
         help="Run the setup_model_files.sh script and exit",
     )
+    parser.add_argument(
+        "--skip-dependency-check",
+        action="store_true",
+        help="Skip checking and installing dependencies",
+    )
     args = parser.parse_args()
+
+    print_header("FaceOne Pipeline Execution")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Check dependencies first
+    if not args.skip_dependency_check:
+        if not check_and_install_dependencies():
+            print_error("Failed to properly check or install dependencies.")
+            print_warning("Continuing, but you may encounter errors.")
 
     # If --setup-model-files is specified, run the setup script and exit
     if args.setup_model_files:
@@ -536,9 +664,6 @@ def main():
         else:
             print_error("Model files setup failed.")
             return
-
-    print_header("FaceOne Pipeline Execution")
-    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # Check prerequisites
     if not check_prerequisites():
@@ -552,7 +677,7 @@ def main():
     setup_directories(config)
 
     # Calculate total steps
-    total_steps = 7 - sum(
+    total_steps = 6 - sum(
         [
             args.skip_download,
             args.skip_processing,
@@ -560,7 +685,6 @@ def main():
             args.skip_lfw,
             args.skip_model,
             args.chrome_only,
-            args.skip_model_assembly,
         ]
     )
     current_step = 1
@@ -568,48 +692,78 @@ def main():
 
     start_time = time.time()
 
-    # 0. Check and reassemble model files if needed
-    if not args.skip_model_assembly:
-        # Check if model files already exist
-        model_files_exist = check_model_files()
+    # 0. Check and reassemble model files if needed (automatically if not skipped)
+    model_files_exist = check_model_files()
+
+    if not model_files_exist and not args.skip_model_assembly:
+        print_header("Automatic Model Files Setup")
         split_files_exist = check_split_files()
 
-        if (not model_files_exist or args.force_model_assembly) and split_files_exist:
+        # First, try to assemble from split files
+        if split_files_exist:
+            print_step(
+                current_step, total_steps, "Assembling model files from split chunks"
+            )
             if not assemble_model_files(current_step, total_steps):
+                print_warning(
+                    "Model file assembly failed. Trying to download models..."
+                )
+                # If assembly fails, try downloading models
+                if not download_missing_models():
+                    print_error(
+                        "Failed to obtain model files. Some features may not work correctly."
+                    )
+                    print_warning(
+                        "Continuing with pipeline execution, but expect potential issues."
+                    )
+            else:
+                print_success("Model files assembled successfully.")
+        else:
+            # If no split files, try downloading models
+            print_step(
+                current_step,
+                total_steps,
+                "No split files found. Attempting to download models",
+            )
+            if not download_missing_models():
                 print_error(
-                    "Model file assembly failed. Some features may not work correctly."
+                    "Failed to download model files. Some features may not work correctly."
                 )
                 print_warning(
                     "Continuing with pipeline execution, but expect potential issues."
                 )
+
+        # Check again to see if we now have model files
+        model_files_exist = check_model_files()
+        if model_files_exist:
+            print_success("Model files are now ready.")
+
+        current_step += 1
+    elif args.force_model_assembly:
+        split_files_exist = check_split_files()
+        if split_files_exist:
+            if not assemble_model_files(current_step, total_steps):
+                print_error("Forced model file assembly failed.")
             current_step += 1
-        elif not model_files_exist and not split_files_exist:
-            print_error(
-                "No model files or split files found. Some features may not work correctly."
-            )
-            print_warning(
-                "Continuing with pipeline execution, but expect potential issues."
-            )
-            print_warning(
-                "Consider running with the --setup-model-files flag first to set up model files."
-            )
-        else:
-            print_success("Model files already exist. Skipping assembly step.")
-            if args.force_model_assembly:
-                if not assemble_model_files(current_step, total_steps):
-                    print_error("Forced model file assembly failed.")
-                current_step += 1
+    elif not model_files_exist:
+        print_warning("Model files missing and --skip-model-assembly flag is set.")
+        print_warning("Some features may not work correctly.")
 
     # 1. Download images
     if not args.skip_download and not args.chrome_only:
-        if not run_script(
-            "Facebook_profile_handling/download_images.py",
-            "Downloading images from Facebook profiles",
-            current_step,
-            total_steps,
-        ):
-            print_error("Image download failed. Pipeline aborted.")
-            return
+        download_script = "Facebook_profile_handling/download_images.py"
+        if os.path.exists(download_script):
+            print_step(
+                current_step, total_steps, "Downloading images from Facebook profile"
+            )
+            if not run_script(
+                download_script, "Image download", current_step, total_steps
+            ):
+                print_error("Image download failed. Pipeline may be incomplete.")
+                pipeline_success = False
+        else:
+            print_error(f"Script not found: {download_script}")
+            pipeline_success = False
         current_step += 1
 
     # 2. Process images
