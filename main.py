@@ -147,6 +147,43 @@ def run_shell_script(script_path, description, step_num, total_steps):
         return False
 
 
+def run_setup_model_files():
+    """Run the setup_model_files.sh script to set up model files."""
+    print_header("Running Model Files Setup")
+
+    script_path = "./setup_model_files.sh"
+
+    if not os.path.exists(script_path):
+        print_error(f"{script_path} not found.")
+        print_error("Make sure you're in the correct directory or the file exists.")
+        return False
+
+    # Make the script executable
+    try:
+        os.chmod(script_path, 0o755)
+    except Exception as e:
+        print_error(f"Failed to make script executable: {str(e)}")
+        return False
+
+    # Run the script
+    try:
+        result = subprocess.run(
+            [script_path],
+            check=True,
+            text=True,
+        )
+        print_success("Model files setup completed successfully.")
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Model files setup failed with return code {e.returncode}")
+        if hasattr(e, "output") and e.output:
+            print_error(f"Output: {e.output}")
+        return False
+    except Exception as e:
+        print_error(f"An unexpected error occurred during model files setup: {str(e)}")
+        return False
+
+
 def check_model_files():
     """Check if the model files exist in the correct locations."""
     print_header("Checking Model Files")
@@ -315,6 +352,15 @@ def check_prerequisites():
     else:
         print_success("✓ Model reassembly script found.")
 
+    # Check for model setup script
+    if not os.path.exists("setup_model_files.sh"):
+        print_warning("Model setup script (setup_model_files.sh) not found.")
+        print_warning(
+            "You may need to implement this for easier model file management."
+        )
+    else:
+        print_success("✓ Model setup script found.")
+
     # Check if necessary Python packages are installed by reading requirements.txt
     try:
         import pkg_resources
@@ -475,7 +521,21 @@ def main():
         action="store_true",
         help="Force model file reassembly even if files already exist",
     )
+    parser.add_argument(
+        "--setup-model-files",
+        action="store_true",
+        help="Run the setup_model_files.sh script and exit",
+    )
     args = parser.parse_args()
+
+    # If --setup-model-files is specified, run the setup script and exit
+    if args.setup_model_files:
+        if run_setup_model_files():
+            print_success("Model files setup completed successfully.")
+            return
+        else:
+            print_error("Model files setup failed.")
+            return
 
     print_header("FaceOne Pipeline Execution")
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -529,6 +589,9 @@ def main():
             )
             print_warning(
                 "Continuing with pipeline execution, but expect potential issues."
+            )
+            print_warning(
+                "Consider running with the --setup-model-files flag first to set up model files."
             )
         else:
             print_success("Model files already exist. Skipping assembly step.")
