@@ -37,9 +37,9 @@ split_and_upload() {
   local chunk_count=$(ls "split_files/$relative_dir/${base_name}."* | wc -l)
   echo "Created $chunk_count chunks"
   
-  # Add the split files to git
-  echo "Adding split files to git..."
-  git add "split_files/$relative_dir"
+  # Force add the split files to git (ignoring .gitignore)
+  echo "Force-adding split files to git..."
+  git add -f "split_files/$relative_dir"
   
   # Commit the split files
   echo "Committing split files..."
