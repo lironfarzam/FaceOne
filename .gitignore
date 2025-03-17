@@ -36,3 +36,15 @@ xxx/
 !Live_portrait/NN_LiveProtrait/Source_Images
 !Live_portrait/NN_LiveProtrait/Output
 !Live_portrait/LivePortrait/*
+
+# Explicitly allow LivePortrait model files
+!Live_portrait/LivePortrait/*
+!Live_portrait/LivePortrait/pretrained_weights/
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait/
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/*.pth
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/*.pth
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/*.pth
+!Live_portrait/LivePortrait/pretrained_weights/liveportrait/*.onnx
