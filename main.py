@@ -20,6 +20,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import subprocess
 import argparse
 from datetime import datetime
@@ -105,6 +106,167 @@ def run_script(script_path, description, step_num, total_steps):
         return False
 
 
+def run_shell_script(script_path, description, step_num, total_steps):
+    """Run a shell script and handle any errors."""
+    print_step(step_num, total_steps, description)
+
+    start_time = time.time()
+
+    try:
+        # Make sure the script is executable
+        os.chmod(script_path, 0o755)
+
+        result = subprocess.run(
+            [script_path],
+            check=True,
+            text=True,
+            # Uncomment to capture output instead of showing it live
+            # capture_output=True
+        )
+
+        elapsed_time = time.time() - start_time
+        print_success(
+            f"✓ {description} completed successfully in {elapsed_time:.2f} seconds."
+        )
+        return True
+
+    except subprocess.CalledProcessError as e:
+        elapsed_time = time.time() - start_time
+        print_error(
+            f"Script failed after {elapsed_time:.2f} seconds with return code {e.returncode}"
+        )
+        if hasattr(e, "output") and e.output:
+            print_error(f"Output: {e.output}")
+        return False
+
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        print_error(
+            f"An unexpected error occurred after {elapsed_time:.2f} seconds: {str(e)}"
+        )
+        return False
+
+
+def run_setup_model_files():
+    """Run the setup_model_files.sh script to set up model files."""
+    print_header("Running Model Files Setup")
+
+    script_path = "./setup_model_files.sh"
+
+    if not os.path.exists(script_path):
+        print_error(f"{script_path} not found.")
+        print_error("Make sure you're in the correct directory or the file exists.")
+        return False
+
+    # Make the script executable
+    try:
+        os.chmod(script_path, 0o755)
+    except Exception as e:
+        print_error(f"Failed to make script executable: {str(e)}")
+        return False
+
+    # Run the script
+    try:
+        result = subprocess.run(
+            [script_path],
+            check=True,
+            text=True,
+        )
+        print_success("Model files setup completed successfully.")
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Model files setup failed with return code {e.returncode}")
+        if hasattr(e, "output") and e.output:
+            print_error(f"Output: {e.output}")
+        return False
+    except Exception as e:
+        print_error(f"An unexpected error occurred during model files setup: {str(e)}")
+        return False
+
+
+def check_model_files():
+    """Check if the model files exist in the correct locations."""
+    print_header("Checking Model Files")
+
+    # Define expected model file paths
+    model_paths = [
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/landmark.onnx",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/appearance_feature_extractor.pth",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/motion_extractor.pth",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/spade_generator.pth",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/warping_module.pth",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/retargeting_models/stitching_retargeting_module.pth",
+        "Live_portrait/LivePortrait/pretrained_weights/insightface/models/buffalo_l/2d106det.onnx",
+        "Live_portrait/LivePortrait/pretrained_weights/insightface/models/buffalo_l/det_10g.onnx",
+    ]
+
+    missing_files = []
+    for path in model_paths:
+        if (
+            not os.path.exists(path) or os.path.getsize(path) < 10000
+        ):  # File should be at least 10KB
+            missing_files.append(path)
+
+    if missing_files:
+        print_warning(f"Found {len(missing_files)} missing or invalid model files.")
+        for path in missing_files:
+            print_warning(f"  - {path}")
+        return False
+
+    print_success(f"✓ All {len(model_paths)} model files exist and have proper size.")
+    return True
+
+
+def check_split_files():
+    """Check if the split model files exist."""
+    print_header("Checking Split Model Files")
+
+    # Check if either split_files or split_files_temp directories exist
+    if not os.path.exists("split_files") and not os.path.exists("split_files_temp"):
+        print_error("Neither split_files nor split_files_temp directories found.")
+        return False
+
+    # Count files in split_files directory
+    split_files_count = 0
+    if os.path.exists("split_files"):
+        for root, _, files in os.walk("split_files"):
+            split_files_count += len(files)
+
+    # Count files in split_files_temp directory
+    temp_files_count = 0
+    if os.path.exists("split_files_temp"):
+        for root, _, files in os.walk("split_files_temp"):
+            temp_files_count += len(files)
+
+    total_split_files = split_files_count + temp_files_count
+
+    if total_split_files == 0:
+        print_error(
+            "No split files found in either split_files or split_files_temp directories."
+        )
+        return False
+
+    print_success(f"✓ Found {split_files_count} files in split_files directory.")
+    print_success(f"✓ Found {temp_files_count} files in split_files_temp directory.")
+    print_success(f"✓ Total of {total_split_files} split files found.")
+
+    return True
+
+
+def assemble_model_files(step_num, total_steps):
+    """Assemble the model files from split files."""
+    if os.path.exists("reassemble_model_files.sh"):
+        return run_shell_script(
+            "reassemble_model_files.sh",
+            "Assembling model files from split chunks",
+            step_num,
+            total_steps,
+        )
+    else:
+        print_error("reassemble_model_files.sh script not found.")
+        return False
+
+
 def check_prerequisites():
     """Check if all necessary prerequisites are met."""
     print_header("Checking Prerequisites")
@@ -180,6 +342,24 @@ def check_prerequisites():
             return False
 
     print_success("✓ All required scripts exist.")
+
+    # Check for model reassembly script
+    if not os.path.exists("reassemble_model_files.sh"):
+        print_warning("Model reassembly script (reassemble_model_files.sh) not found.")
+        print_warning(
+            "You may need to implement this if you're using split model files."
+        )
+    else:
+        print_success("✓ Model reassembly script found.")
+
+    # Check for model setup script
+    if not os.path.exists("setup_model_files.sh"):
+        print_warning("Model setup script (setup_model_files.sh) not found.")
+        print_warning(
+            "You may need to implement this for easier model file management."
+        )
+    else:
+        print_success("✓ Model setup script found.")
 
     # Check if necessary Python packages are installed by reading requirements.txt
     try:
@@ -290,6 +470,19 @@ def setup_directories(config):
             os.makedirs(config[dir_key], exist_ok=True)
             print_success(f"✓ Created live portrait directory: {dir_key}")
 
+    # Create model directory structure if it doesn't exist
+    model_dirs = [
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait/retargeting_models",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1",
+        "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/retargeting_models",
+        "Live_portrait/LivePortrait/pretrained_weights/insightface/models/buffalo_l",
+    ]
+
+    for dir_path in model_dirs:
+        os.makedirs(dir_path, exist_ok=True)
+
     print_success("✓ Directories set up successfully.")
 
 
@@ -318,7 +511,31 @@ def main():
         action="store_true",
         help="Only prepare the Chrome extension files",
     )
+    parser.add_argument(
+        "--skip-model-assembly",
+        action="store_true",
+        help="Skip the model file assembly step",
+    )
+    parser.add_argument(
+        "--force-model-assembly",
+        action="store_true",
+        help="Force model file reassembly even if files already exist",
+    )
+    parser.add_argument(
+        "--setup-model-files",
+        action="store_true",
+        help="Run the setup_model_files.sh script and exit",
+    )
     args = parser.parse_args()
+
+    # If --setup-model-files is specified, run the setup script and exit
+    if args.setup_model_files:
+        if run_setup_model_files():
+            print_success("Model files setup completed successfully.")
+            return
+        else:
+            print_error("Model files setup failed.")
+            return
 
     print_header("FaceOne Pipeline Execution")
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -334,7 +551,8 @@ def main():
     # Setup directories
     setup_directories(config)
 
-    total_steps = 6 - sum(
+    # Calculate total steps
+    total_steps = 7 - sum(
         [
             args.skip_download,
             args.skip_processing,
@@ -342,12 +560,45 @@ def main():
             args.skip_lfw,
             args.skip_model,
             args.chrome_only,
+            args.skip_model_assembly,
         ]
     )
     current_step = 1
     pipeline_success = True
 
     start_time = time.time()
+
+    # 0. Check and reassemble model files if needed
+    if not args.skip_model_assembly:
+        # Check if model files already exist
+        model_files_exist = check_model_files()
+        split_files_exist = check_split_files()
+
+        if (not model_files_exist or args.force_model_assembly) and split_files_exist:
+            if not assemble_model_files(current_step, total_steps):
+                print_error(
+                    "Model file assembly failed. Some features may not work correctly."
+                )
+                print_warning(
+                    "Continuing with pipeline execution, but expect potential issues."
+                )
+            current_step += 1
+        elif not model_files_exist and not split_files_exist:
+            print_error(
+                "No model files or split files found. Some features may not work correctly."
+            )
+            print_warning(
+                "Continuing with pipeline execution, but expect potential issues."
+            )
+            print_warning(
+                "Consider running with the --setup-model-files flag first to set up model files."
+            )
+        else:
+            print_success("Model files already exist. Skipping assembly step.")
+            if args.force_model_assembly:
+                if not assemble_model_files(current_step, total_steps):
+                    print_error("Forced model file assembly failed.")
+                current_step += 1
 
     # 1. Download images
     if not args.skip_download and not args.chrome_only:

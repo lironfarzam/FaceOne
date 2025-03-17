@@ -48,3 +48,25 @@ xxx/
 !Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/*.pth
 !Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/*.pth
 !Live_portrait/LivePortrait/pretrained_weights/liveportrait/*.onnx
+
+# Explicitly allow split_files directory and all its contents
+!split_files/
+!split_files/**
+!split_files/liveportrait/
+!split_files/liveportrait/**
+!split_files/liveportrait/base_models/
+!split_files/liveportrait/base_models/**
+!split_files/liveportrait/retargeting_models/
+!split_files/liveportrait/retargeting_models/**
+!split_files/liveportrait_animals/
+!split_files/liveportrait_animals/**
+!split_files/liveportrait_animals/base_models/
+!split_files/liveportrait_animals/base_models/**
+!split_files/liveportrait_animals/retargeting_models/
+!split_files/liveportrait_animals/retargeting_models/**
+!split_files/insightface/
+!split_files/insightface/**
+
+# Explicitly allow split_files_temp directory and all its contents
+!split_files_temp/
+!split_files_temp/**
