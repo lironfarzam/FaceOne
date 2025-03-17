@@ -1,108 +1,91 @@
 #!/bin/bash
 
-# Create the output directories
-mkdir -p Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models
-mkdir -p Live_portrait/LivePortrait/pretrained_weights/liveportrait/retargeting_models
-mkdir -p Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models
-mkdir -p Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1
-mkdir -p Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/retargeting_models
-mkdir -p Live_portrait/LivePortrait/pretrained_weights/insightface/models/buffalo_l
-
-# Track success and failure counts
-success_count=0
-failure_count=0
-
-# Function to reassemble a file
-reassemble_file() {
-  local pattern=$1
-  local output_file=$2
-  local temp_pattern=$3
-  
-  # Check if pattern matches any files
-  if ls $pattern 2>/dev/null || ([ ! -z "$temp_pattern" ] && ls $temp_pattern 2>/dev/null); then
-    echo "Reassembling $output_file..."
-    
-    # Make sure the output directory exists
-    mkdir -p "$(dirname "$output_file")"
-    
-    # Concatenate the split files, checking both locations
-    if ls $pattern 2>/dev/null; then
-      cat $pattern > "$output_file"
-    elif [ ! -z "$temp_pattern" ] && ls $temp_pattern 2>/dev/null; then
-      cat $temp_pattern > "$output_file"
-    fi
-    
-    echo "✅ Successfully reassembled $output_file"
-    ((success_count++))
-  else
-    echo "❌ Error: Split files not found for $output_file"
-    echo "   Patterns searched: $pattern"
-    if [ ! -z "$temp_pattern" ]; then
-      echo "                      $temp_pattern"
-    fi
-    echo "   You may need to run split_and_upload.sh first for this file."
-    ((failure_count++))
-  fi
-}
+# reassemble_model_files.sh
+# Script to reassemble split model files into their original form
 
 echo "===== Starting reassembly process ====="
 echo "Looking for split files in split_files and split_files_temp directories..."
 
-# List available split files
+# Check if split_files and split_files_temp directories exist
+if [ ! -d "split_files" ] && [ ! -d "split_files_temp" ]; then
+    echo "❌ Error: Neither split_files nor split_files_temp directories found."
+    exit 1
+fi
+
+# Find all split files (files with .aa extension, which is the first chunk)
+SPLIT_FILES=$(find split_files split_files_temp -name "*.aa" 2>/dev/null | sort)
+
+if [ -z "$SPLIT_FILES" ]; then
+    echo "❌ Error: No split files found."
+    exit 1
+fi
+
 echo "Found these split files:"
-find split_files split_files_temp -type f 2>/dev/null | sort
+echo "$SPLIT_FILES"
 
 echo ""
 echo "===== Reassembling files ====="
 
-# Reassemble liveportrait base_models files
-reassemble_file "split_files/liveportrait/base_models/appearance_feature_extractor.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/appearance_feature_extractor.pth" ""
-reassemble_file "split_files/liveportrait/base_models/motion_extractor.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/motion_extractor.pth" ""
-reassemble_file "split_files/liveportrait/base_models/spade_generator.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/spade_generator.pth" ""
-reassemble_file "split_files/liveportrait/base_models/warping_module.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/warping_module.pth" ""
+# Track success and failure counts
+SUCCESS_COUNT=0
+FAILURE_COUNT=0
+FAILED_FILES=()
 
-# Reassemble liveportrait retargeting_models files
-reassemble_file "split_files/liveportrait/retargeting_models/stitching_retargeting_module.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait/retargeting_models/stitching_retargeting_module.pth" ""
-
-# Reassemble liveportrait landmark.onnx
-reassemble_file "split_files/liveportrait/landmark.onnx.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait/landmark.onnx" "split_files_temp/landmark.onnx.*"
-
-# Reassemble liveportrait_animals base_models files
-reassemble_file "split_files/liveportrait_animals/base_models/appearance_feature_extractor.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models/appearance_feature_extractor.pth" ""
-reassemble_file "split_files/liveportrait_animals/base_models/motion_extractor.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models/motion_extractor.pth" ""
-reassemble_file "split_files/liveportrait_animals/base_models/spade_generator.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models/spade_generator.pth" ""
-reassemble_file "split_files/liveportrait_animals/base_models/warping_module.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models/warping_module.pth" ""
-
-# Reassemble liveportrait_animals base_models_v1.1 files
-reassemble_file "split_files/liveportrait_animals/base_models_v1.1/appearance_feature_extractor.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/appearance_feature_extractor.pth" ""
-reassemble_file "split_files/liveportrait_animals/base_models_v1.1/motion_extractor.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/motion_extractor.pth" ""
-reassemble_file "split_files/liveportrait_animals/base_models_v1.1/spade_generator.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/spade_generator.pth" ""
-reassemble_file "split_files/liveportrait_animals/base_models_v1.1/warping_module.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/base_models_v1.1/warping_module.pth" ""
-
-# Reassemble liveportrait_animals retargeting_models files
-reassemble_file "split_files/liveportrait_animals/retargeting_models/stitching_retargeting_module.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/retargeting_models/stitching_retargeting_module.pth" ""
-
-# Reassemble liveportrait_animals xpose.pth
-reassemble_file "split_files/liveportrait_animals/xpose.pth.*" "Live_portrait/LivePortrait/pretrained_weights/liveportrait_animals/xpose.pth" ""
-
-# Reassemble insightface models
-reassemble_file "split_files/insightface/models/buffalo_l/2d106det.onnx.*" "Live_portrait/LivePortrait/pretrained_weights/insightface/models/buffalo_l/2d106det.onnx" ""
-reassemble_file "split_files/insightface/models/buffalo_l/det_10g.onnx.*" "Live_portrait/LivePortrait/pretrained_weights/insightface/models/buffalo_l/det_10g.onnx" ""
+# Process each .aa file (first chunk of each split file)
+for first_chunk in $SPLIT_FILES; do
+    echo "$first_chunk"
+    
+    # Extract base path without the .aa extension
+    base_path=${first_chunk%.aa}
+    
+    # Extract directory and filename
+    dir_path=$(dirname "$first_chunk")
+    filename=$(basename "$base_path")
+    
+    # Determine the output path based on the structure
+    # The directory structure in split_files matches the structure in Live_portrait/LivePortrait/pretrained_weights
+    rel_path=${dir_path#split_files/}
+    rel_path=${rel_path#split_files_temp/}
+    
+    output_path="Live_portrait/LivePortrait/pretrained_weights/$rel_path"
+    output_file="$output_path/$filename"
+    
+    # Create output directory if it doesn't exist
+    mkdir -p "$output_path"
+    
+    echo "Reassembling $output_file..."
+    
+    # Find all chunks for this file (aa, ab, ac, etc.) in order
+    chunks=$(find "$dir_path" -name "$(basename $base_path).*" | sort)
+    echo "$chunks"
+    
+    # Concatenate all chunks to reassemble the original file
+    cat $chunks > "$output_file"
+    
+    # Check if the reassembly was successful
+    if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+        echo "✅ Successfully reassembled $output_file"
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    else
+        echo "❌ Failed to reassemble $output_file"
+        FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        FAILED_FILES+=("$output_file")
+    fi
+done
 
 echo ""
 echo "===== Reassembly process completed ====="
-echo "✅ Successfully reassembled: $success_count files"
-echo "❌ Failed to reassemble: $failure_count files"
+echo "✅ Successfully reassembled: $SUCCESS_COUNT files"
+echo "❌ Failed to reassemble: $FAILURE_COUNT files"
 
-if [ $failure_count -gt 0 ]; then
-  echo ""
-  echo "Some files could not be reassembled because the split files were not found."
-  echo "You may need to run the split_and_upload.sh script or check if all files were properly uploaded."
-  echo "If you're still encountering issues, you might need to:"
-  echo "1. Look for missing model files at the original source"
-  echo "2. Download them directly and place them in the appropriate directories"
-  echo "3. Check if the split_files directory has all the necessary files"
+if [ $FAILURE_COUNT -gt 0 ]; then
+    echo "The following files failed to reassemble:"
+    for file in "${FAILED_FILES[@]}"; do
+        echo "  - $file"
+    done
+    echo "Please check if all chunks for these files are available."
 else
-  echo ""
-  echo "All files have been reassembled successfully!"
-fi 
+    echo "All files have been reassembled successfully!"
+fi
+
+exit 0 
