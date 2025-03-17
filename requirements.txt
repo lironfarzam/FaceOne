@@ -12,7 +12,7 @@ tensorflow
 tensorflowjs
 
 # Base requirements from LivePortrait
-numpy==1.26.4
+numpy==1.26.4  # Specific version to avoid compatibility issues with onnxruntime
 pyyaml==6.0.1
 opencv-python==4.10.0.84
 scipy==1.13.1
@@ -30,16 +30,24 @@ tyro==0.8.5
 gradio==5.1.0
 pykalman==0.9.7
 pillow>=10.2.0
+protobuf<5.0.0  # Compatibility with tensorflow and mediapipe
 
 # macOS specific requirements
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.3.0
 torchvision==0.18.0
 torchaudio==2.3.0
+
+# Choose the appropriate onnxruntime version based on platform
+# For Apple Silicon (M1/M2/M3)
 onnxruntime-silicon==1.16.3
+
+# For other platforms (comment out if using onnxruntime-silicon)
+# onnxruntime==1.16.3
 
 # Additional requirements
 transformers==4.38.0
 scikit-learn
 requests
+packaging~=23.1  # Compatibility with tensorflowjs
 

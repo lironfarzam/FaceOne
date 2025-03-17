@@ -66,3 +66,7 @@ xxx/
 !split_files/liveportrait_animals/retargeting_models/**
 !split_files/insightface/
 !split_files/insightface/**
+
+# Explicitly allow split_files_temp directory and all its contents
+!split_files_temp/
+!split_files_temp/**
