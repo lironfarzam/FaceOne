@@ -40,6 +40,23 @@ git checkout model-files-normal
 
 5. After running the script, you should be able to use the model as normal.
 
+## Missing Model Files
+
+If you encounter missing model files after running the reassembly script, we've provided a script to download them:
+
+```bash
+# First check which model files are missing
+./download_models.py --check
+
+# Then download the missing model files
+./download_models.py
+```
+
+If the download script fails to find some model files, you may need to look for them from the original sources:
+
+1. LivePortrait models: https://github.com/TalkUHulk/liveportrait
+2. InsightFace models: https://github.com/deepinsight/insightface
+
 ## For Developers: How to Add New Model Files
 
 If you need to add new large model files to the repository:
@@ -73,7 +90,12 @@ find split_files -type f | sort
    - Pull the latest changes: `git pull`
    - Run the reassembly script again: `./reassemble_model_files.sh`
 
-3. If you're still missing files, you may need to:
+3. If the model files are corrupted or invalid after reassembly:
+
+   - Use the `check_onnx.py` script to check ONNX files: `./check_onnx.py path/to/file.onnx`
+   - Download the models directly using the `download_models.py` script
+
+4. If you're still missing files, you may need to:
    - Download the original model files from their source
    - Place them in the correct directories manually
    - Consider running the `split_and_upload.sh` script to contribute the missing files to the repository
@@ -98,5 +120,7 @@ FaceOne/
 │           ├── liveportrait/
 │           └── liveportrait_animals/
 ├── split_and_upload.sh                   # Script to split and upload model files
-└── reassemble_model_files.sh             # Script to reassemble the split files
+├── reassemble_model_files.sh             # Script to reassemble the split files
+├── check_onnx.py                         # Script to check ONNX model files
+└── download_models.py                    # Script to download missing model files
 ```
