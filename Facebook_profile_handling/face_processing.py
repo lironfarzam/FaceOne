@@ -101,7 +101,7 @@ IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif"]
 STANDARD_FACE_SIZE = (224, 224)  # Standard size for face comparison
 
 # Visualization Settings
-MAX_FACES_PER_CLUSTER = 8
+MAX_FACES_PER_CLUSTER = 3
 HIGHLIGHT_COLOR = (0, 255, 0)  # Green for main identity (fixed RGB format)
 
 #################################################################
