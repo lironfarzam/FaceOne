@@ -17,7 +17,7 @@ Network_based_on_images/positive_from_camera/
 # Ignore everything in the xxx directory
 xxx/
 
-# ignore all files in the model directory
+# Ignore all model directories EXCEPT chrome_extensions/models
 *model/
 *models/
 
@@ -30,12 +30,19 @@ xxx/
 *model/*/*/*
 *models/*/*/*
 
-
-!create_face_model/
-!Live_portrait/NN_LiveProtrait/Source_Video/source.mp4
-!Live_portrait/NN_LiveProtrait/Source_Images
-!Live_portrait/NN_LiveProtrait/Output
-!Live_portrait/LivePortrait/*
+# Explicitly allow chrome_extensions/models and its contents
+!chrome_extensions/
+!chrome_extensions/models/
+!chrome_extensions/models/**
+!chrome_extensions/models/embeddings/
+!chrome_extensions/models/FaceAPI/
+!chrome_extensions/models/FaceNet/
+!chrome_extensions/models/face_recognition_model-shard1
+!chrome_extensions/models/face_recognition_model-weights_manifest.json
+!chrome_extensions/models/face_landmark_68_model-shard1
+!chrome_extensions/models/face_landmark_68_model-weights_manifest.json
+!chrome_extensions/models/face_expression_model-shard1
+!chrome_extensions/models/face_expression_model-weights_manifest.json
 
 # Explicitly allow LivePortrait model files
 !Live_portrait/LivePortrait/*
