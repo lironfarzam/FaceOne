@@ -810,6 +810,20 @@ def main():
     # Setup directories
     setup_directories(config)
 
+    # Always attempt to reassemble model files first, regardless of flags
+    print_header("Running Model Reassembly")
+    if os.path.exists("reassemble_model_files.sh"):
+        try:
+            os.chmod("reassemble_model_files.sh", 0o755)
+            print(
+                "Running reassemble_model_files.sh to ensure model files are available..."
+            )
+            subprocess.run(["./reassemble_model_files.sh"], check=False)
+            print_success("Model reassembly script executed.")
+        except Exception as e:
+            print_warning(f"Error during model reassembly: {str(e)}")
+            print_warning("Continuing with other methods to obtain model files.")
+
     # Calculate total steps
     total_steps = 6 - sum(
         [
