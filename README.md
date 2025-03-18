@@ -104,6 +104,7 @@ Processes the collected images to prepare them for model training:
 - Enhances image quality for better recognition accuracy
 - Creates face embeddings using DeepFace's Facenet512 model
 - Clusters similar faces for more efficient training
+- Implements parallel processing with unique temporary files to prevent race conditions
 
 ### 3. Face Model Creator 🧠
 
@@ -242,11 +243,23 @@ The `main.py` script automates the entire pipeline, allowing you to run all comp
 # Run the complete pipeline
 python main.py
 
-# Or run with specific steps skipped
+# Skip specific steps
 python main.py --skip-portraits  # Skip Live Portrait generation
 python main.py --skip-lfw        # Skip LFW dataset download
 
-# Or run individual components as needed
+# Model file handling options
+python main.py --force-model-assembly  # Force reassembly of model files
+python main.py --skip-model-assembly   # Skip model file assembly
+python main.py --setup-model-files     # Just set up model files and exit
+
+# Cleanup options
+python main.py --skip-cleanup           # Skip cleanup of temporary files
+python main.py --preserve-facebook      # Preserve Facebook images during cleanup
+python main.py --preserve-lfw           # Preserve LFW dataset during cleanup
+python main.py --clean-portrait-dirs    # Clean LivePortrait directories
+python main.py --clean-imgs             # Clean imgs directory
+
+# Run individual components as needed
 python Facebook_profile_handling/download_images.py
 python Facebook_profile_handling/face_processing.py
 python Live_portrait/live_portrait_generator.py
@@ -337,6 +350,40 @@ cd FaceOne
 # 5. The FaceOne icon should appear in your toolbar
 ```
 
+### Model File Management
+
+FaceOne uses large model files for face recognition and portrait generation. To facilitate distribution and version control, these files are split into smaller chunks:
+
+#### Automatic Model Setup
+
+The main script automatically handles model file setup:
+
+```bash
+# Run with automatic model setup (recommended for most users)
+python main.py
+```
+
+#### Manual Model Setup
+
+You can also set up model files manually:
+
+```bash
+# Set up model files using the setup script
+./setup_model_files.sh
+
+# Or reassemble model files directly
+./reassemble_model_files.sh
+```
+
+These scripts:
+
+- Check for required model files
+- Assemble models from split chunks if needed
+- Download missing models if necessary
+- Verify successful installation
+
+For detailed information about model file management, including how to add new model files or troubleshoot issues, please refer to [README_MODEL_FILES.md](README_MODEL_FILES.md).
+
 ### Complete System Setup
 
 For users who want to create their own custom face models:
@@ -353,28 +400,101 @@ pip install -r requirements.txt
 
 # 3. Run the full pipeline
 python main.py
-
-# Or run individual components as needed:
-# Step 1: Download Facebook photos
-python Facebook_profile_handling/download_images.py
-
-# Step 2: Process the downloaded faces
-python Facebook_profile_handling/face_processing.py
-
-# Step 3: Generate Live Portraits
-python Live_portrait/live_portrait_generator.py
-
-# Step 4: Download negative examples
-python create_face_model/download_lfw.py
-
-# Step 5: Create and train the face model
-python create_face_model/create_model.py
-
-# Step 6: Load the extension in Chrome
-# (Follow Chrome Extension Setup steps above)
 ```
 
 ## 📖 Usage
+
+### Command-Line Arguments
+
+FaceOne's main script accepts several command-line arguments to customize its behavior:
+
+| Argument                  | Description                                                   |
+| ------------------------- | ------------------------------------------------------------- |
+| `--skip-download`         | Skip downloading images from Facebook                         |
+| `--skip-processing`       | Skip face processing step                                     |
+| `--skip-portraits`        | Skip live portrait generation                                 |
+| `--skip-lfw`              | Skip LFW dataset download                                     |
+| `--skip-model`            | Skip model creation step                                      |
+| `--chrome-only`           | Only prepare Chrome extension files                           |
+| `--force-model-assembly`  | Force reassembly of model files                               |
+| `--skip-model-assembly`   | Skip model file assembly                                      |
+| `--setup-model-files`     | Run model files setup and exit                                |
+| `--skip-dependency-check` | Skip checking dependencies                                    |
+| `--skip-cleanup`          | Skip cleanup of temporary files                               |
+| `--preserve-facebook`     | Preserve Facebook images during cleanup (default: True)       |
+| `--preserve-lfw`          | Preserve LFW dataset during cleanup (default: True)           |
+| `--clean-portrait-dirs`   | Clean LivePortrait directories during cleanup (default: True) |
+| `--clean-imgs`            | Clean imgs directory during cleanup (default: True)           |
+
+### Model File Scripts
+
+FaceOne includes two scripts to help manage the large model files required for face recognition and portrait generation:
+
+#### setup_model_files.sh
+
+This is the primary script for setting up model files:
+
+```bash
+./setup_model_files.sh
+```
+
+- **Purpose**: Complete setup of all required model files
+- **Functions**:
+  - Creates necessary directory structure
+  - Checks for existing model files
+  - Verifies split files if models need to be assembled
+  - Calls reassemble_model_files.sh when necessary
+  - Provides comprehensive output and error handling
+- **When to use**: When setting up FaceOne for the first time or when model files are missing
+
+#### reassemble_model_files.sh
+
+This script focuses specifically on reassembling split model files:
+
+```bash
+./reassemble_model_files.sh
+```
+
+- **Purpose**: Reassemble split model files into their original form
+- **Functions**:
+  - Locates all split file chunks (_.aa, _.ab, etc.)
+  - Determines correct output path for each model file
+  - Concatenates chunks to recreate original files
+  - Reports success/failure for each reassembled file
+- **When to use**: When you have split files but the assembled model files are missing
+
+These scripts work together to ensure that the large model files (often several hundred MB each) can be properly version-controlled using split files, while still being usable by the application.
+
+### Automated Cleanup
+
+FaceOne includes an automated cleanup system that runs at the end of the pipeline to remove temporary files and directories:
+
+- **Temporary Files**: Removes process-specific temporary files created during face processing (`temp_safe_detect_*.jpg`, `temp_safe_represent_*.jpg`)
+- **Temporary Directories**: Cleans the `split_files_temp` and `temp` directories
+- **Optional Cleaning**: Depending on your preferences, can also clean:
+  - Facebook output folder (unless `--preserve-facebook` is set)
+  - LivePortrait source and output directories (controlled by `--clean-portrait-dirs`)
+  - Image directory (controlled by `--clean-imgs`)
+
+This helps maintain a clean workspace after processing and reduces disk space usage. The cleanup process preserves important data like Facebook images and the LFW dataset by default, but can be configured to remove these if needed.
+
+To skip the cleanup entirely:
+
+```bash
+python main.py --skip-cleanup
+```
+
+To preserve Facebook images but clean everything else:
+
+```bash
+python main.py --preserve-facebook
+```
+
+To clean everything including Facebook images:
+
+```bash
+python main.py --preserve-facebook=False
+```
 
 ### Basic Usage
 
@@ -407,6 +527,12 @@ For detailed documentation of each component, please refer to:
 - [Chrome Extension Documentation](docs/chrome_extensions.md)
 - [Face Model Creation Guide](docs/create_face_model.md)
 - [Facebook Profile Handling Documentation](docs/facebook_profile_handling.md)
+- [Live Portrait Documentation](docs/live_portrait.md)
+- [Model Files Management Guide](README_MODEL_FILES.md) - Detailed instructions for handling large model files, including:
+  - How to reassemble split model files after cloning the repository
+  - Troubleshooting missing model files
+  - Adding new model files to the repository (for developers)
+  - Using model file scripts like `reassemble_model_files.sh` and `download_models.py`
 
 ## 🧪 Technical Details
 
@@ -427,6 +553,18 @@ FaceOne implements a sophisticated multi-stage approach:
 - **Batch Processing**: Groups similar operations for efficiency
 - **Priority Queuing**: Processes visible content before off-screen images
 - **Caching**: Stores results to prevent redundant processing
+
+### Race Condition Prevention
+
+FaceOne implements several strategies to prevent race conditions during parallel processing:
+
+- **Process-Specific Temporary Files**: Uses unique filenames based on process ID to prevent conflicts
+  - Each process creates files with format `temp_safe_detect_{process_id}.jpg` and `temp_safe_represent_{process_id}.jpg`
+  - This prevents processes from overwriting each other's temporary files during face detection and embedding
+- **Robust Error Handling**: Gracefully recovers from errors with detailed logging
+- **Automatic Cleanup**: Ensures no leftover temporary files remain after processing completes
+
+These improvements enable reliable parallel processing of faces, significantly improving performance on multi-core systems without introducing synchronization errors.
 
 ### Privacy and Security Considerations
 

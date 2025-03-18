@@ -173,28 +173,17 @@ def assess_face_quality(face_img: np.ndarray, min_size: int = MIN_FACE_SIZE) -> 
 
 def safe_face_detection(
     img_path: str, detector_backend: str = "retinaface", enforce_detection: bool = False
-) -> List[Dict[str, Any]]:
+):
     """
-    Detect faces in an image with robust error handling and format validation.
-
-    This function provides a safe wrapper around DeepFace's face detection,
-    handling various edge cases and ensuring proper image format.
+    Perform face detection with proper error handling and image format validation.
 
     Args:
-        img_path (str): Path to the image file
-        detector_backend (str): Face detection backend to use. Options include:
-                               'retinaface', 'mtcnn', 'opencv', 'ssd', 'dlib'
-        enforce_detection (bool): Whether to raise an error if no face is detected
+        img_path (str): Path to the image
+        detector_backend (str): Face detection backend
+        enforce_detection (bool): Whether to enforce detection
 
     Returns:
-        list: List of detected face dictionaries, each containing:
-            - 'face': The extracted face image
-            - 'facial_area': Dictionary with 'x', 'y', 'w', 'h' coordinates
-            - 'confidence': Detection confidence score
-        Empty list is returned if no faces are detected or an error occurs.
-
-    Raises:
-        ValueError: If enforce_detection is True and no faces are detected
+        list: List of detected faces or empty list if error
     """
     try:
         # First read and ensure proper format
@@ -202,9 +191,11 @@ def safe_face_detection(
         if img is None:
             return []
 
-        # Save a temp copy in proper format
+        # Save a temp copy in proper format with a unique name based on process ID
+        # to avoid race conditions in multiprocessing
         temp_dir = os.path.dirname(img_path)
-        temp_path = os.path.join(temp_dir, "temp_safe_detect.jpg")
+        process_id = os.getpid()
+        temp_path = os.path.join(temp_dir, f"temp_safe_detect_{process_id}.jpg")
         cv2.imwrite(temp_path, img)
 
         # Perform detection
@@ -239,7 +230,7 @@ def safe_face_detection(
         return faces
     except Exception as e:
         print_red(f"Error in face detection pipeline: {e}")
-        if os.path.exists(temp_path):
+        if "temp_path" in locals() and os.path.exists(temp_path):
             os.remove(temp_path)
         return []
 
@@ -2532,9 +2523,11 @@ def safe_face_detection(
         if img is None:
             return []
 
-        # Save a temp copy in proper format
+        # Save a temp copy in proper format with a unique name based on process ID
+        # to avoid race conditions in multiprocessing
         temp_dir = os.path.dirname(img_path)
-        temp_path = os.path.join(temp_dir, "temp_safe_detect.jpg")
+        process_id = os.getpid()
+        temp_path = os.path.join(temp_dir, f"temp_safe_detect_{process_id}.jpg")
         cv2.imwrite(temp_path, img)
 
         # Perform detection
@@ -2569,7 +2562,7 @@ def safe_face_detection(
         return faces
     except Exception as e:
         print_red(f"Error in face detection pipeline: {e}")
-        if os.path.exists(temp_path):
+        if "temp_path" in locals() and os.path.exists(temp_path):
             os.remove(temp_path)
         return []
 
@@ -2598,6 +2591,7 @@ def safe_represent(
     Note:
         This function creates a temporary file during processing which is automatically cleaned up.
         If multiple faces are detected, embeddings for all faces will be returned.
+        The temporary file has a unique name based on the process ID to avoid race conditions in multiprocessing.
     """
     try:
         # First read and ensure proper format
@@ -2605,9 +2599,11 @@ def safe_represent(
         if img is None:
             return []
 
-        # Save a temp copy in proper format
+        # Save a temp copy in proper format with a unique name based on process ID
+        # to avoid race conditions in multiprocessing
         temp_dir = os.path.dirname(img_path)
-        temp_path = os.path.join(temp_dir, "temp_safe_represent.jpg")
+        process_id = os.getpid()
+        temp_path = os.path.join(temp_dir, f"temp_safe_represent_{process_id}.jpg")
         cv2.imwrite(temp_path, img)
 
         # Get embedding

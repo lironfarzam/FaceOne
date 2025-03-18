@@ -266,7 +266,7 @@ def load_images_and_compute_embeddings_parallel() -> dict:
                 futures,
                 total=total_images,
                 description=f"Processing {label} images",
-                unit="image",
+                # unit="image",
             ):
                 try:
                     result_label, image_path, embedding = future.result()

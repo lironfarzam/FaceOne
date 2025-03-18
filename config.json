@@ -24,7 +24,7 @@
   "4.create_face_model": "- - - - - - - - - - - - - - - - - - - - - - - - - ",
   "num_of_workers": 8,
   "show_3d_plot": false,
-  "create_new_data": false,
+  "create_new_data": true,
   "train_new_model": true,
   "save_model": true,
   "path_for_model": "./model/myModel/",

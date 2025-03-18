@@ -64,7 +64,7 @@ def print_warning(message):
 
 
 def print_error(message):
-    """Print an error message."""
+    """Print an error message in red."""
     print(f"{Colors.RED}{Colors.BOLD}ERROR: {message}{Colors.ENDC}")
 
 
@@ -600,6 +600,111 @@ def setup_directories(config):
     print_success("✓ Directories set up successfully.")
 
 
+def cleanup_temp_files(
+    config,
+    preserve_facebook_images=True,
+    preserve_lfw_dataset=True,
+    clean_portrait_dirs=True,
+    clean_imgs=True,
+):
+    """
+    Clean up temporary files while preserving important data.
+
+    Args:
+        config (dict): Configuration dictionary
+        preserve_facebook_images (bool): Whether to preserve downloaded Facebook images
+        preserve_lfw_dataset (bool): Whether to preserve the LFW dataset
+        clean_portrait_dirs (bool): Whether to clean Live_portrait NN_LivePortrait directories
+        clean_imgs (bool): Whether to clean imgs directory
+
+    Returns:
+        bool: True if cleanup was successful, False otherwise
+    """
+    try:
+        print_header("Cleaning up temporary files")
+
+        # Temporary directories that can be safely cleaned
+        temp_dirs = [
+            os.path.join(os.getcwd(), "split_files_temp"),
+            os.path.join(os.getcwd(), "temp"),
+        ]
+
+        # Additional directories to clean (respecting preserve flags)
+        additional_dirs = []
+
+        # Add facebook_output folder if not preserving Facebook images
+        if not preserve_facebook_images:
+            additional_dirs.append(os.path.join(os.getcwd(), "facebook_output"))
+
+        # Add LivePortrait directories if requested
+        if clean_portrait_dirs:
+            additional_dirs.extend(
+                [
+                    os.path.join(
+                        os.getcwd(), "Live_portrait", "NN_LivePortrait", "Source_Images"
+                    ),
+                    os.path.join(
+                        os.getcwd(), "Live_portrait", "NN_LivePortrait", "Output"
+                    ),
+                ]
+            )
+
+        # Add imgs directory if requested
+        if clean_imgs:
+            additional_dirs.append(os.path.join(os.getcwd(), "imgs"))
+
+        # Process-specific temp files pattern to remove
+        temp_file_patterns = ["*temp_safe_detect_*.jpg", "*temp_safe_represent_*.jpg"]
+
+        # Clean temporary directories
+        for temp_dir in temp_dirs:
+            if os.path.exists(temp_dir):
+                print(f"Cleaning directory: {temp_dir}")
+                for item in os.listdir(temp_dir):
+                    item_path = os.path.join(temp_dir, item)
+                    if os.path.isfile(item_path):
+                        os.remove(item_path)
+                        print(f"  Removed: {item_path}")
+
+        # Clean additional directories
+        for directory in additional_dirs:
+            if os.path.exists(directory):
+                print(f"Removing directory: {directory}")
+                try:
+                    shutil.rmtree(directory)
+                    print(f"  Successfully removed: {directory}")
+                except Exception as e:
+                    print_warning(f"  Could not completely remove {directory}: {e}")
+                    # Try to remove files if can't remove the directory
+                    try:
+                        for root, dirs, files in os.walk(directory):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                try:
+                                    os.remove(file_path)
+                                    print(f"    Removed file: {file_path}")
+                                except:
+                                    pass
+                    except:
+                        pass
+
+        # Clean process-specific temporary files that might be left in various directories
+        for root, dirs, files in os.walk(os.getcwd()):
+            for pattern in temp_file_patterns:
+                import glob
+
+                for file_path in glob.glob(os.path.join(root, pattern)):
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        print(f"Removed temp file: {file_path}")
+
+        print_success("Temporary files cleanup completed")
+        return True
+    except Exception as e:
+        print_error(f"Error during cleanup: {e}")
+        return False
+
+
 def main():
     """Main function to run the entire FaceOne pipeline."""
     parser = argparse.ArgumentParser(description="Run the FaceOne pipeline")
@@ -644,6 +749,35 @@ def main():
         "--skip-dependency-check",
         action="store_true",
         help="Skip checking and installing dependencies",
+    )
+    parser.add_argument(
+        "--skip-cleanup",
+        action="store_true",
+        help="Skip cleanup of temporary files",
+    )
+    parser.add_argument(
+        "--preserve-facebook",
+        action="store_true",
+        default=True,
+        help="Preserve downloaded Facebook images during cleanup",
+    )
+    parser.add_argument(
+        "--preserve-lfw",
+        action="store_true",
+        default=True,
+        help="Preserve LFW dataset during cleanup",
+    )
+    parser.add_argument(
+        "--clean-portrait-dirs",
+        action="store_true",
+        default=True,
+        help="Clean Live_portrait NN_LivePortrait directories during cleanup",
+    )
+    parser.add_argument(
+        "--clean-imgs",
+        action="store_true",
+        default=True,
+        help="Clean imgs directory during cleanup",
     )
     args = parser.parse_args()
 
@@ -831,6 +965,16 @@ def main():
             "Chrome extension preparation encountered issues, but may still be usable."
         )
         pipeline_success = False
+
+    # 7. Clean up temporary files (if not disabled)
+    if not args.skip_cleanup:
+        cleanup_temp_files(
+            config,
+            preserve_facebook_images=args.preserve_facebook,
+            preserve_lfw_dataset=args.preserve_lfw,
+            clean_portrait_dirs=args.clean_portrait_dirs,
+            clean_imgs=args.clean_imgs,
+        )
 
     # Calculate total execution time
     total_time = time.time() - start_time
