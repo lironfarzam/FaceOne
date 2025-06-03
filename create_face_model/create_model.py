@@ -21,6 +21,8 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     Dense,
     Input,
+    BatchNormalization,
+    Dropout,
 )
 from tensorflow.keras.callbacks import (
     ReduceLROnPlateau,
@@ -51,8 +53,8 @@ import tensorflowjs as tfjs
 print_lock = threading.Lock()
 
 # use all the cores
-# NUM_OF_WORKERS = os.cpu_count()
-NUM_OF_WORKERS = 4
+NUM_OF_WORKERS = os.cpu_count()
+# NUM_OF_WORKERS = 4  # Set a fixed number of workers for consistency
 
 # Get the absolute path to the parent directory and config file
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,8 +62,8 @@ config_path = os.path.join(parent_dir, "config.json")
 
 config = load_config(config_path)
 
-pp.pprint(config)
-print("-" * 50)
+# pp.pprint(config)
+# print("-" * 50)
 
 
 # Constants from config
@@ -97,7 +99,6 @@ NUM_OF_EPOCHS = config["num_of_epochs"]
 PATIENCE = config["patience"]
 FACTOR = config["factor"]
 BATCH_SIZE = config["batch_size"]
-WEIGHT_DECAY = config["weight_decay"]
 DROPOUT_RATE = config["dropout_rate"]
 USE_MIXED_PRECISION = config["use_mixed_precision"]
 OUTPUT_MODEL_FORMAT = config["output_model_format"]
@@ -414,8 +415,8 @@ def get_embedding(
                 contrast = random.uniform(0.8, 1.2)
                 img = cv2.convertScaleAbs(img, alpha=contrast, beta=0)
 
-        # Save the processed image
-        cv2.imwrite(temp_path, cv2.COLOR_RGB2BGR)
+        # Save the processed image - Fix: Convert back to BGR for saving
+        cv2.imwrite(temp_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
         # Get embedding using DeepFace
         try:
@@ -426,19 +427,21 @@ def get_embedding(
                     enforce_detection=False,
                     detector_backend="opencv",  # Use a simpler detector
                 )
-            return embedding[0]["embedding"]
+
+            if embedding and len(embedding) > 0:
+                # Convert embedding to numpy array for consistency
+                emb_vector = np.array(embedding[0]["embedding"])
+                return emb_vector
+            else:
+                print_red(f"No embedding generated for {image_path}")
+                return None
+
         except Exception as e:
             # print_red(f"DeepFace error for {image_path}: {str(e)}")
-            # # show the original image
-            # cv2.imshow("Original Image", img)
-            # cv2.waitKey(0)
-            # cv2.destroyAllWindows()
-
             return None
 
     except Exception as e:
         # print_red(f"Error processing {image_path}: {str(e)}")
-
         return None
 
     finally:
@@ -447,56 +450,56 @@ def get_embedding(
             os.remove(temp_path)
 
 
-# Load and Embed Images
-# @log_function_call
-def load_images_and_compute_embeddings() -> dict:
-    """
-    Load images from the specified directories and compute embeddings for each image.
+# # Load and Embed Images
+# # @log_function_call
+# def load_images_and_compute_embeddings() -> dict:
+#     """
+#     Load images from the specified directories and compute embeddings for each image.
 
-    Returns:
-        dict: A dictionary containing the embeddings for anchor, positive, and negative images.
-    """
-    print_blue("Loading images and computing embeddings...")
-    print("-" * 50)
+#     Returns:
+#         dict: A dictionary containing the embeddings for anchor, positive, and negative images.
+#     """
+#     print_blue("Loading images and computing embeddings...")
+#     print("-" * 50)
 
-    directories = {"anchor": ANC_PATH, "positive": POS_PATH, "negative": NEG_PATH}
-    embeddings = {"anchor": {}, "positive": {}, "negative": {}}
+#     directories = {"anchor": ANC_PATH, "positive": POS_PATH, "negative": NEG_PATH}
+#     embeddings = {"anchor": {}, "positive": {}, "negative": {}}
 
-    for label, dir_path in directories.items():
-        image_files = [
-            f
-            for f in os.listdir(dir_path)
-            if not f.startswith(".") and os.path.isfile(os.path.join(dir_path, f))
-        ]
+#     for label, dir_path in directories.items():
+#         image_files = [
+#             f
+#             for f in os.listdir(dir_path)
+#             if not f.startswith(".") and os.path.isfile(os.path.join(dir_path, f))
+#         ]
 
-        # take only the first NUM_OF_IMAGES_TO_PROCESS images
-        image_files = image_files[:NUM_OF_IMAGES_TO_PROCESS]
-        total_images = len(image_files)
+#         # take only the first NUM_OF_IMAGES_TO_PROCESS images
+#         image_files = image_files[:NUM_OF_IMAGES_TO_PROCESS]
+#         total_images = len(image_files)
 
-        print(f"Processing {total_images} {label} images...")
+#         print(f"Processing {total_images} {label} images...")
 
-        for idx, image_name in enumerate(image_files):
-            image_path = os.path.join(dir_path, image_name)
-            embedding = get_embedding(image_path, apply_augmentation=False)
+#         for idx, image_name in enumerate(image_files):
+#             image_path = os.path.join(dir_path, image_name)
+#             embedding = get_embedding(image_path, apply_augmentation=False)
 
-            if embedding is not None:
-                embeddings[label][image_name] = embedding
-            else:
-                print_red(f"Skipping image {image_path} due to missing embedding.")
+#             if embedding is not None:
+#                 embeddings[label][image_name] = embedding
+#             else:
+#                 print_red(f"Skipping image {image_path} due to missing embedding.")
 
-            print(
-                f"Processed {idx + 1}/{total_images} images for {label} | complet: {((idx + 1) / total_images) * 100:.2f}%",
-                end="\r",
-            )
-            sys.stdout.flush()
+#             print(
+#                 f"Processed {idx + 1}/{total_images} images for {label} | complet: {((idx + 1) / total_images) * 100:.2f}%",
+#                 end="\r",
+#             )
+#             sys.stdout.flush()
 
-        print_green(
-            f"Processed {total_images} {label} images successfully.                       "
-        )
-        print("-" * 50)
+#         print_green(
+#             f"Processed {total_images} {label} images successfully.                       "
+#         )
+#         print("-" * 50)
 
-    print_green("All embeddings computed and stored.")
-    return embeddings
+#     print_green("All embeddings computed and stored.")
+#     return embeddings
 
 
 # Save Embeddings
@@ -581,7 +584,7 @@ def load_embeddings(filepath: str) -> dict:
 # @log_function_call
 def create_pairs_from_embeddings(
     embeddings: dict, num_pairs: int = NUM_OF_PAIRS
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[list, list]:
     """
     Create positive and negative pairs from embeddings for Siamese network training.
 
@@ -633,10 +636,12 @@ def create_pairs_from_embeddings(
     print_blue("Creating pairs from embeddings...")
     print("-" * 50)
 
+    # Convert dictionary values to lists
     anchor_embeddings = list(embeddings["anchor"].values())
     positive_embeddings = list(embeddings["positive"].values())
     negative_embeddings = list(embeddings["negative"].values())
 
+    # Convert to numpy arrays for efficient operations
     anchor_embeddings = np.array(anchor_embeddings)
     positive_embeddings = np.array(positive_embeddings)
     negative_embeddings = np.array(negative_embeddings)
@@ -645,27 +650,77 @@ def create_pairs_from_embeddings(
     print("Positive embeddings shape:", positive_embeddings.shape)
     print("Negative embeddings shape:", negative_embeddings.shape)
 
-    positive_pairs = []
-    negative_pairs = []
+    # Validate we have enough samples
+    if (
+        len(anchor_embeddings) == 0
+        or len(positive_embeddings) == 0
+        or len(negative_embeddings) == 0
+    ):
+        raise ValueError("Empty embeddings detected")
 
-    for anchor_img in anchor_embeddings:
-        for positive_img in positive_embeddings:
-            positive_pairs.append((anchor_img, positive_img, 1))
+    # Create positive pairs (anchor-positive)
+
+    positive_pairs = []
+    num_anchors = len(anchor_embeddings)
+    num_positives = len(positive_embeddings)
+
+    # Generate random pairs but ensure we don't exceed available samples
+    pairs_per_anchor = max(1, num_pairs // num_anchors)
+    for i in range(num_anchors):
+        # For each anchor, randomly select some positive samples
+        positive_indices = np.random.choice(
+            num_positives, size=min(pairs_per_anchor, num_positives), replace=False
+        )
+        for pos_idx in positive_indices:
+            positive_pairs.append(
+                (anchor_embeddings[i], positive_embeddings[pos_idx], 1)
+            )
             if len(positive_pairs) >= num_pairs:
                 break
+        if len(positive_pairs) >= num_pairs:
+            break
 
-    for anchor_img in anchor_embeddings:
-        for negative_img in negative_embeddings:
-            negative_pairs.append((anchor_img, negative_img, 0))
+    # Create negative pairs (anchor-negative)
+    negative_pairs = []
+    num_negatives = len(negative_embeddings)
+
+    # Generate random pairs but ensure we don't exceed available samples
+    for i in range(num_anchors):
+        # For each anchor, randomly select some negative samples
+        negative_indices = np.random.choice(
+            num_negatives, size=min(pairs_per_anchor, num_negatives), replace=False
+        )
+        for neg_idx in negative_indices:
+            negative_pairs.append(
+                (anchor_embeddings[i], negative_embeddings[neg_idx], 0)
+            )
             if len(negative_pairs) >= num_pairs:
                 break
+        if len(negative_pairs) >= num_pairs:
+            break
+
+    # Ensure we have equal numbers of positive and negative pairs
+    min_pairs = min(len(positive_pairs), len(negative_pairs))
+    positive_pairs = positive_pairs[:min_pairs]
+    negative_pairs = negative_pairs[:min_pairs]
 
     print_green(
         f"Created {len(positive_pairs)} positive and {len(negative_pairs)} negative pairs."
     )
-    min_length = min(len(positive_pairs), len(negative_pairs))
-    positive_pairs = positive_pairs[:min_length]
-    negative_pairs = negative_pairs[:min_length]
+
+    # Debug: Print sample distances to verify pairs are different
+    if len(positive_pairs) > 0 and len(negative_pairs) > 0:
+        print("\nSample pair distances:")
+        print(
+            "Positive pair L1 distance:",
+            np.sum(np.abs(positive_pairs[0][0] - positive_pairs[0][1])),
+        )
+        print(
+            "Negative pair L1 distance:",
+            np.sum(np.abs(negative_pairs[0][0] - negative_pairs[0][1])),
+        )
+        print("-" * 50)
+
     return positive_pairs, negative_pairs
 
 

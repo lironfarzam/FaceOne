@@ -1472,13 +1472,26 @@ class ModelManager {
 
         return tf.tidy(() => {
             try {
-                // Convert embeddings to tensors
+                // Convert embeddings to tensors and apply L2 normalization
                 const tensor1 = tf.tensor2d([embedding1], [1, 512]);
                 const tensor2 = tf.tensor2d([embedding2], [1, 512]);
                 
-                // Run inference
-                const similarity = this.models.myModel.predict([tensor1, tensor2]);
-                const result = similarity.dataSync()[0];
+                // L2 normalize embeddings
+                const normalized1 = tf.div(tensor1, tf.norm(tensor1, 2, 1, true));
+                const normalized2 = tf.div(tensor2, tf.norm(tensor2, 2, 1, true));
+                
+                // Calculate cosine similarity directly
+                const cosineSimilarity = tf.matMul(normalized1, normalized2.transpose()).dataSync()[0];
+                
+                // Convert cosine similarity from [-1,1] to [0,1] range
+                const normalizedSimilarity = (cosineSimilarity + 1) / 2;
+                
+                // Run inference with normalized embeddings for final similarity
+                const modelSimilarity = this.models.myModel.predict([normalized1, normalized2]);
+                const modelScore = tf.clipByValue(modelSimilarity, 0, 1).dataSync()[0];
+                
+                // Combine both scores with more weight on cosine similarity
+                const result = 0.7 * normalizedSimilarity + 0.3 * modelScore;
                 
                 return {
                     type: 'SIMILARITY_COMPUTED',

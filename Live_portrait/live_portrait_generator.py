@@ -1,13 +1,14 @@
-import os
-import subprocess
-import cv2
-import json
-import sys
-import time
-import multiprocessing
-import platform
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pprint import pprint
+import cv2
+import numpy as np
+import os
+import sys
+import time
+import platform
+import subprocess
+import multiprocessing
+import argparse
 
 # Add parent directory to path to import cool_utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -291,54 +292,107 @@ def process_folders_parallel(
 
 
 def extract_frames_from_video(
-    video_path: str, positives_folder: str, anchors_folder: str, frame_interval: int = 5
+    video_path: str,
+    positives_folder: str,
+    anchors_folder: str,
+    frame_interval: int = 5,
+    min_quality: float = 0.3,
+    min_brightness: int = 30,
+    max_brightness: int = 225,
 ):
     """
-    Extract frames from a video and save them to positives and anchors folders.
+    Extract high-quality frames from a video and save them to positives and anchors folders.
 
     Args:
         video_path (str): Path to the video file.
         positives_folder (str): Directory to save positive frames.
         anchors_folder (str): Directory to save anchor frames.
         frame_interval (int): Interval between frames to extract (default: 5).
+        min_quality (float): Minimum quality threshold for Laplacian variance (0-1).
+        min_brightness (int): Minimum average brightness (0-255).
+        max_brightness (int): Maximum average brightness (0-255).
     """
-    if not os.path.exists(positives_folder):
-        os.makedirs(positives_folder)
-    if not os.path.exists(anchors_folder):
-        os.makedirs(anchors_folder)
+    try:
+        # Create output directories if they don't exist
+        os.makedirs(positives_folder, exist_ok=True)
+        os.makedirs(anchors_folder, exist_ok=True)
 
-    cap = cv2.VideoCapture(video_path)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f"Extracting frames from {video_path}, total frames: {frame_count}")
+        # Open video file
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print_red(f"Error: Could not open video file: {video_path}")
+            return (video_path, 0)
 
-    frame_index = 0
-    saved_count = 0
+        # Get video properties
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        print_blue(f"Processing video: {video_path}")
+        print_blue(f"Total frames: {frame_count}, FPS: {fps}")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        frame_index = 0
+        saved_count = 0
 
-        # Save frames at specified intervals
-        if frame_index % frame_interval == 0:
-            # Save frames to respective folders
-            positive_frame_path = os.path.join(
-                positives_folder,
-                f"{os.path.basename(video_path)}_frame_{frame_index}.jpg",
-            )
-            anchor_frame_path = os.path.join(
-                anchors_folder,
-                f"{os.path.basename(video_path)}_frame_{frame_index}.jpg",
-            )
-            cv2.imwrite(positive_frame_path, frame)
-            cv2.imwrite(anchor_frame_path, frame)
-            saved_count += 1
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        frame_index += 1
+            # Process frames at specified intervals
+            if frame_index % frame_interval == 0:
+                try:
+                    # Convert to grayscale for quality assessment
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    cap.release()
-    print_green(f"Frames saved for video: {video_path} (Total: {saved_count} frames)")
-    return (video_path, saved_count)
+                    # Check image quality
+                    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                    quality_score = min(1.0, laplacian_var / 500)
+
+                    # Check brightness
+                    avg_brightness = np.mean(gray)
+
+                    # Save frame if it meets quality criteria
+                    if (
+                        quality_score >= min_quality
+                        and min_brightness <= avg_brightness <= max_brightness
+                    ):
+
+                        # Generate unique frame paths
+                        timestamp = frame_index / fps
+                        base_name = (
+                            f"{os.path.splitext(os.path.basename(video_path))[0]}"
+                        )
+                        frame_name = (
+                            f"{base_name}_frame_{frame_index}_time_{timestamp:.2f}.jpg"
+                        )
+
+                        positive_frame_path = os.path.join(positives_folder, frame_name)
+                        anchor_frame_path = os.path.join(anchors_folder, frame_name)
+
+                        # Save frames with quality info in filename
+                        cv2.imwrite(positive_frame_path, frame)
+                        cv2.imwrite(anchor_frame_path, frame)
+                        saved_count += 1
+
+                        if saved_count % 10 == 0:  # Progress update every 10 frames
+                            print_blue(f"Saved {saved_count} frames...")
+
+                except Exception as e:
+                    print_red(f"Error processing frame {frame_index}: {str(e)}")
+                    continue
+
+            frame_index += 1
+
+        cap.release()
+        print_green(
+            f"Successfully extracted {saved_count} quality frames from {video_path}"
+        )
+        return (video_path, saved_count)
+
+    except Exception as e:
+        print_red(f"Error processing video {video_path}: {str(e)}")
+        if "cap" in locals():
+            cap.release()
+        return (video_path, 0)
 
 
 def extract_frames_worker(args):
@@ -353,9 +407,15 @@ def extract_frames_worker(args):
     """
     video_path, positives_folder, anchors_folder, frame_interval = args
 
-    # Use the extract_frames_from_video function directly
+    # Use more lenient settings to extract more frames
     return extract_frames_from_video(
-        video_path, positives_folder, anchors_folder, frame_interval
+        video_path,
+        positives_folder,
+        anchors_folder,
+        frame_interval=frame_interval,
+        min_quality=0.2,  # Lower quality threshold
+        min_brightness=20,  # Accept darker frames
+        max_brightness=235,  # Accept brighter frames
     )
 
 
@@ -397,11 +457,31 @@ def process_output_videos_parallel(
     print_blue(f"Processing {len(videos)} output videos for frame extraction")
     print_blue(f"Using {max_workers} parallel workers")
 
+    # Configure frame extraction settings
+    extract_settings = {
+        "frame_interval": 2,  # Extract every 2nd frame instead of every 5th
+        "min_quality": 0.2,  # Lower quality threshold to accept more frames
+        "min_brightness": 20,  # More lenient brightness requirements
+        "max_brightness": 235,  # More lenient max brightness
+    }
+
     # Prepare arguments for parallel processing
     args_list = [
-        (video_path, positives_folder, anchors_folder, frame_interval)
+        (
+            video_path,
+            positives_folder,
+            anchors_folder,
+            extract_settings["frame_interval"],
+        )
         for video_path in videos
     ]
+
+    print_blue(f"Frame extraction settings:")
+    print_blue(f"- Capturing every {extract_settings['frame_interval']}th frame")
+    print_blue(f"- Quality threshold: {extract_settings['min_quality']}")
+    print_blue(
+        f"- Brightness range: {extract_settings['min_brightness']}-{extract_settings['max_brightness']}"
+    )
 
     # Process videos in parallel
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -416,7 +496,13 @@ def process_output_videos_parallel(
     print_green(f"Completed frame extraction from {len(videos)} videos")
 
 
-def main(config_path: str = None, max_workers: int = None, force_cpu: bool = None):
+def main(
+    config_path: str = None,
+    max_workers: int = None,
+    force_cpu: bool = None,
+    skip_frames: bool = False,
+    skip_portraits: bool = False,
+):
     """
     Main function to run the LivePortrait generator.
 
@@ -424,6 +510,8 @@ def main(config_path: str = None, max_workers: int = None, force_cpu: bool = Non
         config_path (str): Path to the configuration file.
         max_workers (int, optional): Maximum number of parallel workers. Defaults to CPU count.
         force_cpu (bool, optional): Whether to force CPU usage. Overrides config setting.
+        skip_frames (bool, optional): Whether to skip frame extraction from videos.
+        skip_portraits (bool, optional): Whether to skip video generation and only extract frames.
     """
     # Find the config file
     if config_path is None:
@@ -515,23 +603,36 @@ def main(config_path: str = None, max_workers: int = None, force_cpu: bool = Non
     start_time = time.time()
 
     # Process folders for video generation in parallel
-    generated_videos = process_folders_parallel(
-        input_source_folder,
-        input_video_folder,
-        output_video_folder,
-        config,
-        max_workers,
-    )
-
-    # Post-process output videos in parallel
-    if generated_videos:
-        process_output_videos_parallel(
+    generated_videos = []
+    if not skip_portraits:
+        generated_videos = process_folders_parallel(
+            input_source_folder,
+            input_video_folder,
             output_video_folder,
-            positives_folder,
-            anchors_folder,
-            config.get("frame_interval", 5),
+            config,
             max_workers,
         )
+
+    # Post-process output videos in parallel
+    if not skip_frames:
+        # If we didn't generate videos but have existing ones in the output folder, use those
+        if not generated_videos and os.path.exists(output_video_folder):
+            process_output_videos_parallel(
+                output_video_folder,
+                positives_folder,
+                anchors_folder,
+                config.get("frame_interval", 5),
+                max_workers,
+            )
+        # If we generated new videos, process those
+        elif generated_videos:
+            process_output_videos_parallel(
+                output_video_folder,
+                positives_folder,
+                anchors_folder,
+                config.get("frame_interval", 5),
+                max_workers,
+            )
 
     # Calculate and display total execution time
     execution_time = time.time() - start_time
@@ -549,6 +650,14 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
     parser.add_argument("--cpu", action="store_true", help="Force CPU usage")
     parser.add_argument("--gpu", action="store_true", help="Force GPU usage")
+    parser.add_argument(
+        "--skip-frames", action="store_true", help="Skip frame extraction from videos"
+    )
+    parser.add_argument(
+        "--skip-portraits",
+        action="store_true",
+        help="Skip video generation and only extract frames",
+    )
 
     args = parser.parse_args()
 
@@ -571,4 +680,4 @@ if __name__ == "__main__":
         except ValueError:
             print_red(f"Invalid number of workers: {sys.argv[2]}. Using default.")
 
-    main(config_path, max_workers, force_cpu)
+    main(config_path, max_workers, force_cpu, args.skip_frames, args.skip_portraits)

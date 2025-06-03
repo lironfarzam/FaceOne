@@ -26,6 +26,7 @@ from selenium.webdriver.common.by import By
 from PIL import Image
 from io import BytesIO
 import sys
+import hashlib
 
 # Add the parent directory to sys.path to find the utils module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -49,35 +50,90 @@ PHOTO_URLS = [
 # Set to store all photo links to avoid duplicate processing
 processed_links = set()
 
+# Set to store image hashes to detect duplicates
+downloaded_image_hashes = set()
 
-# Function to scroll down the page to load more images
-def scroll_down(driver: webdriver.Chrome, scroll_pause_time: int = 1) -> None:
-    """Scroll down the page to load more images
+
+def get_image_hash(image_data: bytes) -> str:
+    """Generate a hash of the image data to detect duplicates
+
+    Args:
+        image_data (bytes): The raw image data
+
+    Returns:
+        str: Hash of the image data
+    """
+    return hashlib.md5(image_data).hexdigest()
+
+
+def is_duplicate_image(image_data: bytes) -> bool:
+    """Check if we've already downloaded this exact image
+
+    Args:
+        image_data (bytes): The raw image data
+
+    Returns:
+        bool: True if this image has already been downloaded
+    """
+    image_hash = get_image_hash(image_data)
+    if image_hash in downloaded_image_hashes:
+        return True
+    downloaded_image_hashes.add(image_hash)
+    return False
+
+
+# Function to scroll down the page and load more images
+def scroll_and_download(
+    driver: webdriver.Chrome, download_folder: str, scroll_pause_time: int = 1
+) -> int:
+    """Scroll down the page, load more images, and download them incrementally
 
     Args:
         driver (webdriver.Chrome): The Chrome driver instance
-        scroll_pause_time (int, optional): The time to pause between scrolls. Defaults to 2.
+        download_folder (str): The folder to save images to
+        scroll_pause_time (int, optional): The time to pause between scrolls. Defaults to 1.
+
+    Returns:
+        int: Number of new images downloaded in this scroll session
     """
+    new_downloads = 0
 
-    # Get scroll height
-    last_height = driver.execute_script("return document.body.scrollHeight")
+    # First download all initially visible images
+    print("Downloading initially visible images...")
+    initial_links = extract_image_links(driver)
+    for link in initial_links:
+        if link not in processed_links:
+            if download_image(link, download_folder):
+                new_downloads += 1
+            processed_links.add(link)
+    print(f"Downloaded {new_downloads} initial photos")
 
-    # Number of scrolls (adjust as needed)
-    scrolls = 5
+    # Then do 5 scrolls, downloading new images each time
+    for scroll_num in range(5):
+        print(f"\nScroll {scroll_num + 1}/5")
 
-    for i in range(scrolls):
-        # Scroll down to bottom
+        # Scroll down one page
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(scroll_pause_time)  # Wait for content to load
 
-        # Wait to load page
-        time.sleep(scroll_pause_time)
+        # Get photos from current view
+        section_links = extract_image_links(driver)
+        print(f"Found {len(section_links)} potential new photos in current view")
 
-        # Calculate new scroll height and compare with last scroll height
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
-        print(f"Scrolled down {i+1} times")
+        # Download new images
+        downloads_this_scroll = 0
+        for link in section_links:
+            if link not in processed_links:
+                if download_image(link, download_folder):
+                    new_downloads += 1
+                    downloads_this_scroll += 1
+                processed_links.add(link)
+
+        print(
+            f"Downloaded {downloads_this_scroll} new photos in scroll {scroll_num + 1}"
+        )
+
+    return new_downloads
 
 
 # Function to check if image is visible and of good size
@@ -180,7 +236,7 @@ def download_image(link: str, download_folder: str) -> bool:
 
     Args:
         link (str): The link to the image to download
-        download_folder (str): The folder to save the image to
+        download_folder (str): The folder to save the images to
 
     Returns:
         bool: True if the image was downloaded successfully, False otherwise
@@ -188,15 +244,25 @@ def download_image(link: str, download_folder: str) -> bool:
     try:
         response = requests.get(link)
         if response.status_code == 200:
-            # Verify the image is a photo (not a small icon)
+            # Only check for duplicates if the image is valid
             if not is_valid_photo(response.content):
-                # print(f"Skipping non-photo image: {link}")
                 return False
 
+            # Then verify the image is a photo (not a small icon)
+            if not is_valid_photo(response.content):
+                return False
+
+            # Generate base name for the file
+            base_name = link.split("/")[-1].split("?")[0]
+
+            # Check if we already have this exact image hash
+            image_hash = get_image_hash(response.content)
+            if image_hash in downloaded_image_hashes:
+                print_blue(f"Duplicate detected, but downloading anyway: {link}")
+            downloaded_image_hashes.add(image_hash)
+
             # Use a more unique filename to avoid collisions
-            filename = os.path.join(
-                download_folder, f"{link.split('/')[-1].split('?')[0]}"
-            )
+            filename = os.path.join(download_folder, base_name)
 
             # Add a counter if filename already exists
             base_filename = filename
@@ -226,8 +292,9 @@ def download_user_photos(profile_url: str, download_folder: str) -> None:
         profile_url (str): The URL of the user's profile
         download_folder (str): The folder to save the images to
     """
-    global processed_links
+    global processed_links, downloaded_image_hashes
     processed_links.clear()  # Reset processed links for each profile
+    downloaded_image_hashes.clear()  # Reset image hashes for each profile
 
     # Initialize download counter
     download_count = 0
@@ -259,22 +326,11 @@ def download_user_photos(profile_url: str, download_folder: str) -> None:
         for photo_url in PHOTO_URLS:
             section_url = profile_url + photo_url
             driver.get(section_url)
-            time.sleep(15)  # Wait for the profile to load
+            time.sleep(10)  # Wait for the profile to load
             print("Profile section loaded: ", section_url)
 
-            # Scroll down to load more images
-            scroll_down(driver)
-
-            # Get photos from this section that we haven't processed yet
-            section_links = extract_image_links(driver)
-            print(f"Found {len(section_links)} potential photos in section {photo_url}")
-
-            # Download new images
-            for link in section_links:
-                # print("Image source: ", link)
-                if download_image(link, download_folder):
-                    download_count += 1
-                processed_links.add(link)  # Mark as processed
+            # Scroll, load and download images incrementally
+            download_count += scroll_and_download(driver, download_folder)
 
         print_green(f"Total photos downloaded trying to download: {download_count}")
         print_green(f"Total photos downloaded: {len(os.listdir(download_folder))}")

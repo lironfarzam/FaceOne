@@ -130,39 +130,95 @@ def assess_face_quality(face_img: np.ndarray, min_size: int = MIN_FACE_SIZE) -> 
         A score above 0.6 generally indicates a good quality face image suitable for recognition.
     """
     try:
-        # Convert to grayscale if needed
+        # Basic size check
+        if face_img is None or len(face_img.shape) < 2:
+            return 0.0
+
+        h, w = face_img.shape[:2]
+        if h < min_size or w < min_size:
+            return 0.0
+
+        # Convert to grayscale and ensure uint8 type
         gray = (
             cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
             if len(face_img.shape) > 2
             else face_img
         )
+        gray = gray.astype(np.uint8)
 
-        # Size score (30%)
-        h, w = face_img.shape[:2]
+        # 1. Face orientation score (45%) - Most important factor
+        # Split face into left and right halves
+        mid = w // 2
+        left_half = gray[:, :mid]
+        right_half = cv2.flip(gray[:, mid:], 1)
+
+        # Ensure same dimensions for comparison
+        min_width = min(left_half.shape[1], right_half.shape[1])
+        left_half = left_half[:, :min_width]
+        right_half = right_half[:, :min_width]
+
+        # Multiple symmetry checks
+        try:
+            # a. Template matching with proper error handling
+            symmetry_match = cv2.matchTemplate(
+                left_half, right_half, cv2.TM_CCOEFF_NORMED
+            )[0][0]
+        except:
+            symmetry_match = 0.0
+
+        # b. Histogram comparison
+        try:
+            hist_left = cv2.calcHist([left_half], [0], None, [256], [0, 256])
+            hist_right = cv2.calcHist([right_half], [0], None, [256], [0, 256])
+            hist_similarity = cv2.compareHist(hist_left, hist_right, cv2.HISTCMP_CORREL)
+        except:
+            hist_similarity = 0.0
+
+        # c. Simple pixel-wise comparison
+        try:
+            mse = np.mean((left_half.astype(float) - right_half.astype(float)) ** 2)
+            pixel_similarity = 1.0 / (1.0 + mse)
+        except:
+            pixel_similarity = 0.0
+
+        # Combine orientation metrics with weighted importance
+        orientation_score = (
+            max(0.0, symmetry_match) * 0.4  # Template matching
+            + max(0.0, hist_similarity) * 0.3  # Histogram comparison
+            + pixel_similarity * 0.3  # Pixel-wise comparison
+        )
+        orientation_score = min(1.0, max(0.0, orientation_score))
+
+        # 2. Sharpness score (30%)
+        try:
+            laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            sharpness_score = min(1.0, laplacian_var / 500)
+        except:
+            sharpness_score = 0.0
+
+        # 3. Size score (15%)
         size_score = min(1.0, (h * w) / (min_size * min_size))
 
-        # Sharpness score (40%)
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        sharpness_score = min(1.0, laplacian_var / 500)
-
-        # Symmetry score (20%)
-        flipped = cv2.flip(gray, 1)
-        similarity = cv2.matchTemplate(gray, flipped, cv2.TM_CCOEFF_NORMED)[0][0]
-        symmetry_score = (similarity + 1) / 2
-
-        # Lighting uniformity score (10%)
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-        hist_norm = hist / hist.sum()
-        hist_var = np.var(hist_norm)
-        lighting_score = 1.0 - min(1.0, hist_var * 100)
+        # 4. Basic lighting check (10%)
+        mean_brightness = np.mean(gray) / 255.0
+        std_brightness = np.std(gray) / 255.0
+        lighting_score = (1.0 - abs(mean_brightness - 0.5)) * std_brightness
 
         # Weighted combination
         quality_score = (
-            size_score * 0.3
-            + sharpness_score * 0.4
-            + symmetry_score * 0.2
-            + lighting_score * 0.1
+            orientation_score * 0.45  # Face angle highest priority
+            + sharpness_score * 0.30  # Sharpness second priority
+            + size_score * 0.15  # Size third priority
+            + lighting_score * 0.10  # Lighting least important
         )
+
+        # Bonus/penalty based on orientation
+        if orientation_score > 0.85:
+            quality_score *= 1.25  # 25% bonus for near-perfect frontal faces
+        elif orientation_score < 0.4:
+            quality_score *= 0.6  # 40% penalty for extreme angles
+        elif orientation_score < 0.6:
+            quality_score *= 0.8  # 20% penalty for moderate angles
 
         return max(0.0, min(1.0, quality_score))
 
@@ -2432,6 +2488,84 @@ def detect_profile_angle(face_img: np.ndarray):
         return 0.5  # Default to middle if detection fails
 
 
+def detect_face_angle(face_img: np.ndarray) -> Tuple[float, bool]:
+    """
+    Enhanced detection of face angle using multiple metrics.
+
+    Args:
+        face_img (numpy.ndarray): Face image in BGR format
+
+    Returns:
+        Tuple[float, bool]: (angle_score, is_frontal)
+        - angle_score: 0.0 to 1.0 (1.0 being perfectly frontal)
+        - is_frontal: True if face is mostly frontal
+    """
+    try:
+        # Convert to grayscale
+        gray = (
+            cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+            if len(face_img.shape) > 2
+            else face_img
+        )
+        h, w = gray.shape
+
+        # Split face into left and right halves
+        mid = w // 2
+        left_half = gray[:, :mid]
+        right_half = cv2.flip(gray[:, mid:], 1)
+
+        # 1. Template matching - Compare overall structure
+        tm_score = cv2.matchTemplate(left_half, right_half, cv2.TM_CCOEFF_NORMED)[0][0]
+
+        # 2. Histogram comparison - Compare intensity distributions
+        left_hist = cv2.calcHist([left_half], [0], None, [256], [0, 256])
+        right_hist = cv2.calcHist([right_half], [0], None, [256], [0, 256])
+        hist_score = cv2.compareHist(left_hist, right_hist, cv2.HISTCMP_CORREL)
+
+        # 3. Edge comparison - Compare facial feature edges
+        edges_left = cv2.Sobel(left_half, cv2.CV_64F, 1, 1)
+        edges_right = cv2.Sobel(right_half, cv2.CV_64F, 1, 1)
+        edge_score = cv2.matchTemplate(edges_left, edges_right, cv2.TM_CCOEFF_NORMED)[
+            0
+        ][0]
+
+        # 4. Vertical symmetry check - Compare top and bottom halves
+        top_half = gray[: h // 2, :]
+        bottom_half = cv2.flip(gray[h // 2 :, :], 0)
+        if top_half.shape == bottom_half.shape:
+            vert_score = cv2.matchTemplate(top_half, bottom_half, cv2.TM_CCOEFF_NORMED)[
+                0
+            ][0]
+        else:
+            vert_score = 0.5  # Default if sizes don't match
+
+        # Combine scores with weights emphasizing horizontal symmetry
+        angle_score = (
+            tm_score * 0.4  # Basic structural symmetry
+            + hist_score * 0.3  # Intensity distribution
+            + edge_score * 0.2  # Feature edges
+            + vert_score * 0.1  # Vertical balance
+        )
+
+        # Normalize to 0-1 range
+        angle_score = (angle_score + 1) / 2
+
+        # Define frontal threshold with high confidence
+        is_frontal = angle_score > 0.75  # Strict threshold for frontal classification
+
+        # Adjust score based on additional factors
+        if angle_score > 0.9:
+            angle_score = 1.0  # Perfect frontal face
+        elif angle_score < 0.3:
+            angle_score *= 0.8  # Heavy penalty for extreme angles
+
+        return angle_score, is_frontal
+
+    except Exception as e:
+        print_red(f"Error detecting face angle: {e}")
+        return 0.5, False  # Default to uncertain
+
+
 # At the top of the file, add these functions
 def safe_imread(img_path: str):
     """
@@ -2758,7 +2892,7 @@ def blur_non_main_faces(
                 best_cluster = None
                 best_distance = float("inf")
 
-                # Compare with representatives from each cluster
+                # Compare with up to 3 representatives from each cluster
                 for cluster_label, face_indices in all_clusters.items():
                     if cluster_label == most_frequent_label:
                         continue  # Skip main person's cluster
