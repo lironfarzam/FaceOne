@@ -46,6 +46,7 @@ xxx/
 
 # Explicitly allow LivePortrait model files
 !Live_portrait/LivePortrait/*
+!Live_portrait/NN_LiveProtrait/Source_Images/source.mp4
 !Live_portrait/LivePortrait/pretrained_weights/
 !Live_portrait/LivePortrait/pretrained_weights/liveportrait/
 !Live_portrait/LivePortrait/pretrained_weights/liveportrait/base_models/
