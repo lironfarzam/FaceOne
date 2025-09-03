@@ -77,3 +77,7 @@ xxx/
 # Explicitly allow split_files_temp directory and all its contents
 !split_files_temp/
 !split_files_temp/**
+
+# add the icons folder in the chrome_extensions directory
+!chrome_extensions/icons/
+!chrome_extensions/icons/**
