@@ -46,6 +46,7 @@ from multiprocessing import Pool, cpu_count
 import mediapipe as mp
 from typing import List, Dict, Tuple, Optional, Union, Any, Set, Callable, Sequence
 import sys
+import hashlib
 
 # Add the parent directory to sys.path to find the utils module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -2243,8 +2244,9 @@ def process_face_crop(args):
         # Calculate quality metrics
         quality_score = assess_face_quality(largest_face["face"])
 
-        # Detect if it's a profile shot
+        # Detect if it's a profile shot and get roll/frontal info
         profile_score = detect_profile_angle(face_crop)
+        angle_score, is_frontal = detect_face_angle(largest_face["face"])
 
         # Check if there are other faces in the image
         single_person = len(faces) == 1
@@ -2258,6 +2260,8 @@ def process_face_crop(args):
             "similarity": similarity,
             "quality_score": quality_score,
             "profile_score": profile_score,
+            "angle": angle_score,
+            "is_frontal": bool(is_frontal),
             "single_person": single_person,
             "size": area["w"] * area["h"],
             "filename": img_file,
@@ -2319,6 +2323,35 @@ def save_best_face_crops(
         if any(f.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
     ]
 
+    # Remove duplicate images by content hash to avoid saving redundant crops
+    def compute_image_hash(path: str) -> Optional[str]:
+        try:
+            img = safe_imread(path)
+            if img is None:
+                return None
+            # Normalize size and convert to grayscale for hashing
+            small = cv2.resize(img, (256, 256))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            _, buf = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            h = hashlib.md5(buf.tobytes()).hexdigest()
+            return h
+        except Exception:
+            return None
+
+    seen_hashes = set()
+    unique_image_files = []
+    for fn in image_files:
+        full = os.path.join(images_folder, fn)
+        h = compute_image_hash(full)
+        if h is None:
+            continue
+        if h in seen_hashes:
+            continue
+        seen_hashes.add(h)
+        unique_image_files.append(fn)
+
+    image_files = unique_image_files
+
     if not image_files:
         print_red(f"No images found in {images_folder}")
         return 0
@@ -2378,13 +2411,14 @@ def save_best_face_crops(
         return 0
 
     # Sort candidates by multiple criteria
+    # Prefer frontal (is_frontal), then high quality, then larger size, then similarity
     face_candidates.sort(
         key=lambda x: (
-            x["similarity"],  # Match to reference
+            x.get("is_frontal", False),  # frontal preferred
             x["quality_score"],  # Image quality
             x["size"],  # Face size
+            x["similarity"],  # Match to reference
             x["single_person"],  # Prefer single person shots
-            -abs(0.5 - x["profile_score"]),  # Mix of profile and frontal shots
         ),
         reverse=True,
     )
@@ -2417,6 +2451,77 @@ def save_best_face_crops(
 
     print_green(f"Saved {saved_count} best face crops to {output_folder}")
     return saved_count
+
+
+def select_best_image(images_folder: str) -> Optional[str]:
+    """
+    Select the single best image from a folder based on face sharpness and frontal orientation.
+
+    Returns the path to the best image or None if none found.
+    """
+    image_files = [
+        os.path.join(images_folder, f)
+        for f in os.listdir(images_folder)
+        if any(f.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)
+    ]
+
+    # Deduplicate by content hash
+    def _hash(path: str) -> Optional[str]:
+        try:
+            img = safe_imread(path)
+            if img is None:
+                return None
+            small = cv2.resize(img, (256, 256))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            _, buf = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            return hashlib.md5(buf.tobytes()).hexdigest()
+        except Exception:
+            return None
+
+    seen = set()
+    unique_paths = []
+    for p in image_files:
+        h = _hash(p)
+        if h is None:
+            continue
+        if h in seen:
+            continue
+        seen.add(h)
+        unique_paths.append(p)
+
+    image_files = unique_paths
+
+    best_score = -1.0
+    best_path = None
+
+    for img_path in image_files:
+        img = safe_imread(img_path)
+        if img is None:
+            continue
+
+        faces = safe_face_detection(
+            img_path, detector_backend="retinaface", enforce_detection=False
+        )
+        if not faces:
+            continue
+
+        # Choose largest face
+        largest = max(
+            faces, key=lambda x: x["facial_area"]["w"] * x["facial_area"]["h"]
+        )
+        face_img = ensure_valid_image(largest.get("face"))
+
+        q = assess_face_quality(face_img)
+        profile = detect_profile_angle(face_img)
+        angle_score, is_frontal = detect_face_angle(face_img)
+
+        score = q * 0.7 + (1.0 if is_frontal else 0.2) * 0.3 - profile * 0.1
+
+        if score > best_score:
+            best_score = score
+            best_path = img_path
+
+    return best_path
 
 
 def detect_profile_angle(face_img: np.ndarray):
